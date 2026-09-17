@@ -12,13 +12,14 @@ from typing import List, Tuple, Dict, Optional
 from config import TranslationOptions, CONFIG_DIR
 
 CACHE_DB_PATH = CONFIG_DIR / "cache.db"
+PROMPT_VERSION = "v5"
 
 
 def compute_options_hash(options: Optional[TranslationOptions]) -> str:
     """Compute deterministic hash of translation options affecting output."""
     if not options:
-        return "default"
-    raw = f"it:{options.keep_it_terms}|orig:{options.append_original_words}|ctx:{options.custom_context.strip()}"
+        return f"{PROMPT_VERSION}_default"
+    raw = f"{PROMPT_VERSION}|it:{options.keep_it_terms}|orig:{options.append_original_words}|ctx:{options.custom_context.strip()}"
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 

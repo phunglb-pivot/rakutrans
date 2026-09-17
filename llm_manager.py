@@ -54,33 +54,29 @@ def build_system_prompt(
 
     options = options or TranslationOptions()
     rules = [
-        f"You are a professional document translator specializing in accurate and fluent translation into {target_lang} across technical, business, and general domains.",
-        f"Translate the provided array of text strings into {target_lang}. The input texts may be in any language or contain mixed multilingual content (e.g., Japanese, English, Vietnamese, etc.).",
-        f"CRITICAL: If a text string or segment is ALREADY in {target_lang} or consists solely of numbers, punctuation, codes, standard abbreviations, or symbols, KEEP IT AS IS without modifying or re-translating.",
+        f"You are a professional document translator specializing in accurate and fluent translation into {target_lang}.",
+        f"Translate the provided array of text strings into {target_lang}. The input texts may be in any language or contain mixed multilingual content.",
+        f"CRITICAL: Except for parenthetical source term annotations, keywords, code syntax, variable names, proper nouns, standard abbreviations, acronyms, numbers, punctuation, or content already in {target_lang}, ALL other words, sentences, and explanatory text MUST be fully translated into {target_lang}.",
         "STRICT OUTPUT FORMAT: Return ONLY a valid JSON array of strings containing the translations.",
         "The output JSON array MUST have EXACTLY the same number of elements as the input array.",
         "Do NOT include explanations, markdown headers, conversational filler, or commentary. Output raw JSON array only.",
-        "Preserve placeholders, variables, tags (e.g. {0}, {{name}}, %s, <br/>), numbers, punctuation, and leading/trailing whitespace where appropriate."
+        "Preserve placeholders, variables, tags, numbers, punctuation, and leading/trailing whitespace where appropriate.",
+        "UI LABELS AND QUOTATION MARKS: Adapt source quotation marks or corner brackets to the standard quotation marks of the target language for UI labels, button names, filter options, and quoted terms. Do not insert extraneous words or category prefixes around them."
     ]
 
     if options.keep_it_terms:
         rules.append(
-            "KEEP SPECIALIZED TERMS UNTRANSLATED: Maintain domain-specific terminology, specialized industry jargon, "
-            "standard abbreviations/acronyms, proper nouns, and widely recognized international terms in their original "
-            "or standard conventional form without forcing awkward or literal translations. Ensure surrounding sentences "
-            "flow naturally and grammatically in the target language."
+            "KEEP SPECIALIZED TERMS UNTRANSLATED: Maintain proper nouns, standard abbreviations, acronyms, "
+            "and international terms in their original form without forcing awkward or literal translations. "
+            "Ensure surrounding sentences flow naturally and grammatically in the target language."
         )
 
     if options.append_original_words:
         rules.append(
-            "APPEND ORIGINAL SOURCE WORDS IN PARENTHESES: For terms enclosed in quotation marks or brackets "
-            "(e.g., \"...\", '...', 「...」, 『...』, 【...】) and key specialized concepts, append the original source "
-            "term in parentheses immediately after its translation: TranslatedTerm (OriginalTerm).\n"
-            "Guidelines for appending original words:\n"
-            "- Prioritize terms in quotation marks/brackets and key domain-specific terminology where source reference adds clarity.\n"
-            "- Do NOT annotate common everyday words or basic grammatical connectors.\n"
-            "- Do NOT duplicate terms that remain untranslated or already match the original (e.g., write 'Term', NOT 'Term (Term)').\n"
-            "- Preserve surrounding quotation marks, brackets, and punctuation cleanly."
+            "APPEND ORIGINAL SOURCE WORDS AND ADAPT QUOTATION MARKS:\n"
+            "- UI Labels and Quotation Marks: Enclose translated UI labels, button names, and filter options using the standard quotation marks of the target language rather than retaining source-specific bracket styles. Do not insert speculative filler words, category prefixes, or extra commentary around UI labels.\n"
+            "- Verbatim Source Term: When appending the original term in parentheses immediately following its translation, the term inside the parentheses MUST be the exact verbatim string copied directly from the input source text in the original source language. Absolutely do not translate, interpret, or convert the original term into English or any other language.\n"
+            "- Do not annotate common everyday words or terms that remain untranslated."
         )
 
     if options.custom_context and options.custom_context.strip():
@@ -388,25 +384,29 @@ class LLMManager:
 
         options = options or self.config.translation_options
         system_prompt = (
-            f"You are an expert technical translator. Translate the following Markdown document into {target_lang}.\n"
-            f"The input document may contain mixed multilingual text (e.g., Japanese, English, Vietnamese, etc.). "
-            f"Translate non-{target_lang} content into fluent, idiomatic {target_lang}. "
-            f"If sections are already in {target_lang}, leave them unchanged.\n"
+            f"You are a professional translator. Translate the following Markdown document into {target_lang}.\n"
+            f"The input document may contain mixed multilingual text.\n"
+            f"CRITICAL: Except for parenthetical source term annotations, keywords, code syntax, variable names, proper nouns, standard abbreviations, acronyms, numbers, punctuation, or content already in {target_lang}, ALL other words, sentences, and explanatory text MUST be fully translated into {target_lang}.\n"
             "STRICT RULES:\n"
             "1. PRESERVE ALL MARKDOWN FORMATTING (headers, lists, tables, bold, italics, links, blockquotes).\n"
-            "2. DO NOT translate code within code blocks (```...```) or inline code (`...`).\n"
+            "2. DO NOT translate code within code blocks or inline code.\n"
             "3. DO NOT translate URLs in markdown links or images.\n"
-            "4. Return ONLY the translated Markdown text without conversational introduction or conclusion."
+            "4. Return ONLY the translated Markdown text without conversational introduction or conclusion.\n"
+            "5. UI LABELS AND QUOTATION MARKS: Adapt source quotation marks or corner brackets to the standard quotation marks of the target language for UI labels, button names, and quoted terms. Do not insert extraneous words, category prefixes, or filler around them."
         )
 
         if options.keep_it_terms:
             system_prompt += (
-                "\n5. Keep IT and software engineering terms in standard English/original form (e.g. API, SQL, Docker, refactoring)."
+                "\n6. Keep proper nouns, standard abbreviations, acronyms, and international terms in their original form."
             )
 
         if options.append_original_words:
             system_prompt += (
-                "\n6. Append original source words in parentheses for specialized terminology, e.g. Translated (Original)."
+                "\n7. APPEND ORIGINAL SOURCE WORDS: When appending the original term in parentheses immediately following its translation, "
+                "the term inside the parentheses MUST be the exact verbatim string copied directly from the input source document in its original source language. "
+                "Never translate, alter, or convert this original term into English or any other language. "
+                "Enclose the translated UI labels in standard quotation marks of the target language rather than retaining source-specific bracket styles. "
+                "Do not add unprompted commentary, category prefixes, or filler words around UI labels."
             )
 
         if options.custom_context and options.custom_context.strip():

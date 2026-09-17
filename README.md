@@ -4,6 +4,10 @@
 
 Desktop & CLI tool for AI-powered translation and 2-way format conversion between **Excel (`.xlsx`)** and **Markdown (`.md`)**. Specially optimized for Japanese, English, and Vietnamese.
 
+<p align="center">
+  <img src="assets/ui.png" alt="RakuTrans AI" />
+</p>
+
 ---
 
 ## Key Features

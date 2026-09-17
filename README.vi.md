@@ -4,6 +4,10 @@
 
 Ứng dụng Desktop & CLI dịch thuật bằng AI và chuyển đổi định dạng 2 chiều giữa **Excel (`.xlsx`)** và **Markdown (`.md`)**. Tối ưu hóa đặc biệt cho tiếng Nhật, tiếng Anh và tiếng Việt.
 
+<p align="center">
+  <img src="assets/ui.png" alt="RakuTrans AI" />
+</p>
+
 ---
 
 ## Tính năng nổi bật

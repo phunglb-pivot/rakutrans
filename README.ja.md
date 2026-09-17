@@ -4,6 +4,10 @@
 
 **Excel (`.xlsx`)** および **Markdown (`.md`)** ドキュメントのAI翻訳とフォーマット相互変換に対応したデスクトップ／CLIツール。日本語・英語・ベトナム語に最適化されています。
 
+<p align="center">
+  <img src="assets/ui.png" alt="RakuTrans AI" />
+</p>
+
 ---
 
 ## 主な機能

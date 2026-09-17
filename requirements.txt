@@ -1,0 +1,21 @@
+# GUI Framework
+customtkinter>=5.2.2
+tkinterdnd2>=0.3.0
+pillow>=10.0.0
+
+# Document & Spreadsheet Processing
+openpyxl>=3.1.2
+markitdown>=0.0.1a4
+markdown>=3.7
+
+# LLM Providers
+google-generativeai>=0.8.3
+google-genai>=1.0.0
+openai>=1.55.0
+anthropic>=0.39.0
+
+# Utilities & Validation
+pydantic>=2.10.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+packaging>=24.0

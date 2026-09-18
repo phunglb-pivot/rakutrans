@@ -18,7 +18,7 @@
   - **JSON**: Dành cho lập trình viên & i18n, chỉ dịch chuỗi giá trị (values), bảo toàn khóa (keys) và biến định dạng (`{var}`, `%s`).
   - **Markdown & Plain Text**: Bảo toàn khối mã (```` ``` ````), inline code, tiêu đề, liên kết và bảng biểu.
 - **Bộ nhớ dịch thuật (Cache SQLite cục bộ)**: Lưu trữ các đoạn đã dịch tại `~/.rakutrans/cache.db`, tránh gọi lặp lại API, tiết kiệm chi phí và tăng tốc độ.
-- **Chuyển đổi định dạng Offline (Không cần API Key)**: Chuyển đổi 2 chiều trực tiếp giữa Excel (`.xlsx`) ⇄ Markdown (`.md`).
+- **Chuyển đổi định dạng Offline (Không cần API Key)**: Chuyển đổi định dạng trực tiếp giữa Excel (`.xlsx`), Word (`.docx`), PowerPoint (`.pptx`), CSV/TSV (`.csv`), Markdown (`.md`) và Text (`.txt`).
 - **Tích hợp đa nền tảng AI**: Hỗ trợ Google Gemini, OpenAI, Anthropic Claude; tự động quét danh sách model thực tế từ API.
 - **Giao diện Desktop hiện đại**: CustomTkinter với Dark/Light mode, đa ngôn ngữ (Việt, Nhật, Anh), kéo thả file, kiểm tra trước dữ liệu và hệ thống phím tắt tiện lợi (`⌘/Ctrl+O`, `⌘/Ctrl+Enter`, `Esc`, `⌘/Ctrl+,`).
 
@@ -67,7 +67,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | Tham số | Dạng ngắn | Mặc định | Mô tả |
 | :--- | :--- | :--- | :--- |
 | `--cli` | | `False` | Chạy ở chế độ dòng lệnh (CLI) |
-| `--file` | `-f` | *Không* | Đường dẫn tệp `.xlsx` hoặc `.md` (bắt buộc khi dùng CLI) |
+| `--file` | `-f` | *Không* | Đường dẫn tệp tài liệu cần dịch (bắt buộc khi dùng CLI) |
 | `--tgt` | `-t` | `Vietnamese` | Ngôn ngữ dịch đích (`Vietnamese`, `English`, `Japanese`...) |
 | `--src` | `-s` | `None` | Lọc ngôn ngữ gốc (mặc định: tự động nhận diện) |
 | `--keep-terms` | `--keep-it` | `True` | Giữ nguyên thuật ngữ chuyên ngành/CNTT |
@@ -75,7 +75,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | `--context` | `-c` | `""` | Ngữ cảnh hoặc bảng thuật ngữ tùy chỉnh |
 | `--model` | `-m` | *Đã cấu hình* | Tên model AI (ví dụ: `gemini-3.6-flash`, `gpt-4o-mini`) |
 | `--provider` | `-p` | *Đã cấu hình* | Nhà cung cấp AI (`Gemini`, `OpenAI`, `Claude`) |
-| `--output-format` | `-out-fmt` | `auto` | Định dạng tệp xuất (`auto`, `xlsx`, `md`) |
+| `--output-format` | `-out-fmt` | `auto` | Định dạng tệp xuất (`auto`, `xlsx`, `md`, `docx`, `csv`, `txt`) |
 
 ---
 

@@ -134,7 +134,7 @@ def main():
     parser.add_argument("--context", "-c", type=str, default="", help="Custom context or glossary rules")
     parser.add_argument("--model", "-m", type=str, default=None, help="AI model name (e.g. gemini-3.6-flash, gpt-4o)")
     parser.add_argument("--provider", "-p", type=str, default=None, choices=["Gemini", "OpenAI", "Claude"], help="AI provider")
-    parser.add_argument("--output-format", "-out-fmt", type=str, default="auto", choices=["auto", "xlsx", "md"], help="Target output format: auto, xlsx, or md")
+    parser.add_argument("--output-format", "-out-fmt", type=str, default="auto", choices=["auto", "xlsx", "md", "docx", "csv", "tsv", "txt"], help="Target output format: auto, xlsx, md, docx, csv, txt")
 
     args = parser.parse_args()
 

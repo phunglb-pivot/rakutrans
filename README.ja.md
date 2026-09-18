@@ -18,7 +18,7 @@
   - **JSON**: 開発者・多言語化（i18n）向け。キーや変数（`{var}`, `%s`）を完全保護し、値のみを翻訳。
   - **Markdown & テキスト**: 見出し、コードブロック（```` ``` ````）、インラインコード、リンク、表構文を完全保護。
 - **翻訳メモリ（ローカルキャッシュ）**: SQLite (`~/.rakutrans/cache.db`) により重複翻訳をスキップし、APIコスト削減と高速化を実現。
-- **オフライン・フォーマット相互変換（APIキー不要）**: Excel (`.xlsx`) ⇄ Markdown (`.md`) の双方向直接変換。
+- **オフライン・フォーマット相互変換（APIキー不要）**: Excel (`.xlsx`)、Word (`.docx`)、PowerPoint (`.pptx`)、CSV/TSV (`.csv`)、Markdown (`.md`)、テキスト (`.txt`) 間の直接ファイル変換。
 - **マルチプロバイダー対応**: Google Gemini, OpenAI, Anthropic Claude（モデル動的取得対応）。
 - **モダンなデスクトップGUI**: CustomTkinter（ダーク／ライト）、3言語対応（日英越）、ドラッグ＆ドロップ、事前検査バッジ、ショートカットキー（`⌘/Ctrl+O`, `⌘/Ctrl+Enter`, `Esc`, `⌘/Ctrl+,`）。
 
@@ -67,7 +67,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | オプション | 短縮形 | デフォルト値 | 説明 |
 | :--- | :--- | :--- | :--- |
 | `--cli` | | `False` | CLIモードで実行 |
-| `--file` | `-f` | *なし* | 入力ファイルパス（CLIでは必須） |
+| `--file` | `-f` | *なし* | 翻訳対象ファイルのパス（CLIでは必須） |
 | `--tgt` | `-t` | `Vietnamese` | 翻訳先言語（`Vietnamese`, `English`, `Japanese` 等） |
 | `--src` | `-s` | `None` | 原文言語フィルター（デフォルト: 自動検出） |
 | `--keep-terms` | `--keep-it` | `True` | 専門用語・IT用語をそのまま保持 |
@@ -75,7 +75,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | `--context` | `-c` | `""` | 用語集やカスタムコンテキスト |
 | `--model` | `-m` | *設定値* | AIモデル名（例: `gemini-3.6-flash`, `gpt-4o-mini`） |
 | `--provider` | `-p` | *設定値* | プロバイダー（`Gemini`, `OpenAI`, `Claude`） |
-| `--output-format` | `-out-fmt` | `auto` | 出力形式（`auto`, `xlsx`, `md`） |
+| `--output-format` | `-out-fmt` | `auto` | 出力形式（`auto`, `xlsx`, `md`, `docx`, `csv`, `txt`） |
 
 ---
 

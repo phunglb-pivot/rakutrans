@@ -18,7 +18,7 @@ Desktop & CLI tool for AI-powered multi-format document translation: **Excel (`.
   - **JSON**: Dedicated to developers & i18n localization, translating only string values while preserving keys and interpolations (`{var}`, `%s`).
   - **Markdown & Plain Text**: Preserves headers, code blocks (```` ``` ````), inline code, links, and tables.
 - **Translation Memory (Local Cache)**: Embedded SQLite (`~/.rakutrans/cache.db`) saves repeated segments, reducing API cost and latency.
-- **Offline Format Conversion (No API Key)**: Direct 2-way conversion between Excel (`.xlsx`) and Markdown (`.md`).
+- **Offline Format Conversion (No API Key)**: Direct multi-format conversion between Excel (`.xlsx`), Word (`.docx`), PowerPoint (`.pptx`), CSV/TSV (`.csv`), Markdown (`.md`), and Text (`.txt`).
 - **Multi-Provider AI**: Google Gemini, OpenAI, and Anthropic Claude with dynamic live model discovery.
 - **Modern Desktop UI**: CustomTkinter interface with Dark/Light modes, i18n (EN, JA, VI), drag-and-drop, pre-scan file inspection, and keyboard shortcuts (`⌘/Ctrl+O`, `⌘/Ctrl+Enter`, `Esc`, `⌘/Ctrl+,`).
 
@@ -67,7 +67,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | Option | Short | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `--cli` | | `False` | Run in headless CLI mode |
-| `--file` | `-f` | *None* | Path to `.xlsx` or `.md` file (required in CLI) |
+| `--file` | `-f` | *None* | Path to document file to translate (required in CLI) |
 | `--tgt` | `-t` | `Vietnamese` | Target language (`Vietnamese`, `English`, `Japanese`, etc.) |
 | `--src` | `-s` | `None` | Source language filter (default: auto-detect) |
 | `--keep-terms` | `--keep-it` | `True` | Keep IT/domain terms untranslated |
@@ -75,7 +75,7 @@ python3 main.py --cli --file document.xlsx --tgt Vietnamese --output-format md
 | `--context` | `-c` | `""` | Custom glossary or context prompt |
 | `--model` | `-m` | *Configured* | AI model name (e.g. `gemini-3.6-flash`, `gpt-4o-mini`) |
 | `--provider` | `-p` | *Configured* | Provider (`Gemini`, `OpenAI`, `Claude`) |
-| `--output-format` | `-out-fmt` | `auto` | Target output format (`auto`, `xlsx`, `md`) |
+| `--output-format` | `-out-fmt` | `auto` | Target output format (`auto`, `xlsx`, `md`, `docx`, `csv`, `txt`) |
 
 ---
 

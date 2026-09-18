@@ -394,15 +394,15 @@ class RakuTransApp(ctk.CTk):
         )
         self.fmt_label.pack(side="left", padx=(0, 12))
 
-        self._update_format_mappings()
-        self.output_format_var = ctk.StringVar(value=self.fmt_display_map["auto"])
+        self.output_format_var = ctk.StringVar(value="")
         self.fmt_segmented = ctk.CTkSegmentedButton(
             fmt_frame,
-            values=[self.fmt_display_map["auto"], self.fmt_display_map["xlsx"], self.fmt_display_map["md"]],
+            values=["Auto"],
             variable=self.output_format_var,
             height=30
         )
         self.fmt_segmented.pack(side="left", fill="x", expand=True)
+        self._update_format_selector()
 
         # Custom Context Prompt Label
         self.custom_prompt_label = ctk.CTkLabel(
@@ -451,6 +451,26 @@ class RakuTransApp(ctk.CTk):
         )
         self.convert_panel_title.pack(side="left")
 
+        # Target format selection row
+        self.convert_fmt_row = ctk.CTkFrame(self.convert_panel, fg_color="transparent")
+        self.convert_fmt_row.pack(fill="x", padx=16, pady=(0, 8))
+
+        self.convert_target_label = ctk.CTkLabel(
+            self.convert_fmt_row,
+            text=self.i18n.t("convert_fmt_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.convert_target_label.pack(side="left", padx=(0, 10))
+
+        self.convert_target_fmt_var = ctk.StringVar(value="")
+        self.convert_segmented = ctk.CTkSegmentedButton(
+            self.convert_fmt_row,
+            variable=self.convert_target_fmt_var,
+            height=28,
+            font=ctk.CTkFont(size=11)
+        )
+        self.convert_segmented.pack(side="left", fill="x", expand=True)
+
         # Conversion hint badge/card — updated based on selected file
         self.convert_hint_label = ctk.CTkLabel(
             self.convert_panel,
@@ -467,31 +487,79 @@ class RakuTransApp(ctk.CTk):
         self.convert_hint_label.pack(fill="x", padx=16, pady=(0, 14))
 
     def _refresh_convert_hint(self):
-        """Update the convert hint label based on the currently selected file."""
+        """Update the convert hint label and available target formats."""
         if not hasattr(self, "convert_hint_label"):
             return
+
+        fmt_labels = {
+            "xlsx": self.i18n.t("fmt_excel"),
+            "md": self.i18n.t("fmt_markdown"),
+            "docx": self.i18n.t("fmt_word"),
+            "csv": self.i18n.t("fmt_csv"),
+            "txt": self.i18n.t("fmt_text")
+        }
+
         if not self.selected_file:
             self.convert_hint_label.configure(
                 text="📁 " + self.i18n.t("convert_hint_none"),
                 text_color=("gray40", "gray60")
             )
+            if hasattr(self, "convert_segmented"):
+                self.convert_segmented.configure(values=["-"])
+                self.convert_target_fmt_var.set("-")
             return
-        ext = Path(self.selected_file).suffix.lower()
-        if ext == ".xlsx":
+
+        ext = Path(self.selected_file).suffix.lower().lstrip(".")
+        options = get_convert_options(ext)
+
+        self.convert_fmt_display_map = {k: fmt_labels.get(k, k.upper()) for k in options}
+        self.convert_fmt_value_map = {v: k for k, v in self.convert_fmt_display_map.items()}
+
+        display_values = list(self.convert_fmt_display_map.values())
+        if hasattr(self, "convert_segmented") and display_values:
+            self.convert_segmented.configure(values=display_values)
+            curr = self.convert_target_fmt_var.get()
+            if curr not in display_values:
+                self.convert_target_fmt_var.set(display_values[0])
+
+        if ext == "xlsx":
             self.convert_hint_label.configure(
                 text="📊 " + self.i18n.t("convert_hint_xlsx"),
                 text_color=("#047857", "#34D399")
             )
-        elif ext == ".md":
+        elif ext in ["csv", "tsv"]:
+            self.convert_hint_label.configure(
+                text="📊 " + self.i18n.t("convert_hint_csv"),
+                text_color=("#047857", "#34D399")
+            )
+        elif ext == "docx":
+            self.convert_hint_label.configure(
+                text="📄 " + self.i18n.t("convert_hint_docx"),
+                text_color=("#2563EB", "#60A5FA")
+            )
+        elif ext == "pptx":
+            self.convert_hint_label.configure(
+                text="📽️ " + self.i18n.t("convert_hint_pptx"),
+                text_color=("#D97706", "#FBBF24")
+            )
+        elif ext == "md":
             self.convert_hint_label.configure(
                 text="📝 " + self.i18n.t("convert_hint_md"),
                 text_color=("#6D28D9", "#A78BFA")
+            )
+        elif ext == "txt":
+            self.convert_hint_label.configure(
+                text="📝 " + self.i18n.t("convert_hint_txt"),
+                text_color=("#4B5563", "#9CA3AF")
             )
         else:
             self.convert_hint_label.configure(
                 text="⚠️ " + self.i18n.t("convert_hint_none"),
                 text_color=("gray40", "gray60")
             )
+            if hasattr(self, "convert_segmented"):
+                self.convert_segmented.configure(values=["-"])
+                self.convert_target_fmt_var.set("-")
 
     # -------------------------------------------------------------------------
     # Action Bar
@@ -727,8 +795,9 @@ class RakuTransApp(ctk.CTk):
             )
         else:
             self.status_label.configure(text=self.i18n.t("status_ready"), text_color="gray")
-        # Refresh convert hint whenever a file is selected/cleared
+        # Refresh convert hint & format selector whenever a file is selected/cleared
         self._refresh_convert_hint()
+        self._update_format_selector()
 
     # -------------------------------------------------------------------------
     # Language helpers
@@ -745,13 +814,39 @@ class RakuTransApp(ctk.CTk):
         self.config.translation_options.custom_context = self.custom_prompt_text.get("1.0", "end-1c").strip()
         self.config.save()
 
-    def _update_format_mappings(self):
-        self.fmt_display_map = {
+    def _update_format_selector(self):
+        """Updates the Output Format segmented button based on selected file."""
+        if not hasattr(self, "fmt_segmented"):
+            return
+
+        fmt_labels = {
             "auto": self.i18n.t("fmt_auto"),
             "xlsx": self.i18n.t("fmt_excel"),
-            "md": self.i18n.t("fmt_markdown")
+            "md": self.i18n.t("fmt_markdown"),
+            "docx": self.i18n.t("fmt_word"),
+            "csv": self.i18n.t("fmt_csv"),
+            "txt": self.i18n.t("fmt_text")
         }
+
+        if self.selected_file:
+            ext = Path(self.selected_file).suffix.lower().lstrip(".")
+            convert_targets = get_convert_options(ext)
+            available_keys = ["auto"] + convert_targets
+        else:
+            available_keys = ["auto", "xlsx", "md"]
+
+        self.fmt_display_map = {k: fmt_labels.get(k, k.upper()) for k in available_keys}
         self.fmt_value_map = {v: k for k, v in self.fmt_display_map.items()}
+
+        current_val = self.output_format_var.get()
+        current_key = self.fmt_value_map.get(current_val, "auto")
+
+        new_values = list(self.fmt_display_map.values())
+        self.fmt_segmented.configure(values=new_values)
+        if current_key in self.fmt_display_map:
+            self.output_format_var.set(self.fmt_display_map[current_key])
+        else:
+            self.output_format_var.set(self.fmt_display_map["auto"])
 
     # -------------------------------------------------------------------------
     # Settings
@@ -796,13 +891,8 @@ class RakuTransApp(ctk.CTk):
         self.append_source_cb.configure(text=self.i18n.t("opt_append_source"))
         self.bilingual_cb.configure(text=self.i18n.t("opt_bilingual"))
 
-        old_fmt_key = self.fmt_value_map.get(self.output_format_var.get(), "auto")
-        self._update_format_mappings()
         self.fmt_label.configure(text=self.i18n.t("output_format_label"))
-        self.fmt_segmented.configure(
-            values=[self.fmt_display_map["auto"], self.fmt_display_map["xlsx"], self.fmt_display_map["md"]]
-        )
-        self.output_format_var.set(self.fmt_display_map.get(old_fmt_key, self.fmt_display_map["auto"]))
+        self._update_format_selector()
         self.custom_prompt_label.configure(text=self.i18n.t("custom_prompt_label"))
 
         # Mode switcher
@@ -995,7 +1085,10 @@ class RakuTransApp(ctk.CTk):
             self._set_status(self.i18n.t("err_convert_same_format"), is_error=True)
             return
 
-        target_fmt = options[0]  # Only one option per source type
+        target_display = self.convert_target_fmt_var.get() if hasattr(self, "convert_target_fmt_var") else ""
+        target_fmt = getattr(self, "convert_fmt_value_map", {}).get(target_display, options[0])
+        if target_fmt not in options:
+            target_fmt = options[0]
 
         self.is_translating = True  # Reuse flag to block concurrent actions
         self.open_folder_btn.pack_forget()

@@ -7,6 +7,8 @@ pillow>=10.0.0
 openpyxl>=3.1.2
 markitdown>=0.0.1a4
 markdown>=3.7
+python-docx>=1.1.0
+python-pptx>=1.0.0
 
 # LLM Providers
 google-generativeai>=0.8.3

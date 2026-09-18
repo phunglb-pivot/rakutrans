@@ -20,37 +20,22 @@ except ImportError:
     HAS_MARKITDOWN = False
 
 
+from base_translator import BaseTranslator, safe_save_file
+
+
 def safe_save_markdown(content: str, target_path: Path) -> Path:
     """
     Saves markdown string to target_path. If target_path is locked,
     automatically falls back to target_path (1).md, target_path (2).md to avoid crashing.
     """
-    out_path = target_path
-    stem = target_path.stem
-    suffix = target_path.suffix
+    def _save(p: Path):
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
 
-    m = re.match(r"^(.*?)\s*\((\d+)\)$", stem)
-    if m:
-        base_stem = m.group(1).rstrip()
-        counter = int(m.group(2)) + 1
-    else:
-        base_stem = stem
-        counter = 1
-
-    while True:
-        try:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            return out_path
-        except PermissionError:
-            out_path = target_path.parent / f"{base_stem} ({counter}){suffix}"
-            counter += 1
-            if counter > 50:
-                raise
+    return safe_save_file(_save, target_path)
 
 
-class MarkdownTranslator:
+class MarkdownTranslator(BaseTranslator):
     """
     Handles translation of Markdown (.md) documents.
     Preserves markdown structure, code blocks, and formatting.
@@ -65,14 +50,8 @@ class MarkdownTranslator:
         llm_manager: LLMManager,
         cache: Optional[TranslationCache] = None
     ):
-        self.config = config
-        self.llm_manager = llm_manager
-        self.cache = cache or TranslationCache()
-        self._is_cancelled = False
+        super().__init__(config, llm_manager, cache)
         self._markitdown = MarkItDown() if HAS_MARKITDOWN else None
-
-    def cancel(self) -> None:
-        self._is_cancelled = True
 
     @classmethod
     def inspect_file(cls, file_path: str) -> dict:

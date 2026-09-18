@@ -152,6 +152,39 @@ class TranslationCache:
                 VALUES (?, ?, ?, ?, ?);
             """, records)
 
+    def get(
+        self,
+        text: str,
+        target_lang: str,
+        options: Optional[TranslationOptions] = None,
+        source_lang: str = "auto"
+    ) -> Optional[str]:
+        """Convenience method to look up a single cached string."""
+        cached_map, _ = self.get_batch(
+            texts=[text],
+            target_lang=target_lang,
+            options=options,
+            source_lang=source_lang
+        )
+        return cached_map.get(0)
+
+    def set(
+        self,
+        text: str,
+        target_lang: str,
+        translated_text: str,
+        options: Optional[TranslationOptions] = None,
+        source_lang: str = "auto"
+    ):
+        """Convenience method to store a single translated string."""
+        self.save_batch(
+            source_texts=[text],
+            translated_texts=[translated_text],
+            target_lang=target_lang,
+            options=options,
+            source_lang=source_lang
+        )
+
     def count(self) -> int:
         """Returns total cached translation pairs."""
         try:

@@ -8,8 +8,8 @@ from typing import Dict, Any
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
         "app_title": "RakuTrans AI",
-        "app_subtitle": "Professional Excel & Markdown AI Translator",
-        "drag_drop_title": "Drag & Drop .xlsx or .md file here",
+        "app_subtitle": "Professional Document & Data AI Translator",
+        "drag_drop_title": "Drag & Drop document here (.xlsx, .docx, .pptx, .csv, .md, .json, .txt)",
         "drag_drop_subtitle": "or click Browse to choose a file from your computer",
         "browse_button": "Browse File",
         "clear_file": "Clear",
@@ -76,14 +76,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "theme_light": "Light",
         "theme_system": "System",
         
-        "err_no_file": "Please select or drop an Excel (.xlsx) or Markdown (.md) file first.",
+        "err_no_file": "Please select or drop a supported document file first.",
         "err_same_lang": "Source and Target languages cannot be identical.",
         "err_no_api_key": "No API key configured for {provider}. Please configure it in Settings.",
-        "err_unsupported_file": "Unsupported file type. Only .xlsx and .md files are supported.",
+        "err_unsupported_file": "Unsupported file type. Supported: .xlsx, .docx, .pptx, .csv, .tsv, .md, .json, .txt",
         
         "inspect_excel_badge": "📊 {sheets} Sheets | {cells} Cells to Translate ({unique} Unique) | {formulas} Formulas Preserved",
         "inspect_excel_convert_badge": "📊 {sheets} Sheets | {cells} Data Cells | {formulas} Formulas Preserved",
         "inspect_md_badge": "📝 Markdown Doc | {words} Words | {sections} Sections | {chars} Chars",
+        "inspect_docx_badge": "📄 Word Doc | {paragraphs} Paragraphs | {tables} Tables | {words} Words ({segments} Segments)",
+        "inspect_pptx_badge": "📽️ PowerPoint Deck | {slides} Slides | {shapes} Shapes | {words} Words ({segments} Segments)",
+        "inspect_csv_badge": "📊 Table Data | {rows} Rows | {cols} Columns | {cells} Cells ({unique} Unique)",
+        "inspect_json_badge": "⚙️ JSON Data | {keys} Total Keys | {strings} Strings ({unique} Unique)",
+        "inspect_txt_badge": "📝 Plain Text | {lines} Lines | {words} Words | {chars} Chars",
         "shortcut_hint": "Shortcuts: ⌘/Ctrl+O (Open) | ⌘/Ctrl+Enter (Translate) | Esc (Cancel) | ⌘/Ctrl+, (Settings)",
         "shortcut_hint_convert": "Shortcuts: ⌘/Ctrl+O (Open) | ⌘/Ctrl+Enter (Convert)",
 
@@ -134,8 +139,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     
     "ja": {
         "app_title": "RakuTrans AI",
-        "app_subtitle": "Excel・Markdown 専用 AI 翻訳ツール",
-        "drag_drop_title": "ここに .xlsx または .md ファイルをドラッグ＆ドロップ",
+        "app_subtitle": "Office文書・データ 専用 AI 翻訳ツール",
+        "drag_drop_title": "ここにファイルをドラッグ＆ドロップ (.xlsx, .docx, .pptx, .csv, .md, .json, .txt)",
         "drag_drop_subtitle": "または「ファイル選択」をクリックして選択してください",
         "browse_button": "ファイル選択",
         "clear_file": "解除",
@@ -202,14 +207,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "theme_light": "ライト",
         "theme_system": "システム準拠",
         
-        "err_no_file": "最初に Excel (.xlsx) または Markdown (.md) ファイルを選択してください。",
+        "err_no_file": "サポート対象のファイルを先に選択またはドロップしてください。",
         "err_same_lang": "翻訳元言語と翻訳先言語を同じにすることはできません。",
         "err_no_api_key": "{provider} の API キーが設定されていません。設定画面で入力してください。",
-        "err_unsupported_file": "対応していないファイル形式です。.xlsx または .md ファイルをご利用ください。",
+        "err_unsupported_file": "未対応のファイル形式です。対応形式: .xlsx, .docx, .pptx, .csv, .tsv, .md, .json, .txt",
         
         "inspect_excel_badge": "📊 {sheets} シート | 翻訳対象 {cells} セル (重複除く {unique}) | {formulas} 件の数式を保護",
         "inspect_excel_convert_badge": "📊 {sheets} シート | {cells} セル | {formulas} 件の数式を保護",
         "inspect_md_badge": "📝 Markdown | {words} 語 | {sections} セクション | {chars} 文字",
+        "inspect_docx_badge": "📄 Word文書 | 段落 {paragraphs}件 | 表 {tables}件 | {words}単語 (対象 {segments}件)",
+        "inspect_pptx_badge": "📽️ PowerPoint | スライド {slides}枚 | 図形 {shapes}個 | {words}単語 (対象 {segments}件)",
+        "inspect_csv_badge": "📊 CSV/TSVデータ | 行 {rows}件 | 列 {cols}件 | セル {cells}件 (ユニーク {unique}件)",
+        "inspect_json_badge": "⚙️ JSONデータ | キー {keys}件 | 文字列 {strings}件 (ユニーク {unique}件)",
+        "inspect_txt_badge": "📝 テキスト | 行 {lines}件 | {words}単語 | {chars}文字",
         "shortcut_hint": "ショートカット: ⌘/Ctrl+O (開く) | ⌘/Ctrl+Enter (翻訳) | Esc (中止) | ⌘/Ctrl+, (設定)",
         "shortcut_hint_convert": "ショートカット: ⌘/Ctrl+O (開く) | ⌘/Ctrl+Enter (変換)",
 
@@ -260,8 +270,8 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
     
     "vi": {
         "app_title": "RakuTrans AI",
-        "app_subtitle": "Công cụ dịch thuật AI chuyên biệt cho Excel & Markdown",
-        "drag_drop_title": "Kéo thả tệp .xlsx hoặc .md vào đây",
+        "app_subtitle": "Công cụ dịch thuật AI chuyên nghiệp cho Tài liệu & Dữ liệu",
+        "drag_drop_title": "Kéo thả tệp vào đây (.xlsx, .docx, .pptx, .csv, .md, .json, .txt)",
         "drag_drop_subtitle": "hoặc nhấn Chọn tệp từ máy tính của bạn",
         "browse_button": "Chọn tệp",
         "clear_file": "Xóa",
@@ -328,14 +338,19 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "theme_light": "Sáng",
         "theme_system": "Hệ thống",
         
-        "err_no_file": "Vui lòng chọn hoặc kéo thả tệp Excel (.xlsx) hoặc Markdown (.md).",
+        "err_no_file": "Vui lòng chọn hoặc kéo thả tệp tài liệu được hỗ trợ trước.",
         "err_same_lang": "Ngôn ngữ gốc và ngôn ngữ dịch không được trùng nhau.",
         "err_no_api_key": "Chưa có API key cho {provider}. Vui lòng nhập trong phần Cài đặt.",
-        "err_unsupported_file": "Định dạng tệp không được hỗ trợ. Chỉ hỗ trợ tệp .xlsx và .md.",
+        "err_unsupported_file": "Định dạng tệp không được hỗ trợ. Hỗ trợ: .xlsx, .docx, .pptx, .csv, .tsv, .md, .json, .txt",
         
         "inspect_excel_badge": "📊 {sheets} Sheets | {cells} ô cần dịch ({unique} từ gốc) | {formulas} công thức bảo toàn",
         "inspect_excel_convert_badge": "📊 {sheets} Sheets | {cells} ô dữ liệu | {formulas} công thức bảo toàn",
         "inspect_md_badge": "📝 Tài liệu Markdown | {words} từ | {sections} phân đoạn | {chars} ký tự",
+        "inspect_docx_badge": "📄 Tài liệu Word | {paragraphs} Đoạn | {tables} Bảng | {words} Từ ({segments} Phần cần dịch)",
+        "inspect_pptx_badge": "📽️ Slide PowerPoint | {slides} Slide | {shapes} Khối văn bản | {words} Từ ({segments} Phần cần dịch)",
+        "inspect_csv_badge": "📊 Bảng CSV/TSV | {rows} Dòng | {cols} Cột | {cells} Ô ({unique} Ô duy nhất)",
+        "inspect_json_badge": "⚙️ Dữ liệu JSON | {keys} Khóa | {strings} Chuỗi ({unique} Chuỗi duy nhất)",
+        "inspect_txt_badge": "📝 Văn bản thuần | {lines} Dòng | {words} Từ | {chars} Ký tự",
         "shortcut_hint": "Phím tắt: ⌘/Ctrl+O (Chọn file) | ⌘/Ctrl+Enter (Dịch) | Esc (Hủy) | ⌘/Ctrl+, (Cài đặt)",
         "shortcut_hint_convert": "Phím tắt: ⌘/Ctrl+O (Chọn file) | ⌘/Ctrl+Enter (Chuyển đổi)",
 

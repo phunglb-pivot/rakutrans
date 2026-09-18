@@ -23,8 +23,7 @@ def run_cli_translation(
 ):
     """Headless CLI translation runner."""
     from llm_manager import LLMManager
-    from excel_parser import ExcelTranslator
-    from markdown_parser import MarkdownTranslator
+    from translator_registry import TranslatorRegistry
     from format_converter import convert_translated_output
 
     config = AppConfig.load()
@@ -54,6 +53,11 @@ def run_cli_translation(
         print(f"Error: File '{file_path}' does not exist.")
         sys.exit(1)
 
+    if not TranslatorRegistry.is_supported(path):
+        supported = ", ".join(TranslatorRegistry.get_supported_extensions())
+        print(f"Error: Unsupported file format '{path.suffix}'. Supported formats: {supported}")
+        sys.exit(1)
+
     suffix = path.suffix.lower()
     print(f"=== RakuTrans AI CLI ===")
     print(f"File: {file_path}")
@@ -66,27 +70,14 @@ def run_cli_translation(
         print(f"[{current:3d}%] {msg}")
 
     try:
-        if suffix == ".xlsx":
-            translator = ExcelTranslator(config, llm_manager)
-            out_file = translator.process_file(
-                file_path=file_path,
-                target_lang=tgt_lang,
-                source_lang=src_lang,
-                options=options,
-                progress_callback=on_progress
-            )
-        elif suffix == ".md":
-            translator = MarkdownTranslator(config, llm_manager)
-            out_file = translator.process_file(
-                file_path=file_path,
-                target_lang=tgt_lang,
-                source_lang=src_lang,
-                options=options,
-                progress_callback=on_progress
-            )
-        else:
-            print(f"Error: Unsupported file format '{suffix}'. Use .xlsx or .md.")
-            sys.exit(1)
+        translator = TranslatorRegistry.create_translator(path, config, llm_manager)
+        out_file = translator.process_file(
+            file_path=file_path,
+            target_lang=tgt_lang,
+            source_lang=src_lang,
+            options=options,
+            progress_callback=on_progress
+        )
 
         # Cross-format conversion if requested
         if output_format and output_format != "auto":
@@ -132,10 +123,10 @@ def launch_gui():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="RakuTrans AI - Professional Excel & Markdown AI Translator"
+        description="RakuTrans AI - Professional Document & Data AI Translator"
     )
     parser.add_argument("--cli", action="store_true", help="Run translation in headless CLI mode")
-    parser.add_argument("--file", "-f", type=str, help="Path to .xlsx or .md file to translate")
+    parser.add_argument("--file", "-f", type=str, help="Path to document file to translate (.xlsx, .docx, .pptx, .csv, .md, .json, .txt)")
     parser.add_argument("--tgt", "-t", type=str, default="Vietnamese", help="Target language (default: Vietnamese)")
     parser.add_argument("--src", "-s", type=str, default=None, help="Optional source language filter (default: auto-detect mixed)")
     parser.add_argument("--keep-terms", "--keep-it", dest="keep_it", action="store_true", default=True, help="Keep specialized/domain terms untranslated")

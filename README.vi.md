@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md)
 
-Ứng dụng Desktop & CLI dịch thuật bằng AI và chuyển đổi định dạng 2 chiều giữa **Excel (`.xlsx`)** và **Markdown (`.md`)**. Tối ưu hóa đặc biệt cho tiếng Nhật, tiếng Anh và tiếng Việt.
+Ứng dụng Desktop & CLI dịch thuật bằng AI hỗ trợ đa định dạng: **Excel (`.xlsx`)**, **Word (`.docx`)**, **PowerPoint (`.pptx`)**, **CSV/TSV (`.csv`, `.tsv`)**, **JSON (`.json`)**, **Plain Text (`.txt`)** và **Markdown (`.md`)**. Tối ưu hóa đặc biệt cho tiếng Nhật, tiếng Anh và tiếng Việt.
 
 <p align="center">
   <img src="assets/ui.png" alt="RakuTrans AI" />
@@ -13,8 +13,10 @@
 ## Tính năng nổi bật
 
 - **Dịch thuật AI thông minh (Tự nhận diện ngôn ngữ gốc)**: Tự động nhận diện tài liệu ngôn ngữ hỗn hợp; người dùng chỉ cần chọn ngôn ngữ đích.
-  - **Excel**: Giữ nguyên 100% công thức (`=SUM(...)`, `=IF(...)`), định dạng ô, màu sắc, đường viền và cấu trúc sheet. Hỗ trợ xuất song ngữ (tạo thêm sheet `_Orig`).
-  - **Markdown**: Bảo toàn khối mã (```` ``` ````), inline code, tiêu đề, liên kết và bảng biểu.
+  - **Excel & CSV/TSV**: Giữ nguyên 100% công thức (`=SUM(...)`, `=IF(...)`), định dạng ô, màu sắc, đường viền và cấu trúc sheet/bảng.
+  - **Word & PowerPoint**: Giữ nguyên bố cục trang, slide, kiểu chữ, danh sách và bảng biểu.
+  - **JSON**: Dành cho lập trình viên & i18n, chỉ dịch chuỗi giá trị (values), bảo toàn khóa (keys) và biến định dạng (`{var}`, `%s`).
+  - **Markdown & Plain Text**: Bảo toàn khối mã (```` ``` ````), inline code, tiêu đề, liên kết và bảng biểu.
 - **Bộ nhớ dịch thuật (Cache SQLite cục bộ)**: Lưu trữ các đoạn đã dịch tại `~/.rakutrans/cache.db`, tránh gọi lặp lại API, tiết kiệm chi phí và tăng tốc độ.
 - **Chuyển đổi định dạng Offline (Không cần API Key)**: Chuyển đổi 2 chiều trực tiếp giữa Excel (`.xlsx`) ⇄ Markdown (`.md`).
 - **Tích hợp đa nền tảng AI**: Hỗ trợ Google Gemini, OpenAI, Anthropic Claude; tự động quét danh sách model thực tế từ API.
@@ -26,7 +28,7 @@
 
 - **Ngôn ngữ nền tảng**: Python 3.10+
 - **Giao diện (GUI)**: CustomTkinter, TkinterDnD2
-- **Xử lý tài liệu**: OpenPyXL (Excel), MarkItDown & Python-Markdown (Markdown)
+- **Xử lý tài liệu**: OpenPyXL (Excel), python-docx (Word), python-pptx (PowerPoint), MarkItDown & Python-Markdown (Markdown)
 - **Nền tảng AI**: Google GenAI (`google-genai`), OpenAI (`openai`), Anthropic Claude (`anthropic`)
 - **Lưu trữ & Cache**: SQLite3 (Bộ nhớ dịch thuật), JSON (Cấu hình & Cache model)
 - **Đóng gói ứng dụng**: PyInstaller

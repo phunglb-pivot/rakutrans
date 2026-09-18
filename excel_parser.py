@@ -16,36 +16,18 @@ from llm_manager import LLMManager, LLMError
 from translation_cache import TranslationCache
 
 
+from base_translator import BaseTranslator, safe_save_file
+
+
 def safe_save_workbook(workbook: openpyxl.Workbook, target_path: Path) -> Path:
     """
     Saves workbook to target_path. If target_path is locked (e.g. open in Microsoft Excel),
     automatically falls back to target_path (1).xlsx, target_path (2).xlsx to avoid crashing.
     """
-    out_path = target_path
-    stem = target_path.stem
-    suffix = target_path.suffix
-
-    m = re.match(r"^(.*?)\s*\((\d+)\)$", stem)
-    if m:
-        base_stem = m.group(1).rstrip()
-        counter = int(m.group(2)) + 1
-    else:
-        base_stem = stem
-        counter = 1
-
-    while True:
-        try:
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            workbook.save(out_path)
-            return out_path
-        except PermissionError:
-            out_path = target_path.parent / f"{base_stem} ({counter}){suffix}"
-            counter += 1
-            if counter > 50:
-                raise
+    return safe_save_file(lambda p: workbook.save(str(p)), target_path)
 
 
-class ExcelTranslator:
+class ExcelTranslator(BaseTranslator):
     """
     Handles translation of Excel (.xlsx) files.
     Preserves formulas, sheet order, cell styles, merged cells, and formatting.
@@ -60,10 +42,7 @@ class ExcelTranslator:
         llm_manager: LLMManager,
         cache: Optional[TranslationCache] = None
     ):
-        self.config = config
-        self.llm_manager = llm_manager
-        self.cache = cache or TranslationCache()
-        self._is_cancelled = False
+        super().__init__(config, llm_manager, cache)
 
     def cancel(self) -> None:
         """Signals the translation process to abort."""

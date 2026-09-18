@@ -16,6 +16,29 @@ except ImportError:
     HAS_TKDND = False
 
 
+from translator_registry import TranslatorRegistry
+
+
+def get_file_type_badge(suffix: str) -> tuple[str, str]:
+    """Returns (icon, label_badge) for a given file suffix."""
+    s = suffix.lower()
+    if s == ".xlsx":
+        return ("📊", "📊 Excel")
+    elif s in [".csv", ".tsv"]:
+        return ("📊", "📊 CSV/TSV")
+    elif s == ".docx":
+        return ("📄", "📄 Word")
+    elif s == ".pptx":
+        return ("📽️", "📽️ PowerPoint")
+    elif s == ".md":
+        return ("📝", "📝 Markdown")
+    elif s == ".json":
+        return ("⚙️", "⚙️ JSON")
+    elif s == ".txt":
+        return ("📝", "📝 Plain Text")
+    return ("📁", f"📁 {s.upper()}")
+
+
 def format_file_size(num_bytes: int) -> str:
     """Format byte size to human-readable string."""
     for unit in ["B", "KB", "MB", "GB"]:
@@ -169,9 +192,11 @@ class DropZone(ctk.CTkFrame):
 
     def _browse_file(self):
         filetypes = [
-            ("Supported Documents (*.xlsx, *.md)", "*.xlsx *.md"),
-            ("Excel Spreadsheets (*.xlsx)", "*.xlsx"),
-            ("Markdown Documents (*.md)", "*.md"),
+            ("Supported Documents (*.xlsx, *.docx, *.pptx, *.csv, *.md, *.json, *.txt)", "*.xlsx *.docx *.pptx *.csv *.tsv *.md *.json *.txt"),
+            ("Office Documents (*.docx, *.pptx)", "*.docx *.pptx"),
+            ("Spreadsheets & CSV (*.xlsx, *.csv, *.tsv)", "*.xlsx *.csv *.tsv"),
+            ("Markdown & Text (*.md, *.txt)", "*.md *.txt"),
+            ("JSON Localization (*.json)", "*.json"),
             ("All Files", "*.*")
         ]
         chosen = filedialog.askopenfilename(title="Select Document to Translate", filetypes=filetypes)
@@ -183,16 +208,16 @@ class DropZone(ctk.CTkFrame):
         if not path.exists():
             return
 
-        suffix = path.suffix.lower()
-        if suffix not in [".xlsx", ".md"]:
+        if not TranslatorRegistry.is_supported(path):
             return
 
+        suffix = path.suffix.lower()
         self.selected_file = str(path.resolve())
         size_str = format_file_size(path.stat().st_size)
         
-        # Display file info
-        badge = "📊 Excel" if suffix == ".xlsx" else "📝 Markdown"
-        self.icon_label.configure(text="📊" if suffix == ".xlsx" else "📝")
+        # Display file info with dynamic badge
+        icon, badge = get_file_type_badge(suffix)
+        self.icon_label.configure(text=icon)
         self.title_label.configure(text=f"{badge}: {path.name}")
         self.subtitle_label.configure(text=f"Path: {path.parent}")
         self.file_info_label.configure(text=f"Size: {size_str}")
@@ -219,37 +244,75 @@ class DropZone(ctk.CTkFrame):
 
         def worker():
             try:
+                info = TranslatorRegistry.inspect(file_path)
+                if not info or "error" in info:
+                    return
+
+                msg = ""
                 if suffix == ".xlsx":
-                    from excel_parser import ExcelTranslator
-                    info = ExcelTranslator.inspect_file(file_path)
-                    if "error" not in info:
-                        if self.mode == "convert":
-                            msg = self.t(
-                                "inspect_excel_convert_badge",
-                                sheets=info.get("sheet_count", 0),
-                                cells=info.get("translatable_cells", 0),
-                                formulas=info.get("formula_count", 0)
-                            )
-                        else:
-                            msg = self.t(
-                                "inspect_excel_badge",
-                                sheets=info.get("sheet_count", 0),
-                                cells=info.get("translatable_cells", 0),
-                                unique=info.get("unique_texts", 0),
-                                formulas=info.get("formula_count", 0)
-                            )
-                        self.after(0, lambda: self._show_inspection(msg))
-                elif suffix == ".md":
-                    from markdown_parser import MarkdownTranslator
-                    info = MarkdownTranslator.inspect_file(file_path)
-                    if "error" not in info:
+                    if self.mode == "convert":
                         msg = self.t(
-                            "inspect_md_badge",
-                            words=info.get("word_count", 0),
-                            sections=info.get("section_count", 0),
-                            chars=info.get("char_count", 0)
+                            "inspect_excel_convert_badge",
+                            sheets=info.get("sheet_count", 0),
+                            cells=info.get("translatable_cells", 0),
+                            formulas=info.get("formula_count", 0)
                         )
-                        self.after(0, lambda: self._show_inspection(msg))
+                    else:
+                        msg = self.t(
+                            "inspect_excel_badge",
+                            sheets=info.get("sheet_count", 0),
+                            cells=info.get("translatable_cells", 0),
+                            unique=info.get("unique_texts", 0),
+                            formulas=info.get("formula_count", 0)
+                        )
+                elif suffix == ".md":
+                    msg = self.t(
+                        "inspect_md_badge",
+                        words=info.get("word_count", 0),
+                        sections=info.get("section_count", 0),
+                        chars=info.get("char_count", 0)
+                    )
+                elif suffix == ".docx":
+                    msg = self.t(
+                        "inspect_docx_badge",
+                        paragraphs=info.get("paragraphs", 0),
+                        tables=info.get("tables", 0),
+                        words=info.get("word_count", 0),
+                        segments=info.get("translatable_segments", 0)
+                    )
+                elif suffix == ".pptx":
+                    msg = self.t(
+                        "inspect_pptx_badge",
+                        slides=info.get("slides", 0),
+                        shapes=info.get("shapes", 0),
+                        words=info.get("word_count", 0),
+                        segments=info.get("translatable_segments", 0)
+                    )
+                elif suffix in [".csv", ".tsv"]:
+                    msg = self.t(
+                        "inspect_csv_badge",
+                        rows=info.get("rows", 0),
+                        cols=info.get("columns", 0),
+                        cells=info.get("translatable_cells", 0),
+                        unique=info.get("unique_texts", 0)
+                    )
+                elif suffix == ".json":
+                    msg = self.t(
+                        "inspect_json_badge",
+                        keys=info.get("total_keys", 0),
+                        strings=info.get("translatable_strings", 0),
+                        unique=info.get("unique_texts", 0)
+                    )
+                elif suffix == ".txt":
+                    msg = self.t(
+                        "inspect_txt_badge",
+                        lines=info.get("line_count", 0),
+                        words=info.get("word_count", 0),
+                        chars=info.get("char_count", 0)
+                    )
+
+                if msg:
+                    self.after(0, lambda: self._show_inspection(msg))
             except Exception as e:
                 print(f"[Debug] Inspector note: {e}")
 

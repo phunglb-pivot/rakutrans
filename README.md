@@ -2,7 +2,7 @@
 
 [English](README.md) | [日本語](README.ja.md) | [Tiếng Việt](README.vi.md)
 
-Desktop & CLI tool for AI-powered translation and 2-way format conversion between **Excel (`.xlsx`)** and **Markdown (`.md`)**. Specially optimized for Japanese, English, and Vietnamese.
+Desktop & CLI tool for AI-powered multi-format document translation: **Excel (`.xlsx`)**, **Word (`.docx`)**, **PowerPoint (`.pptx`)**, **CSV/TSV (`.csv`, `.tsv`)**, **JSON (`.json`)**, **Plain Text (`.txt`)**, and **Markdown (`.md`)**. Specially optimized for Japanese, English, and Vietnamese.
 
 <p align="center">
   <img src="assets/ui.png" alt="RakuTrans AI" />
@@ -13,8 +13,10 @@ Desktop & CLI tool for AI-powered translation and 2-way format conversion betwee
 ## Key Features
 
 - **Smart Multilingual Translation**: Auto-detects mixed source languages; only the target language needs to be selected.
-  - **Excel**: Preserves 100% of formulas (`=SUM(...)`, `=IF(...)`), cell formatting, styles, and sheet structure. Optional bilingual mode (`_Orig` sheets).
-  - **Markdown**: Preserves headers, code blocks (```` ``` ````), inline code, links, and tables.
+  - **Excel & CSV/TSV**: Preserves 100% of formulas (`=SUM(...)`, `=IF(...)`), cell formatting, styles, borders, and sheet structure.
+  - **Word & PowerPoint**: Preserves document and slide hierarchy, styles, lists, shapes, and tables.
+  - **JSON**: Dedicated to developers & i18n localization, translating only string values while preserving keys and interpolations (`{var}`, `%s`).
+  - **Markdown & Plain Text**: Preserves headers, code blocks (```` ``` ````), inline code, links, and tables.
 - **Translation Memory (Local Cache)**: Embedded SQLite (`~/.rakutrans/cache.db`) saves repeated segments, reducing API cost and latency.
 - **Offline Format Conversion (No API Key)**: Direct 2-way conversion between Excel (`.xlsx`) and Markdown (`.md`).
 - **Multi-Provider AI**: Google Gemini, OpenAI, and Anthropic Claude with dynamic live model discovery.
@@ -26,7 +28,7 @@ Desktop & CLI tool for AI-powered translation and 2-way format conversion betwee
 
 - **Core**: Python 3.10+
 - **GUI**: CustomTkinter, TkinterDnD2
-- **Document Processing**: OpenPyXL (Excel), MarkItDown & Python-Markdown (Markdown)
+- **Document Processing**: OpenPyXL (Excel), python-docx (Word), python-pptx (PowerPoint), MarkItDown & Python-Markdown (Markdown)
 - **AI Providers**: Google GenAI (`google-genai`), OpenAI (`openai`), Anthropic Claude (`anthropic`)
 - **Storage & Caching**: SQLite3 (Translation Memory), JSON (Configs & Models Cache)
 - **Packaging**: PyInstaller

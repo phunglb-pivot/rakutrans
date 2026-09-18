@@ -20,6 +20,8 @@ from i18n import I18nManager
 from llm_manager import LLMManager
 from excel_parser import ExcelTranslator
 from markdown_parser import MarkdownTranslator
+from translator_registry import TranslatorRegistry
+from base_translator import BaseTranslator
 from translation_cache import TranslationCache
 from components.dnd_zone import DropZone
 from components.settings_modal import SettingsModal
@@ -51,6 +53,7 @@ class RakuTransApp(ctk.CTk):
         # Active translators sharing the local translation memory cache
         self.excel_translator = ExcelTranslator(self.config, self.llm_manager, cache=self.cache)
         self.markdown_translator = MarkdownTranslator(self.config, self.llm_manager, cache=self.cache)
+        self.current_translator: Optional[BaseTranslator] = None
 
         # Runtime states
         self.selected_file: Optional[str] = None
@@ -877,6 +880,8 @@ class RakuTransApp(ctk.CTk):
 
     def _cancel_translation(self):
         if self.is_translating:
+            if self.current_translator:
+                self.current_translator.cancel()
             self.excel_translator.cancel()
             self.markdown_translator.cancel()
             self._set_status("Cancelling translation...", is_error=False)
@@ -884,28 +889,27 @@ class RakuTransApp(ctk.CTk):
     def _run_translation_worker(self, file_path: str, tgt_lang: str):
         try:
             path = Path(file_path)
-            ext = path.suffix.lower()
+            if not TranslatorRegistry.is_supported(path):
+                raise ValueError(self.i18n.t("err_unsupported_file"))
 
             def on_progress(current: int, total: int, msg: str):
                 fraction = current / max(1, total)
                 self.after(0, lambda: self._update_progress(fraction, msg))
 
-            if ext == ".xlsx":
-                output_file = self.excel_translator.process_file(
-                    file_path=file_path,
-                    target_lang=tgt_lang,
-                    options=self.config.translation_options,
-                    progress_callback=on_progress
-                )
-            elif ext == ".md":
-                output_file = self.markdown_translator.process_file(
-                    file_path=file_path,
-                    target_lang=tgt_lang,
-                    options=self.config.translation_options,
-                    progress_callback=on_progress
-                )
-            else:
-                raise ValueError(self.i18n.t("err_unsupported_file"))
+            translator = TranslatorRegistry.create_translator(
+                file_path_or_ext=path,
+                config=self.config,
+                llm_manager=self.llm_manager,
+                cache=self.cache
+            )
+            self.current_translator = translator
+
+            output_file = translator.process_file(
+                file_path=file_path,
+                target_lang=tgt_lang,
+                options=self.config.translation_options,
+                progress_callback=on_progress
+            )
 
             # Cross-format conversion if requested by user
             chosen_key = self.fmt_value_map.get(self.output_format_var.get(), "auto")

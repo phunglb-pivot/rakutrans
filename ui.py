@@ -178,6 +178,7 @@ class RakuTransApp(ctk.CTk):
         self.body_scroll = ctk.CTkScrollableFrame(self, corner_radius=0)
         self.body_scroll.grid(row=1, column=0, sticky="nsew", padx=20, pady=(15, 5))
         self.body_scroll.grid_columnconfigure(0, weight=1)
+        self._enable_autohide_scrollbar(self.body_scroll)
 
         # 0. Mode Switcher (Translate / Convert)
         self._build_mode_switcher()
@@ -202,6 +203,33 @@ class RakuTransApp(ctk.CTk):
 
         # Apply initial mode visibility
         self._apply_mode_visibility()
+
+    def _enable_autohide_scrollbar(self, scrollable_frame: ctk.CTkScrollableFrame):
+        """Dynamically hides the scrollbar when content fits inside the window without scrolling."""
+        orig_set = scrollable_frame._scrollbar.set
+        canvas = scrollable_frame._parent_canvas
+        scrollbar = scrollable_frame._scrollbar
+        border_spacing = scrollable_frame._apply_widget_scaling(
+            scrollable_frame._parent_frame.cget("corner_radius") + scrollable_frame._parent_frame.cget("border_width")
+        )
+        border_padding = (0, scrollable_frame._border_width + 1)
+
+        def autohide_set(start_value: float, end_value: float):
+            orig_set(start_value, end_value)
+            try:
+                start = float(start_value)
+                end = float(end_value)
+                if start <= 0.0 and end >= 1.0:
+                    if scrollbar.winfo_ismapped():
+                        scrollbar.grid_remove()
+                else:
+                    if not scrollbar.winfo_ismapped():
+                        scrollbar.grid(row=1, column=1, sticky="nsew", padx=border_padding, pady=border_spacing)
+            except Exception:
+                pass
+
+        canvas.configure(yscrollcommand=autohide_set)
+        self.after(50, lambda: autohide_set(*canvas.yview()))
 
     # -------------------------------------------------------------------------
     # Mode Switcher
@@ -392,7 +420,7 @@ class RakuTransApp(ctk.CTk):
 
         # Output Format Selector
         fmt_frame = ctk.CTkFrame(self.options_body, fg_color="transparent")
-        fmt_frame.pack(fill="x", padx=16, pady=(0, 8))
+        fmt_frame.pack(fill="x", padx=16, pady=(0, 4))
 
         self.fmt_label = ctk.CTkLabel(
             fmt_frame,
@@ -409,6 +437,14 @@ class RakuTransApp(ctk.CTk):
             height=30
         )
         self.fmt_segmented.pack(side="left", fill="x", expand=True)
+
+        self.fmt_hint_label = ctk.CTkLabel(
+            self.options_body,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray"
+        )
+        self.fmt_hint_label.pack(anchor="w", padx=16, pady=(0, 8))
         self._update_format_selector()
 
         # Custom Context Prompt Label
@@ -839,8 +875,33 @@ class RakuTransApp(ctk.CTk):
             ext = Path(self.selected_file).suffix.lower().lstrip(".")
             convert_targets = get_convert_options(ext)
             available_keys = ["auto"] + convert_targets
+
+            # Dynamically enable/disable bilingual mode for Excel
+            is_excel = ext == "xlsx"
+            if hasattr(self, "bilingual_cb"):
+                self.bilingual_cb.configure(state="normal" if is_excel else "disabled")
+
+            if hasattr(self, "fmt_hint_label"):
+                if convert_targets:
+                    readable_targets = ", ".join(fmt_labels.get(k, k.upper()) for k in convert_targets)
+                    self.fmt_hint_label.configure(
+                        text=f"💡 {self.i18n.t('fmt_hint_converted')} .{ext}: {readable_targets}",
+                        text_color=("#2563EB", "#60A5FA")
+                    )
+                else:
+                    self.fmt_hint_label.configure(
+                        text=f"ℹ {self.i18n.t('fmt_hint_same_format')} (.{ext})",
+                        text_color="gray"
+                    )
         else:
-            available_keys = ["auto", "xlsx", "md"]
+            available_keys = ["auto"]
+            if hasattr(self, "bilingual_cb"):
+                self.bilingual_cb.configure(state="normal")
+            if hasattr(self, "fmt_hint_label"):
+                self.fmt_hint_label.configure(
+                    text=self.i18n.t("fmt_hint_no_file"),
+                    text_color="gray"
+                )
 
         self.fmt_display_map = {k: fmt_labels.get(k, k.upper()) for k in available_keys}
         self.fmt_value_map = {v: k for k, v in self.fmt_display_map.items()}

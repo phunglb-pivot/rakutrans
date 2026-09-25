@@ -31,6 +31,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "fmt_word": "Word (.docx)",
         "fmt_csv": "CSV (.csv)",
         "fmt_text": "Text (.txt)",
+        "fmt_hint_no_file": "*(Default: preserves original format. Select a file to view conversion options)*",
+        "fmt_hint_converted": "Available conversion formats for",
+        "fmt_hint_same_format": "Output will preserve original format",
         "custom_prompt_label": "Custom Context / Terminology Glossary:",
         "custom_prompt_placeholder": "e.g., 'This is an e-commerce checkout specification. Keep SKU codes untouched.'",
         
@@ -169,6 +172,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "fmt_word": "Word (.docx)",
         "fmt_csv": "CSV (.csv)",
         "fmt_text": "テキスト (.txt)",
+        "fmt_hint_no_file": "*(デフォルト: 入力と同じ形式。ファイルを選択すると変換先が表示されます)*",
+        "fmt_hint_converted": "変換可能な出力形式:",
+        "fmt_hint_same_format": "元のファイル形式のまま出力されます",
         "custom_prompt_label": "カスタム背景情報・用語集 (Prompt):",
         "custom_prompt_placeholder": "例: 「ECサイトの決済画面に関する設計書です。注文ステータス用語はそのままにしてください」",
         
@@ -307,6 +313,9 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "fmt_word": "Word (.docx)",
         "fmt_csv": "CSV (.csv)",
         "fmt_text": "Văn bản (.txt)",
+        "fmt_hint_no_file": "*(Mặc định: Giữ nguyên định dạng gốc. Chọn file để hiển thị các định dạng chuyển đổi khả dụng)*",
+        "fmt_hint_converted": "Định dạng chuyển đổi khả dụng cho file",
+        "fmt_hint_same_format": "File sẽ được xuất giữ nguyên định dạng gốc",
         "custom_prompt_label": "Ngữ cảnh tùy chỉnh / Bảng thuật ngữ dự án:",
         "custom_prompt_placeholder": "VD: 'Đây là tài liệu đặc tả chức năng thanh toán thương mại điện tử. Giữ nguyên mã SKU.'",
         

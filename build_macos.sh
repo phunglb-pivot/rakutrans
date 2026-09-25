@@ -23,6 +23,7 @@ rm -rf build dist
 echo "Compiling standalone application bundle with PyInstaller..."
 "$PYINSTALLER" --noconfirm --clean \
     --name "RakuTrans" \
+    --icon "assets/icon.icns" \
     --windowed \
     --onedir \
     --add-data "components:components" \

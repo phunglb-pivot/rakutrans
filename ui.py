@@ -14,6 +14,7 @@ from typing import Optional
 
 import customtkinter as ctk
 from tkinter import filedialog
+from PIL import Image, ImageTk
 
 from config import AppConfig, SUPPORTED_LANGUAGES, TranslationOptions
 from i18n import I18nManager
@@ -43,6 +44,7 @@ class RakuTransApp(ctk.CTk):
 
     def __init__(self, config: Optional[AppConfig] = None):
         super().__init__()
+        self.withdraw()  # Hide window while loading assets and constructing layout
 
         # Load config and i18n
         self.config = config or AppConfig.load()
@@ -88,15 +90,20 @@ class RakuTransApp(ctk.CTk):
         logo_path = Path(__file__).resolve().parent / "assets" / "logo.png"
         if logo_path.exists():
             try:
-                from PIL import Image, ImageTk
                 pil_logo = Image.open(logo_path)
                 self.logo_image = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(28, 28))
-                self._window_icon = ImageTk.PhotoImage(pil_logo)
-                self.iconphoto(False, self._window_icon)
+                # On macOS, the Dock icon is natively managed by icon.icns in the bundle.
+                # Calling iconphoto on macOS overwrites NSApp.applicationIconImage at runtime,
+                # which causes a 1s reload/flicker and background distortion.
+                if platform.system() != "Darwin":
+                    self._window_icon = ImageTk.PhotoImage(pil_logo)
+                    self.iconphoto(False, self._window_icon)
             except Exception as e:
                 print(f"[Warning] Failed to load logo from {logo_path}: {e}")
 
         self._setup_ui()
+        self.update_idletasks()
+        self.deiconify()
 
     def _setup_ui(self):
         # Configure layout: Row 0 Header, Row 1 Scrollable Body, Row 2 Sticky Bottom Bar

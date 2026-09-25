@@ -16,6 +16,7 @@ if exist "dist" rmdir /s /q dist
 echo Compiling standalone Windows executable...
 .venv\Scripts\pyinstaller.exe --noconfirm --clean ^
     --name "RakuTrans" ^
+    --icon "assets\icon.ico" ^
     --windowed ^
     --onedir ^
     --add-data "components;components" ^

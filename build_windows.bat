@@ -25,9 +25,13 @@ echo Compiling standalone Windows executable...
     --add-data "translation_cache.py;." ^
     --collect-all customtkinter ^
     --collect-all tkinterdnd2 ^
+    --collect-all magika ^
+    --collect-all markitdown ^
+    --collect-all docx ^
+    --collect-all pptx ^
+    --collect-all google.genai ^
     --hidden-import sqlite3 ^
     --hidden-import tkinter ^
-    --hidden-import google.genai ^
     main.py
 
 echo.

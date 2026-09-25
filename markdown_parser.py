@@ -51,7 +51,12 @@ class MarkdownTranslator(BaseTranslator):
         cache: Optional[TranslationCache] = None
     ):
         super().__init__(config, llm_manager, cache)
-        self._markitdown = MarkItDown() if HAS_MARKITDOWN else None
+        self._markitdown = None
+        if HAS_MARKITDOWN:
+            try:
+                self._markitdown = MarkItDown()
+            except Exception:
+                self._markitdown = None
 
     @classmethod
     def inspect_file(cls, file_path: str) -> dict:

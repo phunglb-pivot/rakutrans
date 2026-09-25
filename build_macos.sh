@@ -12,9 +12,9 @@ cd "$SCRIPT_DIR"
 PYTHON="$SCRIPT_DIR/.venv/bin/python"
 PYINSTALLER="$SCRIPT_DIR/.venv/bin/pyinstaller"
 
-if [ ! -f "$PYINSTALLER" ]; then
-    echo "Installing PyInstaller..."
-    "$SCRIPT_DIR/.venv/bin/pip" install pyinstaller
+if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+    echo "Ensuring required packages are installed..."
+    "$SCRIPT_DIR/.venv/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt" pyinstaller
 fi
 
 echo "Cleaning previous builds..."
@@ -32,14 +32,21 @@ echo "Compiling standalone application bundle with PyInstaller..."
     --add-data "translation_cache.py:." \
     --collect-all customtkinter \
     --collect-all tkinterdnd2 \
+    --collect-all magika \
+    --collect-all markitdown \
+    --collect-all docx \
+    --collect-all pptx \
+    --collect-all google.genai \
     --hidden-import sqlite3 \
     --hidden-import tkinter \
-    --hidden-import google.genai \
     main.py
 
 echo ""
 echo "✓ Standalone macOS Application created:"
 echo "  -> dist/RakuTrans.app"
+
+# Remove quarantine attribute so macOS doesn't block the app
+xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
 
 # Optional: Package into .dmg installer for distribution
 if command -v hdiutil >/dev/null 2>&1; then

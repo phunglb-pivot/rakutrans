@@ -1,0 +1,360 @@
+"""
+File Drag-and-Drop Dropzone component for RakuTrans AI.
+Supports both native TkinterDnD2 drag & drop and interactive click-to-browse fallback.
+"""
+
+from pathlib import Path
+from typing import Callable, Optional
+import customtkinter as ctk
+from tkinter import filedialog
+
+try:
+    from tkinterdnd2 import DND_FILES
+    HAS_TKDND = True
+except ImportError:
+    HAS_TKDND = False
+
+
+from translator_registry import TranslatorRegistry
+from components.ui_system import CustomButton
+
+
+def get_file_type_badge(suffix: str, t_func: Optional[Callable[[str], str]] = None) -> tuple[str, str]:
+    """Returns (icon, label_badge) for a given file suffix."""
+    s = suffix.lower()
+    txt_badge = t_func("badge_plain_text") if t_func else "Plain Text"
+    if s == ".xlsx":
+        return ("📊", "📊 Excel")
+    elif s in [".csv", ".tsv"]:
+        return ("📊", "📊 CSV/TSV")
+    elif s == ".docx":
+        return ("📄", "📄 Word")
+    elif s == ".pptx":
+        return ("📽️", "📽️ PowerPoint")
+    elif s == ".md":
+        return ("📝", "📝 Markdown")
+    elif s == ".json":
+        return ("⚙️", "⚙️ JSON")
+    elif s == ".txt":
+        return ("📝", f"📝 {txt_badge}")
+    return ("📁", f"📁 {s.upper()}")
+
+
+def format_file_size(num_bytes: int) -> str:
+    """Format byte size to human-readable string."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if num_bytes < 1024.0:
+            return f"{num_bytes:.1f} {unit}"
+        num_bytes /= 1024.0
+    return f"{num_bytes:.1f} TB"
+
+
+class DropZone(ctk.CTkFrame):
+    """
+    Visual drag-and-drop zone with file preview, browse button, and clear button.
+    """
+
+    def __init__(
+        self,
+        master,
+        on_file_selected: Callable[[str], None],
+        get_translation: Callable[[str], str],
+        **kwargs
+    ):
+        super().__init__(
+            master,
+            corner_radius=10,
+            border_width=1,
+            border_color=("#E4E4E7", "#27272A"),
+            fg_color="transparent",
+            **kwargs
+        )
+        self.on_file_selected = on_file_selected
+        self.t = get_translation
+        self.selected_file: Optional[str] = None
+
+        self._setup_ui()
+        self._setup_dnd()
+
+    def _setup_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        self.inner_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.inner_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Icon or badge
+        self.icon_label = ctk.CTkLabel(
+            self.inner_frame,
+            text="📂",
+            font=ctk.CTkFont(size=40),
+            cursor="hand2"
+        )
+        self.icon_label.pack(pady=(5, 5))
+
+        # Title prompt
+        self.title_label = ctk.CTkLabel(
+            self.inner_frame,
+            text=self.t("drag_drop_title"),
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=("#18181B", "#FAFAFA"),
+            cursor="hand2"
+        )
+        self.title_label.pack(pady=(0, 2))
+
+        # Subtitle
+        self.subtitle_label = ctk.CTkLabel(
+            self.inner_frame,
+            text=self.t("drag_drop_subtitle"),
+            font=ctk.CTkFont(size=12),
+            text_color=("#71717A", "#A1A1AA")
+        )
+        self.subtitle_label.pack(pady=(0, 10))
+
+        # Browse & Clear action buttons
+        self.btn_frame = ctk.CTkFrame(self.inner_frame, fg_color="transparent")
+        self.btn_frame.pack(pady=5)
+
+        self.browse_btn = CustomButton(
+            self.btn_frame,
+            text=self.t("browse_button"),
+            command=self._browse_file,
+            variant="secondary",
+            size="md",
+            width=140
+        )
+        self.browse_btn.pack(side="left", padx=6)
+
+        self.clear_btn = CustomButton(
+            self.btn_frame,
+            text=self.t("clear_file"),
+            command=self.clear,
+            variant="outline",
+            size="md",
+            width=80
+        )
+        # Hidden until a file is selected
+
+        # Selected file status tag
+        self.file_info_label = ctk.CTkLabel(
+            self.inner_frame,
+            text="",
+            font=ctk.CTkFont(size=12),
+            text_color=("#71717A", "#A1A1AA")
+        )
+
+        # Pre-scan Inspector badge
+        self.inspector_label = ctk.CTkLabel(
+            self.inner_frame,
+            text="",
+            font=ctk.CTkFont(size=11),
+            fg_color=("#F4F4F5", "#27272A"),
+            text_color=("#71717A", "#A1A1AA"),
+            corner_radius=6,
+            padx=10,
+            pady=4
+        )
+
+        # Bind click to browse when no file is selected
+        def _on_zone_click(e=None):
+            if not self.selected_file:
+                self._browse_file()
+
+        self.bind("<Button-1>", _on_zone_click)
+        self.inner_frame.bind("<Button-1>", _on_zone_click)
+        self.title_label.bind("<Button-1>", _on_zone_click)
+        self.subtitle_label.bind("<Button-1>", _on_zone_click)
+        self.icon_label.bind("<Button-1>", _on_zone_click)
+
+    def _setup_dnd(self):
+        """Enable drag and drop if TkinterDnD is available."""
+        if HAS_TKDND:
+            try:
+                self.drop_target_register(DND_FILES)
+                self.dnd_bind("<<Drop>>", self._on_drop)
+                self.dnd_bind("<<DragEnter>>", self._on_drag_enter)
+                self.dnd_bind("<<DragLeave>>", self._on_drag_leave)
+            except Exception as e:
+                print(f"[Info] TkinterDnD registration note: {e}")
+
+    def _on_drag_enter(self, event):
+        self.configure(border_color=("#71717A", "#A1A1AA"))
+
+    def _on_drag_leave(self, event):
+        self.configure(
+            border_color=("#71717A", "#A1A1AA") if self.selected_file else ("#E4E4E7", "#27272A")
+        )
+
+    def _on_drop(self, event):
+        self.configure(
+            border_color=("#71717A", "#A1A1AA") if self.selected_file else ("#E4E4E7", "#27272A")
+        )
+        raw_path = event.data
+        if not raw_path:
+            return
+
+        # Clean wrapped quotes or braces common in macOS/Windows DnD data
+        cleaned = raw_path.strip()
+        if cleaned.startswith("{") and cleaned.endswith("}"):
+            cleaned = cleaned[1:-1]
+        elif cleaned.startswith('"') and cleaned.endswith('"'):
+            cleaned = cleaned[1:-1]
+
+        self.set_file(cleaned)
+
+    def _browse_file(self):
+        filetypes = [
+            (self.t("filetype_supported"), "*.xlsx *.docx *.pptx *.pdf *.csv *.tsv *.md *.json *.txt"),
+            (self.t("filetype_pdf"), "*.pdf"),
+            (self.t("filetype_office"), "*.docx *.pptx"),
+            (self.t("filetype_spreadsheets"), "*.xlsx *.csv *.tsv"),
+            (self.t("filetype_text"), "*.md *.txt"),
+            (self.t("filetype_json"), "*.json"),
+            (self.t("filetype_all"), "*.*")
+        ]
+        chosen = filedialog.askopenfilename(title=self.t("dialog_select_file"), filetypes=filetypes)
+        if chosen:
+            self.set_file(chosen)
+
+    def set_file(self, file_path: str):
+        path = Path(file_path)
+        if not path.exists():
+            return
+
+        if not TranslatorRegistry.is_supported(path):
+            return
+
+        suffix = path.suffix.lower()
+        self.selected_file = str(path.resolve())
+        size_str = format_file_size(path.stat().st_size)
+        
+        # Display file info with dynamic badge
+        icon, badge = get_file_type_badge(suffix, self.t)
+        self.icon_label.configure(text=icon)
+        self.title_label.configure(text=f"{badge}: {path.name}")
+        self.subtitle_label.configure(text=self.t("file_info_path", path=path.parent))
+        self.file_info_label.configure(text=self.t("file_info_size", size=size_str))
+        self.file_info_label.pack(pady=(4, 0))
+
+        # Show clear button
+        self.clear_btn.pack(side="left", padx=6)
+        self.configure(border_color=("#71717A", "#A1A1AA"))
+
+        # Run Pre-scan File Inspection in background thread
+        self._run_inspection(self.selected_file, suffix)
+
+        self.on_file_selected(self.selected_file)
+
+    def _run_inspection(self, file_path: str, suffix: str):
+        import threading
+
+        def worker():
+            try:
+                info = TranslatorRegistry.inspect(file_path)
+                if not info or "error" in info:
+                    return
+
+                msg = ""
+                if suffix == ".xlsx":
+                    msg = self.t(
+                        "inspect_excel_badge",
+                        sheets=info.get("sheet_count", 0),
+                        cells=info.get("translatable_cells", 0),
+                        unique=info.get("unique_texts", 0),
+                        formulas=info.get("formula_count", 0)
+                    )
+                elif suffix == ".md":
+                    msg = self.t(
+                        "inspect_md_badge",
+                        words=info.get("word_count", 0),
+                        sections=info.get("section_count", 0),
+                        chars=info.get("char_count", 0)
+                    )
+                elif suffix == ".docx":
+                    msg = self.t(
+                        "inspect_docx_badge",
+                        paragraphs=info.get("paragraphs", 0),
+                        tables=info.get("tables", 0),
+                        words=info.get("word_count", 0),
+                        segments=info.get("translatable_segments", 0)
+                    )
+                elif suffix == ".pptx":
+                    msg = self.t(
+                        "inspect_pptx_badge",
+                        slides=info.get("slides", 0),
+                        shapes=info.get("shapes", 0),
+                        words=info.get("word_count", 0),
+                        segments=info.get("translatable_segments", 0)
+                    )
+                elif suffix == ".pdf":
+                    msg = self.t(
+                        "inspect_pdf_badge",
+                        pages=info.get("page_count", 0),
+                        words=info.get("word_count", 0),
+                        segments=info.get("translatable_segments", 0),
+                        chars=info.get("char_count", 0)
+                    )
+                elif suffix in [".csv", ".tsv"]:
+                    msg = self.t(
+                        "inspect_csv_badge",
+                        rows=info.get("rows", 0),
+                        cols=info.get("columns", 0),
+                        cells=info.get("translatable_cells", 0),
+                        unique=info.get("unique_texts", 0)
+                    )
+                elif suffix == ".json":
+                    msg = self.t(
+                        "inspect_json_badge",
+                        keys=info.get("total_keys", 0),
+                        strings=info.get("translatable_strings", 0),
+                        unique=info.get("unique_texts", 0)
+                    )
+                elif suffix == ".txt":
+                    msg = self.t(
+                        "inspect_txt_badge",
+                        lines=info.get("line_count", 0),
+                        words=info.get("word_count", 0),
+                        chars=info.get("char_count", 0)
+                    )
+
+                if msg:
+                    self.after(0, lambda: self._show_inspection(msg))
+            except Exception as e:
+                print(f"[Debug] Inspector note: {e}")
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_inspection(self, text: str):
+        if self.selected_file and text:
+            self.inspector_label.configure(text=text)
+            self.inspector_label.pack(pady=(6, 2))
+
+    def clear(self):
+        self.selected_file = None
+        self.icon_label.configure(text="📂")
+        self.title_label.configure(text=self.t("drag_drop_title"))
+        self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
+        self.file_info_label.pack_forget()
+        self.inspector_label.pack_forget()
+        self.inspector_label.configure(text="")
+        self.clear_btn.pack_forget()
+        self.configure(border_color=("#E4E4E7", "#27272A"))
+        self.on_file_selected("")
+
+    def refresh_i18n(self):
+        """Update localized texts when language changes."""
+        self.browse_btn.configure(text=self.t("browse_button"))
+        self.clear_btn.configure(text=self.t("clear_file"))
+        if not self.selected_file:
+            self.title_label.configure(text=self.t("drag_drop_title"))
+            self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
+        elif self.selected_file:
+            path = Path(self.selected_file)
+            size_str = format_file_size(path.stat().st_size)
+            suffix = path.suffix.lower()
+            icon, badge = get_file_type_badge(suffix, self.t)
+            self.icon_label.configure(text=icon)
+            self.title_label.configure(text=f"{badge}: {path.name}")
+            self.subtitle_label.configure(text=self.t("file_info_path", path=path.parent))
+            self.file_info_label.configure(text=self.t("file_info_size", size=size_str))
+            self._run_inspection(self.selected_file, suffix)

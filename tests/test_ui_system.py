@@ -113,6 +113,32 @@ class TestUISystem(unittest.TestCase):
         root.destroy()
 
 
+    def test_vector_icons_and_hidpi_assets(self):
+        """Verify crisp vector CTkImage icons and multi-size HiDPI Windows .ico asset."""
+        from pathlib import Path
+        from PIL import Image
+        import customtkinter as ctk
+        from components.icons import get_icon
+
+        root = ctk.CTk()
+        for name in (
+            "globe", "settings", "refresh", "rotate_ccw", "folder", "folder_hero",
+            "file_text", "file_excel", "file_word", "file_ppt", "file_pdf",
+            "database", "save", "trash", "alert_triangle", "check", "info",
+            "close", "plus", "minus", "arrow_left", "zap", "eye", "lock",
+            "key", "clock", "stop_circle", "lightbulb", "copy", "format"
+        ):
+            img = get_icon(name, "secondary", 16)
+            self.assertIsInstance(img, ctk.CTkImage)
+
+        ico_path = Path(__file__).resolve().parent.parent / "assets" / "icon.ico"
+        self.assertTrue(ico_path.exists())
+        with Image.open(ico_path) as ico_img:
+            self.assertIn((256, 256), ico_img.ico.sizes())
+            self.assertIn((32, 32), ico_img.ico.sizes())
+        root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
 

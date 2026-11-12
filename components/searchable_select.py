@@ -10,6 +10,7 @@ from typing import Callable, List, Optional
 import customtkinter as ctk
 
 from config import LanguageInfo, get_all_languages, DEFAULT_TARGET_LANGUAGE, normalize_language_name
+from components.icons import get_icon
 
 
 def _strip_accents(text: str) -> str:
@@ -336,7 +337,9 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         if not query and self.recent_languages:
             recent_lbl = ctk.CTkLabel(
                 self.scroll_list,
-                text=f"🕒  {self.t('recent_languages')}",
+                text=f"  {self.t('recent_languages')}",
+                image=get_icon("clock", "muted", 12),
+                compound="left",
                 anchor="w",
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=("#71717A", "#A1A1AA")
@@ -366,7 +369,9 @@ class SearchableLanguageSelect(ctk.CTkFrame):
 
             all_lbl = ctk.CTkLabel(
                 self.scroll_list,
-                text=f"🌐  {self.t('all_languages')}",
+                text=f"  {self.t('all_languages')}",
+                image=get_icon("globe", "muted", 12),
+                compound="left",
                 anchor="w",
                 font=ctk.CTkFont(size=11, weight="bold"),
                 text_color=("#71717A", "#A1A1AA")

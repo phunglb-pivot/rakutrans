@@ -8,6 +8,8 @@ import tkinter as tk
 from typing import Callable, Optional
 import customtkinter as ctk
 
+from components.icons import get_icon, apply_windows_window_icon
+
 
 # -----------------------------------------------------------------------------
 # 1. Design Tokens
@@ -117,11 +119,15 @@ class CustomButton(ctk.CTkButton):
         variant: str = "primary",
         size: str = "md",
         command: Optional[Callable] = None,
+        icon_name: Optional[str] = None,
+        icon_size: Optional[int] = None,
         **kwargs
     ):
         self.variant = variant
         self.btn_size = size
         self._raw_text = text
+        self._icon_name = icon_name
+        self._icon_size = icon_size or (14 if size == "sm" else 16)
         self._is_loading = False
         self._spinner_idx = 0
         self._loading_after_id = None
@@ -143,12 +149,17 @@ class CustomButton(ctk.CTkButton):
             "command": command
         }
 
+        if icon_name and "image" not in kwargs:
+            btn_kwargs["image"] = get_icon(icon_name, color=variant, size=self._icon_size)
+            btn_kwargs.setdefault("compound", "left")
+
         # Apply variant styles if not explicitly passed
         for key, val in var_cfg.items():
             if key not in kwargs and val is not None:
                 btn_kwargs[key] = val
 
         btn_kwargs.update(kwargs)
+        self._current_image = btn_kwargs.get("image")
         if btn_kwargs.get("state") == "disabled":
             btn_kwargs["cursor"] = "arrow"
 
@@ -161,7 +172,24 @@ class CustomButton(ctk.CTkButton):
                 kwargs.setdefault("cursor", "arrow")
             elif st == "normal":
                 kwargs.setdefault("cursor", "hand2")
+        if "image" in kwargs and not self._is_loading:
+            self._current_image = kwargs["image"]
         return super().configure(require_redraw=require_redraw, **kwargs)
+
+    def set_icon(self, icon_name: Optional[str], icon_size: Optional[int] = None):
+        """Update the button's vector icon dynamically."""
+        self._icon_name = icon_name
+        if icon_size is not None:
+            self._icon_size = icon_size
+        if icon_name:
+            img = get_icon(icon_name, color=self.variant, size=self._icon_size)
+            self._current_image = img
+            if not self._is_loading:
+                self.configure(image=img, compound="left")
+        else:
+            self._current_image = None
+            if not self._is_loading:
+                self.configure(image=None)
 
     def set_variant(self, variant: str):
         """Dynamically switch variant styling."""
@@ -176,6 +204,11 @@ class CustomButton(ctk.CTkButton):
             }
             if var_cfg.get("border_color") is not None and var_cfg.get("border_width", 0) > 0:
                 cfg["border_color"] = var_cfg["border_color"]
+            if self._icon_name:
+                img = get_icon(self._icon_name, color=variant, size=self._icon_size)
+                self._current_image = img
+                if not self._is_loading:
+                    cfg["image"] = img
             self.configure(**cfg)
 
     def start_loading(self, loading_text: Optional[str] = None):
@@ -193,7 +226,7 @@ class CustomButton(ctk.CTkButton):
         self._is_loading = True
         if loading_text is None:
             self._loading_text = self._raw_text
-        self.configure(state="disabled", cursor="arrow")
+        self.configure(state="disabled", cursor="arrow", image=None)
         self._animate_spinner()
 
     def stop_loading(self, restore_text: Optional[str] = None):
@@ -214,11 +247,18 @@ class CustomButton(ctk.CTkButton):
                 pass
             self._loading_after_id = None
 
-        self.configure(
-            text=self._raw_text,
-            state="normal",
-            cursor="hand2"
-        )
+        restore_cfg = {
+            "text": self._raw_text,
+            "state": "normal",
+            "cursor": "hand2",
+        }
+        if self._icon_name:
+            self._current_image = get_icon(self._icon_name, color=self.variant, size=self._icon_size)
+            restore_cfg["image"] = self._current_image
+            restore_cfg["compound"] = "left"
+        elif self._current_image is not None:
+            restore_cfg["image"] = self._current_image
+        self.configure(**restore_cfg)
 
     def _animate_spinner(self):
         if not self._is_loading or not self.winfo_exists():
@@ -270,6 +310,7 @@ class BaseModal(ctk.CTkToplevel):
         self.title(title)
         self.geometry(f"{width}x{height}")
         self.resizable(resizable, resizable)
+        apply_windows_window_icon(self)
 
         # Modality setup
         self.transient(parent)

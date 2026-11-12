@@ -6,30 +6,32 @@ Displays smooth, non-intrusive floating feedback cards inside the application wi
 from typing import Optional
 import customtkinter as ctk
 
+from components.icons import get_icon
+
 TOAST_STYLES = {
     "success": {
-        "icon": "✓",
+        "icon": "check",
         "bg_color": ("#ECFDF5", "#064E3B"),
         "border_color": ("#A7F3D0", "#059669"),
         "text_color": ("#065F46", "#ECFDF5"),
         "icon_color": ("#059669", "#34D399")
     },
     "info": {
-        "icon": "ℹ",
+        "icon": "info",
         "bg_color": ("#EFF6FF", "#1E3A8A"),
         "border_color": ("#BFDBFE", "#3B82F6"),
         "text_color": ("#1E40AF", "#EFF6FF"),
         "icon_color": ("#2563EB", "#60A5FA")
     },
     "warning": {
-        "icon": "⚠️",
+        "icon": "alert_triangle",
         "bg_color": ("#FFFBEB", "#78350F"),
         "border_color": ("#FDE68A", "#D97706"),
         "text_color": ("#92400E", "#FEF3C7"),
         "icon_color": ("#D97706", "#FBBF24")
     },
     "error": {
-        "icon": "✕",
+        "icon": "close",
         "bg_color": ("#FEF2F2", "#7F1D1D"),
         "border_color": ("#FECACA", "#DC2626"),
         "text_color": ("#991B1B", "#FEE2E2"),
@@ -78,9 +80,8 @@ class ToastManager:
 
         icon_lbl = ctk.CTkLabel(
             content,
-            text=style["icon"],
-            font=ctk.CTkFont(size=14, weight="bold"),
-            text_color=style["icon_color"]
+            text="",
+            image=get_icon(style["icon"], style["icon_color"], 15)
         )
         icon_lbl.pack(side="left", padx=(0, 8))
 

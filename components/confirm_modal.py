@@ -7,6 +7,18 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from components.ui_system import BaseModal, CustomButton
+from components.icons import get_icon
+
+_LEGACY_ICON_MAP = {
+    "⚠️": ("alert_triangle", "warning_accent"),
+    "⚠": ("alert_triangle", "warning_accent"),
+    "🗑️": ("trash", "danger_accent"),
+    "🗑": ("trash", "danger_accent"),
+    "trash": ("trash", "danger_accent"),
+    "alert_triangle": ("alert_triangle", "warning_accent"),
+    "info": ("info", "info_accent"),
+    "check": ("check", "success_accent"),
+}
 
 
 class ConfirmModal(BaseModal):
@@ -25,12 +37,14 @@ class ConfirmModal(BaseModal):
         on_confirm: Optional[Callable[[], None]] = None,
         on_cancel: Optional[Callable[[], None]] = None,
         variant: str = "danger",
-        icon: str = "⚠️",
+        icon: str = "alert_triangle",
+        confirm_icon: Optional[str] = None,
         get_translation: Optional[Callable[[str], str]] = None
     ):
         self._confirmed = False
         self._user_confirm_cb = on_confirm
         self._user_cancel_cb = on_cancel
+        self._confirm_icon = confirm_icon
         self.t = get_translation or (lambda k, **kw: k)
 
         resolved_title = title or self.t("confirm_action_title")
@@ -67,10 +81,11 @@ class ConfirmModal(BaseModal):
         header_frame = ctk.CTkFrame(container, fg_color="transparent")
         header_frame.pack(fill="x", pady=(0, 10))
 
+        icon_name, icon_color = _LEGACY_ICON_MAP.get(icon, ("alert_triangle", "warning_accent"))
         icon_label = ctk.CTkLabel(
             header_frame,
-            text=icon,
-            font=ctk.CTkFont(size=32)
+            text="",
+            image=get_icon(icon_name, icon_color, 32)
         )
         icon_label.pack(side="left", padx=(0, 14), anchor="n")
 
@@ -108,6 +123,8 @@ class ConfirmModal(BaseModal):
             text=confirm_text,
             variant=variant,
             size="md",
+            icon_name=self._confirm_icon,
+            icon_size=15,
             command=self._handle_confirm
         )
         self.confirm_btn.pack(side="right", padx=(8, 0))

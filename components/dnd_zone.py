@@ -17,27 +17,30 @@ except ImportError:
 
 from translator_registry import TranslatorRegistry
 from components.ui_system import CustomButton
+from components.icons import get_icon
 
 
 def get_file_type_badge(suffix: str, t_func: Optional[Callable[[str], str]] = None) -> tuple[str, str]:
-    """Returns (icon, label_badge) for a given file suffix."""
+    """Returns (icon_name, label_badge) for a given file suffix."""
     s = suffix.lower()
     txt_badge = t_func("badge_plain_text") if t_func else "Plain Text"
     if s == ".xlsx":
-        return ("📊", "📊 Excel")
+        return ("file_excel", "Excel")
     elif s in [".csv", ".tsv"]:
-        return ("📊", "📊 CSV/TSV")
+        return ("file_excel", "CSV/TSV")
     elif s == ".docx":
-        return ("📄", "📄 Word")
+        return ("file_word", "Word")
     elif s == ".pptx":
-        return ("📽️", "📽️ PowerPoint")
+        return ("file_ppt", "PowerPoint")
+    elif s == ".pdf":
+        return ("file_pdf", "PDF")
     elif s == ".md":
-        return ("📝", "📝 Markdown")
+        return ("file_md", "Markdown")
     elif s == ".json":
-        return ("⚙️", "⚙️ JSON")
+        return ("file_json", "JSON")
     elif s == ".txt":
-        return ("📝", f"📝 {txt_badge}")
-    return ("📁", f"📁 {s.upper()}")
+        return ("file_text", txt_badge)
+    return ("file_generic", s.lstrip(".").upper() or "FILE")
 
 
 def format_file_size(num_bytes: int) -> str:
@@ -86,11 +89,11 @@ class DropZone(ctk.CTkFrame):
         # Icon or badge
         self.icon_label = ctk.CTkLabel(
             self.inner_frame,
-            text="📂",
-            font=ctk.CTkFont(size=40),
+            text="",
+            image=get_icon("folder_hero", "default", 44),
             cursor="hand2"
         )
-        self.icon_label.pack(pady=(5, 5))
+        self.icon_label.pack(pady=(5, 8))
 
         # Title prompt
         self.title_label = ctk.CTkLabel(
@@ -229,9 +232,9 @@ class DropZone(ctk.CTkFrame):
         size_str = format_file_size(path.stat().st_size)
         
         # Display file info with dynamic badge
-        icon, badge = get_file_type_badge(suffix, self.t)
-        self.icon_label.configure(text=icon)
-        self.title_label.configure(text=f"{badge}: {path.name}")
+        icon_name, badge = get_file_type_badge(suffix, self.t)
+        self.icon_label.configure(text="", image=get_icon(icon_name, "default", 44))
+        self.title_label.configure(text=f"[{badge}]  {path.name}")
         self.subtitle_label.configure(text=self.t("file_info_path", path=path.parent))
         self.file_info_label.configure(text=self.t("file_info_size", size=size_str))
         self.file_info_label.pack(pady=(4, 0))
@@ -331,7 +334,7 @@ class DropZone(ctk.CTkFrame):
 
     def clear(self):
         self.selected_file = None
-        self.icon_label.configure(text="📂")
+        self.icon_label.configure(text="", image=get_icon("folder_hero", "default", 44))
         self.title_label.configure(text=self.t("drag_drop_title"))
         self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
         self.file_info_label.pack_forget()
@@ -352,9 +355,9 @@ class DropZone(ctk.CTkFrame):
             path = Path(self.selected_file)
             size_str = format_file_size(path.stat().st_size)
             suffix = path.suffix.lower()
-            icon, badge = get_file_type_badge(suffix, self.t)
-            self.icon_label.configure(text=icon)
-            self.title_label.configure(text=f"{badge}: {path.name}")
+            icon_name, badge = get_file_type_badge(suffix, self.t)
+            self.icon_label.configure(text="", image=get_icon(icon_name, "default", 44))
+            self.title_label.configure(text=f"[{badge}]  {path.name}")
             self.subtitle_label.configure(text=self.t("file_info_path", path=path.parent))
             self.file_info_label.configure(text=self.t("file_info_size", size=size_str))
             self._run_inspection(self.selected_file, suffix)

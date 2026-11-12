@@ -51,7 +51,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=['assets/icon.icns'],
+    icon=['assets/icon.ico'],
 )
 coll = COLLECT(
     exe,
@@ -61,10 +61,4 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='RakuTrans',
-)
-app = BUNDLE(
-    coll,
-    name='RakuTrans.app',
-    icon='assets/icon.icns',
-    bundle_identifier=None,
 )

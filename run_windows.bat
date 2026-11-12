@@ -14,9 +14,9 @@ set "NEED_SETUP=0"
 if not exist "%VENV_PY%" (
     set "NEED_SETUP=1"
 ) else (
-    "%VENV_PY%" -c "import sys" >nul 2>&1
+    "%VENV_PY%" -c "import sys, customtkinter" >nul 2>&1
     if errorlevel 1 (
-        echo [Notice] .venv is invalid or was moved from another path.
+        echo [Notice] .venv is invalid, incomplete, or was moved from another path.
         set "NEED_SETUP=1"
     )
 )

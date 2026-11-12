@@ -31,6 +31,7 @@ from components.error_modal import ErrorModal
 from components.searchable_select import SearchableLanguageSelect
 from components.ui_system import CustomButton
 from components.confirm_modal import ConfirmModal
+from components.icons import get_icon, init_windows_app_id, apply_windows_window_icon
 from error_handler import diagnose_error, DiagnosticInfo
 
 try:
@@ -46,6 +47,7 @@ class RakuTransApp(ctk.CTk):
     """
 
     def __init__(self, config: Optional[AppConfig] = None):
+        init_windows_app_id()
         super().__init__()
         self.withdraw()  # Hide window while loading assets and constructing layout
 
@@ -99,11 +101,15 @@ class RakuTransApp(ctk.CTk):
             except Exception as e:
                 print(f"[Info] TkinterDnD initialization note: {e}")
 
-        # Load custom logo / window icon and sync OS Dock icon immediately
+        # Load custom logo / window icon and sync OS Dock / Taskbar icon immediately
         self.logo_image = None
         base_assets = Path(__file__).resolve().parent / "assets"
         logo_path = base_assets / "logo.png"
         icns_path = base_assets / "icon.icns"
+        ico_path = base_assets / "icon.ico"
+
+        if platform.system() == "Windows":
+            apply_windows_window_icon(self, ico_path)
 
         if logo_path.exists():
             try:
@@ -111,7 +117,7 @@ class RakuTransApp(ctk.CTk):
                 self.logo_image = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(28, 28))
                 if platform.system() != "Darwin":
                     self._window_icon = ImageTk.PhotoImage(pil_logo)
-                    self.iconphoto(False, self._window_icon)
+                    self.iconphoto(True, self._window_icon)
             except Exception as e:
                 print(f"[Warning] Failed to load logo from {logo_path}: {e}")
 
@@ -162,7 +168,14 @@ class RakuTransApp(ctk.CTk):
 
         self._setup_ui()
         self.update_idletasks()
+        # Reset CustomTkinter's early-withdraw flag before mainloop() on Windows;
+        # otherwise CTk.mainloop() calls _windows_set_titlebar_color() which
+        # withdraws the window and skips deiconify() when the flag is True.
+        if hasattr(self, "_withdraw_called_before_window_exists"):
+            self._withdraw_called_before_window_exists = False
         self.deiconify()
+        self.update()
+        self.lift()
 
     def _setup_ui(self):
         # Configure layout: Row 0 Header, Row 1 Nav Tabs, Row 2 Scrollable Body, Row 3 Sticky Bottom Bar
@@ -198,7 +211,9 @@ class RakuTransApp(ctk.CTk):
         else:
             self.logo_label = ctk.CTkLabel(
                 brand_frame,
-                text="🌐 " + self.i18n.t("app_title"),
+                text="  " + self.i18n.t("app_title"),
+                image=get_icon("globe", "default", 22),
+                compound="left",
                 font=ctk.CTkFont(size=20, weight="bold")
             )
         self.logo_label.pack(anchor="w")
@@ -229,10 +244,12 @@ class RakuTransApp(ctk.CTk):
 
         self.settings_btn = CustomButton(
             right_header,
-            text=f"⚙ {self.i18n.t('settings_btn')}",
+            text=self.i18n.t("settings_btn"),
             variant="secondary",
             size="md",
-            width=100,
+            width=106,
+            icon_name="settings",
+            icon_size=15,
             command=self._open_settings
         )
         self.settings_btn.pack(side="left")
@@ -244,8 +261,8 @@ class RakuTransApp(ctk.CTk):
         self.nav_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(12, 0))
         self.nav_frame.grid_columnconfigure(0, weight=1)
 
-        self.tab_translate_label = f"🌐 {self.i18n.t('tab_translate')}"
-        self.tab_convert_label = f"🔄 {self.i18n.t('tab_convert')}"
+        self.tab_translate_label = self.i18n.t("tab_translate")
+        self.tab_convert_label = self.i18n.t("tab_convert")
 
         self.mode_segmented = ctk.CTkSegmentedButton(
             self.nav_frame,
@@ -263,6 +280,7 @@ class RakuTransApp(ctk.CTk):
         self.mode_segmented.grid_columnconfigure(0, weight=1, uniform="mode_tabs")
         self.mode_segmented.grid_columnconfigure(1, weight=1, uniform="mode_tabs")
         self.mode_segmented.set(self.tab_translate_label)
+        self._apply_mode_tab_icons()
         self.mode_segmented.pack(fill="x")
 
         # --------------------------------------------------------------------
@@ -431,10 +449,12 @@ class RakuTransApp(ctk.CTk):
 
         self.options_toggle_btn = CustomButton(
             self.options_header,
-            text="＋",
+            text="",
             variant="ghost",
             size="sm",
             width=28,
+            icon_name="plus",
+            icon_size=14,
             command=self._toggle_options
         )
         self.options_toggle_btn.grid(row=0, column=1, sticky="e")
@@ -566,6 +586,23 @@ class RakuTransApp(ctk.CTk):
     # Mode Switching
     # -------------------------------------------------------------------------
 
+    def _apply_mode_tab_icons(self):
+        """Attach crisp vector icons to the Translate / Convert segmented tabs."""
+        try:
+            btns = getattr(self.mode_segmented, "_buttons_dict", {})
+            if self.tab_translate_label in btns:
+                btns[self.tab_translate_label].configure(
+                    image=get_icon("globe", "secondary", 16),
+                    compound="left"
+                )
+            if self.tab_convert_label in btns:
+                btns[self.tab_convert_label].configure(
+                    image=get_icon("refresh", "secondary", 16),
+                    compound="left"
+                )
+        except Exception:
+            pass
+
     def _on_mode_switched(self, selected_mode_label: str):
         if self.i18n.t("tab_convert") in selected_mode_label:
             self.current_mode = "convert"
@@ -591,12 +628,12 @@ class RakuTransApp(ctk.CTk):
         if self._options_expanded:
             self.options_header.pack_configure(pady=(12, 0))
             self.options_body.pack(fill="x")
-            self.options_toggle_btn.set_text("－")
+            self.options_toggle_btn.set_icon("minus", 14)
             self.options_title.configure(text=self.i18n.t("options_toggle_hide"))
         else:
             self.options_body.pack_forget()
             self.options_header.pack_configure(pady=12)
-            self.options_toggle_btn.set_text("＋")
+            self.options_toggle_btn.set_icon("plus", 14)
             self.options_title.configure(text=self.i18n.t("options_toggle_show"))
 
     # -------------------------------------------------------------------------
@@ -661,7 +698,9 @@ class RakuTransApp(ctk.CTk):
 
         self.cache_stats_label = ctk.CTkLabel(
             self.cache_bar,
-            text=f"💾 {self.i18n.t('cache_stats', count=self.cache.count())}",
+            text="  " + self.i18n.t("cache_stats", count=self.cache.count()),
+            image=get_icon("database", "muted", 14),
+            compound="left",
             font=ctk.CTkFont(size=11),
             text_color=("#71717A", "#A1A1AA")
         )
@@ -669,10 +708,12 @@ class RakuTransApp(ctk.CTk):
 
         self.clear_cache_btn = CustomButton(
             self.cache_bar,
-            text="🗑️ " + self.i18n.t("clear_cache"),
+            text=self.i18n.t("clear_cache"),
             variant="outline",
             size="sm",
-            width=110,
+            width=116,
+            icon_name="trash",
+            icon_size=14,
             command=self._on_clear_cache_main
         )
         self.clear_cache_btn.grid(row=0, column=1, sticky="e")
@@ -693,10 +734,12 @@ class RakuTransApp(ctk.CTk):
         # Convert button (active in Format Converter mode)
         self.convert_btn = CustomButton(
             self.btn_row,
-            text="🔄 " + self.i18n.t("convert_button"),
+            text=self.i18n.t("convert_button"),
             command=self._start_conversion,
             variant="primary",
-            size="lg"
+            size="lg",
+            icon_name="refresh",
+            icon_size=16
         )
 
         # Cancel button
@@ -712,20 +755,24 @@ class RakuTransApp(ctk.CTk):
         # Open file button (Hero primary action on completion)
         self.open_file_btn = CustomButton(
             self.btn_row,
-            text="📄 " + self.i18n.t("open_file"),
+            text=self.i18n.t("open_file"),
             command=self._open_output_file,
             variant="primary",
-            size="lg"
+            size="lg",
+            icon_name="file_text",
+            icon_size=16
         )
 
         # Open folder button
         self.open_folder_btn = CustomButton(
             self.btn_row,
-            text="📂 " + self.i18n.t("open_folder"),
+            text=self.i18n.t("open_folder"),
             command=self._open_output_directory,
             variant="outline",
             size="lg",
-            width=120
+            width=128,
+            icon_name="folder",
+            icon_size=16
         )
 
         # Save as button
@@ -735,7 +782,9 @@ class RakuTransApp(ctk.CTk):
             command=self._save_output_as,
             variant="outline",
             size="lg",
-            width=100
+            width=110,
+            icon_name="save",
+            icon_size=16
         )
 
         # Error button
@@ -745,7 +794,9 @@ class RakuTransApp(ctk.CTk):
             command=self._show_error_modal,
             variant="danger",
             size="lg",
-            width=160
+            width=170,
+            icon_name="alert_triangle",
+            icon_size=16
         )
 
         # Apply initial button states
@@ -790,11 +841,13 @@ class RakuTransApp(ctk.CTk):
         # 3. Configure button visibility and hierarchy based on state
         if state == "idle_no_file":
             if self.current_mode == "convert":
-                self.convert_btn.stop_loading("🔄 " + self.i18n.t("convert_button"))
+                self.convert_btn.set_icon("refresh", 16)
+                self.convert_btn.stop_loading(self.i18n.t("convert_button"))
                 self.convert_btn.set_variant("primary")
                 self.convert_btn.configure(state="disabled")
                 self.convert_btn.pack(side="left", fill="x", expand=True)
             else:
+                self.translate_btn.set_icon(None)
                 self.translate_btn.stop_loading(self.i18n.t("start_translation"))
                 self.translate_btn.set_variant("primary")
                 self.translate_btn.configure(state="disabled")
@@ -812,11 +865,13 @@ class RakuTransApp(ctk.CTk):
         elif state == "file_ready":
             if self.current_mode == "convert":
                 is_ready = bool(self.selected_convert_file and self.selected_target_format)
-                self.convert_btn.stop_loading("🔄 " + self.i18n.t("convert_button"))
+                self.convert_btn.set_icon("refresh", 16)
+                self.convert_btn.stop_loading(self.i18n.t("convert_button"))
                 self.convert_btn.set_variant("primary")
                 self.convert_btn.configure(state="normal" if is_ready else "disabled")
                 self.convert_btn.pack(side="left", fill="x", expand=True)
             else:
+                self.translate_btn.set_icon(None)
                 self.translate_btn.stop_loading(self.i18n.t("start_translation"))
                 self.translate_btn.set_variant("primary")
                 self.translate_btn.configure(state="normal")
@@ -875,15 +930,17 @@ class RakuTransApp(ctk.CTk):
 
             # Re-run Action
             if self.current_mode == "convert":
+                self.convert_btn.set_icon("rotate_ccw", 15)
                 self.convert_btn.stop_loading()
                 self.convert_btn.set_variant("secondary")
-                self.convert_btn.set_text("↻ " + self.i18n.t("convert_again"))
+                self.convert_btn.set_text(self.i18n.t("convert_again"))
                 self.convert_btn.configure(state="normal")
                 self.convert_btn.pack(side="left")
             else:
+                self.translate_btn.set_icon("rotate_ccw", 15)
                 self.translate_btn.stop_loading()
                 self.translate_btn.set_variant("secondary")
-                self.translate_btn.set_text("↻ " + self.i18n.t("translate_again"))
+                self.translate_btn.set_text(self.i18n.t("translate_again"))
                 self.translate_btn.configure(state="normal")
                 self.translate_btn.pack(side="left")
 
@@ -898,11 +955,13 @@ class RakuTransApp(ctk.CTk):
                 self.convert_drop_zone.clear_btn.configure(state="normal")
 
             if self.current_mode == "convert":
-                self.convert_btn.stop_loading("🔄 " + self.i18n.t("convert_button"))
+                self.convert_btn.set_icon("refresh", 16)
+                self.convert_btn.stop_loading(self.i18n.t("convert_button"))
                 self.convert_btn.set_variant("primary")
                 self.convert_btn.configure(state="normal")
                 self.convert_btn.pack(side="left", fill="x", expand=True, padx=(0, 8))
             else:
+                self.translate_btn.set_icon(None)
                 self.translate_btn.stop_loading(self.i18n.t("retry_translation"))
                 self.translate_btn.set_variant("primary")
                 self.translate_btn.configure(state="normal")
@@ -920,6 +979,7 @@ class RakuTransApp(ctk.CTk):
                 self.convert_drop_zone.browse_btn.configure(state="normal")
                 self.convert_drop_zone.clear_btn.configure(state="normal")
 
+            self.translate_btn.set_icon(None)
             self.translate_btn.stop_loading(self.i18n.t("start_translation"))
             self.translate_btn.set_variant("primary")
             self.translate_btn.configure(state="normal")
@@ -1111,7 +1171,9 @@ class RakuTransApp(ctk.CTk):
             self.cache.clear()
             if hasattr(self, "cache_stats_label"):
                 self.cache_stats_label.configure(
-                    text=f"💾 {self.i18n.t('cache_cleared')}",
+                    text="  " + self.i18n.t("cache_cleared"),
+                    image=get_icon("check", "success_accent", 14),
+                    compound="left",
                     text_color="#10B981"
                 )
             self.after(2500, self._refresh_cache_display)
@@ -1121,11 +1183,12 @@ class RakuTransApp(ctk.CTk):
             title=self.i18n.t("clear_cache"),
             message=self.i18n.t("confirm_clear_cache"),
             description=self.i18n.t("confirm_clear_cache_desc", count=count),
-            confirm_text="🗑️ " + self.i18n.t("clear_cache"),
+            confirm_text=self.i18n.t("clear_cache"),
             cancel_text=self.i18n.t("cancel"),
             on_confirm=do_clear,
             variant="danger",
-            icon="🗑️",
+            icon="trash",
+            confirm_icon="trash",
             get_translation=self.i18n.t
         )
 
@@ -1133,7 +1196,9 @@ class RakuTransApp(ctk.CTk):
         if hasattr(self, "cache_stats_label") and hasattr(self, "cache"):
             count = self.cache.count()
             self.cache_stats_label.configure(
-                text=f"💾 {self.i18n.t('cache_stats', count=count)}",
+                text="  " + self.i18n.t("cache_stats", count=count),
+                image=get_icon("database", "muted", 14),
+                compound="left",
                 text_color=("#64748B", "#94A3B8")
             )
             if hasattr(self, "clear_cache_btn"):
@@ -1168,7 +1233,8 @@ class RakuTransApp(ctk.CTk):
         self.settings_view.grid(row=1, column=0, rowspan=3, sticky="nsew", padx=0, pady=0)
 
         # Update header button
-        self.settings_btn.configure(text=f"✓ {self.i18n.t('done')}")
+        self.settings_btn.configure(text=self.i18n.t("done"))
+        self.settings_btn.set_icon("check", 15)
         self.settings_btn.set_variant("primary")
 
     def _close_settings(self):
@@ -1185,7 +1251,8 @@ class RakuTransApp(ctk.CTk):
         self.action_bar.grid()
 
         # Update header button
-        self.settings_btn.configure(text=f"⚙ {self.i18n.t('settings_btn')}")
+        self.settings_btn.configure(text=self.i18n.t("settings_btn"))
+        self.settings_btn.set_icon("settings", 15)
         self.settings_btn.set_variant("secondary")
 
     def _on_settings_changed(self, updated_config: AppConfig):
@@ -1202,14 +1269,16 @@ class RakuTransApp(ctk.CTk):
         if self.logo_image:
             self.logo_label.configure(text="  " + self.i18n.t("app_title"))
         else:
-            self.logo_label.configure(text="🌐 " + self.i18n.t("app_title"))
+            self.logo_label.configure(text="  " + self.i18n.t("app_title"), image=get_icon("globe", "default", 22), compound="left")
         self.subtitle_label.configure(text=self.i18n.t("app_subtitle"))
 
         if self.current_screen == "settings":
-            self.settings_btn.configure(text=f"✓ {self.i18n.t('done')}")
+            self.settings_btn.configure(text=self.i18n.t("done"))
+            self.settings_btn.set_icon("check", 15)
             self.settings_btn.set_variant("primary")
         else:
-            self.settings_btn.configure(text=f"⚙ {self.i18n.t('settings_btn')}")
+            self.settings_btn.configure(text=self.i18n.t("settings_btn"))
+            self.settings_btn.set_icon("settings", 15)
             self.settings_btn.set_variant("secondary")
 
         if hasattr(self, "settings_view"):
@@ -1240,8 +1309,8 @@ class RakuTransApp(ctk.CTk):
         self.custom_prompt_label.configure(text=self.i18n.t("custom_prompt_label"))
 
         # Mode selector tabs
-        self.tab_translate_label = f"🌐 {self.i18n.t('tab_translate')}"
-        self.tab_convert_label = f"🔄 {self.i18n.t('tab_convert')}"
+        self.tab_translate_label = self.i18n.t("tab_translate")
+        self.tab_convert_label = self.i18n.t("tab_convert")
         if hasattr(self, "mode_segmented"):
             self.mode_segmented.configure(values=[self.tab_translate_label, self.tab_convert_label])
             self.mode_segmented.grid_columnconfigure(0, weight=1, uniform="mode_tabs")
@@ -1249,13 +1318,14 @@ class RakuTransApp(ctk.CTk):
             self.mode_segmented.set(
                 self.tab_convert_label if self.current_mode == "convert" else self.tab_translate_label
             )
+            self._apply_mode_tab_icons()
 
         if hasattr(self, "convert_drop_zone"):
             self.convert_drop_zone.refresh_i18n()
         if hasattr(self, "convert_target_label"):
             self.convert_target_label.configure(text=self.i18n.t("convert_select_target"))
         if hasattr(self, "convert_btn"):
-            self.convert_btn.set_text("🔄 " + self.i18n.t("convert_button"))
+            self.convert_btn.set_text(self.i18n.t("convert_button"))
         if hasattr(self, "translate_btn"):
             self.translate_btn.set_text(self.i18n.t("start_translation"))
         if hasattr(self, "convert_desc_label"):
@@ -1269,8 +1339,8 @@ class RakuTransApp(ctk.CTk):
 
         # Action bar
         self.cancel_btn.configure(text=self.i18n.t("cancel"))
-        self.open_file_btn.configure(text="📄 " + self.i18n.t("open_file"))
-        self.open_folder_btn.configure(text="📂 " + self.i18n.t("open_folder"))
+        self.open_file_btn.configure(text=self.i18n.t("open_file"))
+        self.open_folder_btn.configure(text=self.i18n.t("open_folder"))
         self.save_as_btn.configure(text=self.i18n.t("save_as"))
         self.error_btn.configure(text=self.i18n.t("view_error_details"))
         if hasattr(self, "shortcut_hint_label"):
@@ -1278,7 +1348,7 @@ class RakuTransApp(ctk.CTk):
 
         self._refresh_cache_display()
         if hasattr(self, "clear_cache_btn"):
-            self.clear_cache_btn.configure(text="🗑️ " + self.i18n.t("clear_cache"))
+            self.clear_cache_btn.configure(text=self.i18n.t("clear_cache"))
 
         # Re-diagnose previous error with new language if exists
         if getattr(self, "last_exception", None):

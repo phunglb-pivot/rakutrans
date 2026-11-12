@@ -35,6 +35,12 @@ class TestUIButtonLifecycle(unittest.TestCase):
         except Exception:
             pass
 
+    def test_windows_taskbar_icon_guard(self):
+        """On Windows, RakuTransApp must set iconbitmap so CustomTkinter doesn't overwrite it."""
+        import platform
+        if platform.system() == "Windows":
+            self.assertTrue(getattr(self.app, "_iconbitmap_method_called", False))
+
     def test_design_token_sizes_and_proportions(self):
         """Verify button height follows 8px grid (lg=40px, md=34px, sm=28px)."""
         self.assertEqual(BUTTON_SIZES["lg"]["height"], 40)
@@ -203,7 +209,8 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.assertEqual(self.app.error_btn.cget("text"), self.app.i18n.t("view_error_details"))
         self.assertFalse(self.app.error_btn.cget("text").startswith("⚠️ ⚠️"))
         self.assertEqual(self.app.translate_btn.cget("text"), self.app.i18n.t("start_translation"))
-        self.assertEqual(self.app.convert_btn.cget("text"), "🔄 " + self.app.i18n.t("convert_button"))
+        self.assertEqual(self.app.convert_btn.cget("text"), self.app.i18n.t("convert_button"))
+        self.assertIsNotNone(self.app.convert_btn.cget("image"))
         self.assertEqual(self.app.settings_view.key_entry.cget("placeholder_text"), self.app.i18n.t("api_key_placeholder"))
         self.assertEqual(self.app.settings_view.lang_var.get(), "Tiếng Việt")
 
@@ -220,8 +227,10 @@ class TestUIButtonLifecycle(unittest.TestCase):
 
         self.assertEqual(self.app.current_button_state, "completed")
         self.assertEqual(self.app.open_file_btn.winfo_manager(), "pack")
-        self.assertEqual(self.app.open_file_btn.cget("text"), "📄 " + self.app.i18n.t("open_file"))
-        self.assertEqual(self.app.translate_btn.cget("text"), "↻ " + self.app.i18n.t("translate_again"))
+        self.assertEqual(self.app.open_file_btn.cget("text"), self.app.i18n.t("open_file"))
+        self.assertIsNotNone(self.app.open_file_btn.cget("image"))
+        self.assertEqual(self.app.translate_btn.cget("text"), self.app.i18n.t("translate_again"))
+        self.assertIsNotNone(self.app.translate_btn.cget("image"))
         self.assertEqual(
             self.app.status_label.cget("text"),
             self.app.i18n.t("status_completed", filename="sample_vi.docx")

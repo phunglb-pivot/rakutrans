@@ -15,6 +15,7 @@ import customtkinter as ctk
 from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES
 from model_fetcher import fetch_models_async
 from components.ui_system import CustomButton
+from components.icons import get_icon
 
 
 class SettingsView(ctk.CTkFrame):
@@ -72,16 +73,20 @@ class SettingsView(ctk.CTkFrame):
 
         self.title_label = ctk.CTkLabel(
             self.header_frame,
-            text="⚙ " + self.t("settings_title"),
+            text="  " + self.t("settings_title"),
+            image=get_icon("settings", "default", 18),
+            compound="left",
             font=ctk.CTkFont(size=18, weight="bold")
         )
         self.title_label.pack(side="left")
 
         self.back_header_btn = CustomButton(
             self.header_frame,
-            text="← " + self.t("back"),
+            text=self.t("back"),
             variant="outline",
             size="sm",
+            icon_name="arrow_left",
+            icon_size=14,
             command=self.on_close
         )
         if self.show_back_button:
@@ -164,10 +169,12 @@ class SettingsView(ctk.CTkFrame):
 
         self.fetch_btn = CustomButton(
             model_row,
-            text="🔄 " + self.t("fetch_models"),
+            text=self.t("fetch_models"),
             variant="secondary",
             size="md",
-            width=120,
+            width=128,
+            icon_name="refresh",
+            icon_size=15,
             command=self._fetch_live_models
         )
         self.fetch_btn.pack(side="right")
@@ -216,10 +223,12 @@ class SettingsView(ctk.CTkFrame):
 
         self.toggle_btn = CustomButton(
             entry_frame,
-            text="👁",
+            text="",
             variant="outline",
             size="md",
             width=40,
+            icon_name="eye",
+            icon_size=16,
             command=self._toggle_key_visibility
         )
         self.toggle_btn.pack(side="right")
@@ -229,10 +238,12 @@ class SettingsView(ctk.CTkFrame):
 
         self.test_conn_btn = CustomButton(
             test_row,
-            text="⚡ " + self.t("test_connection"),
+            text=self.t("test_connection"),
             variant="secondary",
             size="md",
-            width=145,
+            width=155,
+            icon_name="zap",
+            icon_size=15,
             command=self._test_api_connection
         )
         self.test_conn_btn.pack(side="left")
@@ -363,15 +374,15 @@ class SettingsView(ctk.CTkFrame):
     def refresh_i18n(self, get_translation: Callable[[str], str]):
         """Refreshes localized labels inside SettingsView."""
         self.t = get_translation
-        self.title_label.configure(text="⚙ " + self.t("settings_title"))
-        self.back_header_btn.configure(text="← " + self.t("back"))
+        self.title_label.configure(text="  " + self.t("settings_title"))
+        self.back_header_btn.configure(text=self.t("back"))
         self.active_prov_label.configure(text=self.t("active_provider"))
         self.model_label_elem.configure(text=self.t("model_label"))
-        self.fetch_btn.configure(text="🔄 " + self.t("fetch_models"))
+        self.fetch_btn.configure(text=self.t("fetch_models"))
         self.model_hint_label.configure(text=self.t("model_hint"))
         self.api_key_label_elem.configure(text=self.t("api_key_label"))
         self.key_entry.configure(placeholder_text=self.t("api_key_placeholder"))
-        self.test_conn_btn.configure(text="⚡ " + self.t("test_connection"))
+        self.test_conn_btn.configure(text=self.t("test_connection"))
         self.guide_link_btn.configure(text=self.t("open_api_guide"))
         self.guide_text_label.configure(text=self._get_guide_text(self.provider_var.get()))
         self.pref_label_elem.configure(text=self.t("preferences_title"))
@@ -386,7 +397,7 @@ class SettingsView(ctk.CTkFrame):
     def _toggle_key_visibility(self):
         self._show_key = not self._show_key
         self.key_entry.configure(show="" if self._show_key else "*")
-        self.toggle_btn.configure(text="🔒" if self._show_key else "👁")
+        self.toggle_btn.set_icon("lock" if self._show_key else "eye", 16)
 
     def _fetch_live_models(self, is_manual: bool = True):
         provider = self.provider_var.get()
@@ -415,7 +426,7 @@ class SettingsView(ctk.CTkFrame):
                     return
 
                 if is_manual:
-                    self.fetch_btn.stop_loading("🔄 " + self.t("fetch_models"))
+                    self.fetch_btn.stop_loading(self.t("fetch_models"))
 
                 if self.provider_var.get() != provider:
                     return
@@ -434,7 +445,7 @@ class SettingsView(ctk.CTkFrame):
                     )
                 elif error_msg and is_manual:
                     self.model_hint_label.configure(
-                        text=f"⚠️ {error_msg}",
+                        text=error_msg,
                         text_color="#EF4444"
                     )
                 elif not is_manual:
@@ -576,7 +587,7 @@ class SettingsView(ctk.CTkFrame):
             elapsed_ms = int((time.time() - t0) * 1000)
 
             def update_ui():
-                self.test_conn_btn.stop_loading("⚡ " + self.t("test_connection"))
+                self.test_conn_btn.stop_loading(self.t("test_connection"))
                 if success:
                     msg = self.t("test_conn_success", model=model, ms=elapsed_ms)
                     self.test_conn_status.configure(text=msg, text_color="#10B981")

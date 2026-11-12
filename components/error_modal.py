@@ -8,16 +8,17 @@ import customtkinter as ctk
 
 from error_handler import DiagnosticInfo
 from components.ui_system import BaseModal, CustomButton
+from components.icons import get_icon
 
 
 CATEGORY_ICONS = {
-    "quota": "⏳",
-    "auth": "🔑",
-    "network": "🌐",
-    "file_lock": "🔒",
-    "format": "🧩",
-    "cancelled": "⏹",
-    "general": "⚠️"
+    "quota": ("clock", "warning_accent"),
+    "auth": ("key", "danger_accent"),
+    "network": ("globe", "info_accent"),
+    "file_lock": ("lock", "warning_accent"),
+    "format": ("format", "danger_accent"),
+    "cancelled": ("stop_circle", "warning_accent"),
+    "general": ("alert_triangle", "danger_accent"),
 }
 
 
@@ -62,8 +63,8 @@ class ErrorModal(BaseModal):
         header_frame = ctk.CTkFrame(container, fg_color="transparent")
         header_frame.pack(fill="x", pady=(0, 12))
 
-        icon = CATEGORY_ICONS.get(self.diag.category, "⚠️")
-        icon_label = ctk.CTkLabel(header_frame, text=icon, font=ctk.CTkFont(size=32))
+        icon_name, icon_color = CATEGORY_ICONS.get(self.diag.category, ("alert_triangle", "danger_accent"))
+        icon_label = ctk.CTkLabel(header_frame, text="", image=get_icon(icon_name, icon_color, 32))
         icon_label.pack(side="left", padx=(0, 12))
 
         title_box = ctk.CTkFrame(header_frame, fg_color="transparent")
@@ -101,7 +102,9 @@ class ErrorModal(BaseModal):
 
         advice_title = ctk.CTkLabel(
             advice_box,
-            text="💡 " + self.t("err_how_to_fix"),
+            text="  " + self.t("err_how_to_fix"),
+            image=get_icon("lightbulb", ("#B91C1C", "#F87171"), 14),
+            compound="left",
             font=ctk.CTkFont(size=12, weight="bold"),
             text_color=("#B91C1C", "#F87171")
         )
@@ -129,10 +132,12 @@ class ErrorModal(BaseModal):
 
         self.copy_btn = CustomButton(
             log_header,
-            text="📋 " + self.t("copy_log"),
+            text=self.t("copy_log"),
             variant="outline",
             size="sm",
-            width=90,
+            width=96,
+            icon_name="copy",
+            icon_size=14,
             command=self._copy_log
         )
         self.copy_btn.pack(side="right")
@@ -153,9 +158,11 @@ class ErrorModal(BaseModal):
         if self.on_retry and self.diag.can_retry:
             retry_btn = CustomButton(
                 btn_bar,
-                text="⚡ " + self.t("retry_translation"),
+                text=self.t("retry_translation"),
                 variant="primary",
                 size="md",
+                icon_name="zap",
+                icon_size=15,
                 command=self._handle_retry
             )
             retry_btn.pack(side="left", padx=(0, 8))
@@ -163,9 +170,11 @@ class ErrorModal(BaseModal):
         if self.on_open_settings and self.diag.requires_settings:
             settings_btn = CustomButton(
                 btn_bar,
-                text="⚙ " + self.t("settings_btn"),
+                text=self.t("settings_btn"),
                 variant="secondary",
                 size="md",
+                icon_name="settings",
+                icon_size=15,
                 command=self._handle_settings
             )
             settings_btn.pack(side="left", padx=(0, 8))
@@ -183,8 +192,12 @@ class ErrorModal(BaseModal):
         try:
             self.clipboard_clear()
             self.clipboard_append(self.diag.technical_details)
-            self.copy_btn.configure(text="✓ " + self.t("copied"))
-            self.after(2000, lambda: self.copy_btn.configure(text="📋 " + self.t("copy_log")))
+            self.copy_btn.configure(text=self.t("copied"))
+            self.copy_btn.set_icon("check", 14)
+            self.after(2000, lambda: (
+                self.copy_btn.configure(text=self.t("copy_log")),
+                self.copy_btn.set_icon("copy", 14)
+            ))
         except Exception:
             pass
 

@@ -106,6 +106,9 @@ def launch_gui():
         print("=" * 70 + "\n")
         sys.exit(1)
 
+    from components.icons import init_windows_app_id
+    init_windows_app_id()
+
     from ui import RakuTransApp
 
     app = RakuTransApp()

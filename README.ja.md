@@ -23,20 +23,26 @@
 
 ## インストール & クイックスタート
 
-### インストール
+自動環境構築スクリプト（Python 3.10+ 自動検出、`.venv` 修復、依存パッケージ自動インストール）を同梱しています：
 
-```bash
-git clone https://github.com/phunglb-pivot/rakutrans.git
-cd rakutrans
-pip install -r requirements.txt
-```
+### 方法 1: ワンクリック起動（推奨）
 
-### デスクトップアプリの起動
+- **macOS / Linux**:
+  ```bash
+  ./run.sh
+  ```
+- **Windows**: `run_windows.bat` をダブルクリック、またはコマンドプロンプトで実行:
+  ```cmd
+  run_windows.bat
+  ```
 
-```bash
-./run.sh
-# または: python3 main.py
-```
+*(初回実行時またはディレクトリ移動時も自動的に環境が修復・初期化され、アプリが立ち上がります)。*
+
+### 方法 2: 事前環境セットアップ
+
+事前に環境を構築・確認したい場合：
+- **macOS / Linux**: `./setup_env.sh`
+- **Windows**: `setup_env.bat`
 
 ---
 

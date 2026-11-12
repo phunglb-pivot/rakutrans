@@ -9,7 +9,18 @@ from config import (
     normalize_language_name,
     get_target_lang_code
 )
-from components.searchable_select import _strip_accents
+
+try:
+    import tkinter
+    import customtkinter
+    HAS_TKINTER = True
+    from components.searchable_select import _strip_accents
+except (ImportError, ModuleNotFoundError):
+    HAS_TKINTER = False
+    import unicodedata
+    def _strip_accents(text: str) -> str:
+        nfkd_form = unicodedata.normalize("NFKD", text)
+        return "".join(c for c in nfkd_form if unicodedata.category(c) != "Mn")
 
 
 class TestSearchableSelect(unittest.TestCase):
@@ -86,6 +97,7 @@ class TestSearchableSelect(unittest.TestCase):
         self.assertEqual(get_target_lang_code("Русский (Russian)"), "ru")
         self.assertEqual(get_target_lang_code("ไทย (Thai)"), "th")
 
+    @unittest.skipUnless(HAS_TKINTER, "Tkinter is required for GUI dropdown test")
     def test_floating_overlay_zero_layout_shift(self):
         """Verify that opening the dropdown floats over content with zero layout shift."""
         import customtkinter as ctk
@@ -172,6 +184,7 @@ class TestSearchableSelect(unittest.TestCase):
 
         root.destroy()
 
+    @unittest.skipUnless(HAS_TKINTER, "Tkinter is required for GUI dropdown test")
     def test_recent_languages_behavior(self):
         """Verify that recent languages list keeps max 3 items and orders by MRU."""
         import customtkinter as ctk

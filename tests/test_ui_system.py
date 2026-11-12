@@ -3,17 +3,25 @@ Unit tests for UI System primitives: CustomButton, BaseModal, ConfirmModal, Toas
 """
 
 import unittest
-from components.ui_system import (
-    BUTTON_SIZES,
-    BUTTON_VARIANTS,
-    SPINNER_FRAMES,
-    CustomButton,
-    BaseModal
-)
-from components.confirm_modal import ConfirmModal
-from components.toast import ToastManager, TOAST_STYLES
+
+try:
+    import tkinter
+    import customtkinter
+    HAS_TKINTER = True
+    from components.ui_system import (
+        BUTTON_SIZES,
+        BUTTON_VARIANTS,
+        SPINNER_FRAMES,
+        CustomButton,
+        BaseModal
+    )
+    from components.confirm_modal import ConfirmModal
+    from components.toast import ToastManager, TOAST_STYLES
+except (ImportError, ModuleNotFoundError):
+    HAS_TKINTER = False
 
 
+@unittest.skipUnless(HAS_TKINTER, "Tkinter is not available in this Python environment")
 class TestUISystem(unittest.TestCase):
 
     def test_design_tokens(self):

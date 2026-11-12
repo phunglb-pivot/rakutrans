@@ -6,6 +6,7 @@ LLM API calls for duplicate terms and reducing API cost and latency by 40-70%.
 
 import hashlib
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
@@ -38,8 +39,17 @@ class TranslationCache:
         conn.execute("PRAGMA journal_mode=WAL;")
         return conn
 
+    @contextmanager
+    def _connection(self):
+        conn = self._get_connection()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_db(self):
-        with self._get_connection() as conn:
+        with self._connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS translations (
                     source_lang TEXT,
@@ -90,7 +100,7 @@ class TranslationCache:
         uncached_list: List[Tuple[int, str]] = []
 
         # Find in DB
-        with self._get_connection() as conn:
+        with self._connection() as conn:
             for idx, text in enumerate(texts):
                 if source_lang == "auto":
                     cursor = conn.execute("""
@@ -145,7 +155,7 @@ class TranslationCache:
             for src, tr in zip(source_texts, translated_texts)
         ]
 
-        with self._get_connection() as conn:
+        with self._connection() as conn:
             conn.executemany("""
                 INSERT OR REPLACE INTO translations 
                 (source_lang, target_lang, source_text, translated_text, options_hash)
@@ -188,7 +198,7 @@ class TranslationCache:
     def count(self) -> int:
         """Returns total cached translation pairs."""
         try:
-            with self._get_connection() as conn:
+            with self._connection() as conn:
                 cursor = conn.execute("SELECT COUNT(*) FROM translations;")
                 return cursor.fetchone()[0]
         except Exception:
@@ -197,7 +207,7 @@ class TranslationCache:
     def clear(self):
         """Wipes the translation cache."""
         try:
-            with self._get_connection() as conn:
+            with self._connection() as conn:
                 conn.execute("DELETE FROM translations;")
         except Exception as e:
             print(f"[Warning] Failed to clear cache: {e}")

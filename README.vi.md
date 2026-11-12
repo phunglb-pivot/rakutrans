@@ -21,28 +21,34 @@
 
 ---
 
-## Cài đặt & Sử dụng nhanh
+## Cài đặt & Khởi chạy nhanh
 
-### Cài đặt
+Dự án đã được tích hợp bộ script tự động hóa toàn bộ môi trường (tự phát hiện Python, tự tạo & sửa lỗi `.venv`, tự cài đặt thư viện):
 
-```bash
-git clone https://github.com/phunglb-pivot/rakutrans.git
-cd rakutrans
-pip install -r requirements.txt
-```
+### Cách 1: Khởi chạy 1 chạm (Khuyến nghị)
 
-### Chạy giao diện Desktop
+- **macOS / Linux**:
+  ```bash
+  ./run.sh
+  ```
+- **Windows**: Nhấp đúp vào `run_windows.bat` hoặc chạy trong CMD/PowerShell:
+  ```cmd
+  run_windows.bat
+  ```
 
-```bash
-./run.sh
-# hoặc: python3 main.py
-```
+*(Script sẽ tự động khởi tạo môi trường ảo, khôi phục nếu thư mục bị di chuyển và mở ứng dụng ngay lập tức).*
+
+### Cách 2: Thiết lập môi trường trước
+
+Nếu bạn muốn chuẩn bị trước môi trường hoặc kiểm tra tương thích:
+- **macOS / Linux**: `./setup_env.sh`
+- **Windows**: `setup_env.bat`
 
 ---
 
 ## Đóng gói ứng dụng độc lập
 
-Tạo file chạy trực tiếp không cần cài đặt Python:
+Tạo file chạy trực tiếp không cần người dùng cuối phải cài đặt Python:
 
 - **macOS (`.app` & `.dmg`)**: `./build_macos.sh`
 - **Windows (`.exe`)**: `build_windows.bat`

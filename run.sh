@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
-# RakuTrans AI Quick Launcher
+# ==============================================================================
+# RakuTrans AI - macOS / Linux Launcher
+# ==============================================================================
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR"
 
-if [ -f "$SCRIPT_DIR/.venv/bin/python" ]; then
-    exec "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/main.py" "$@"
-elif command -v python3.12 >/dev/null 2>&1; then
-    exec python3.12 "$SCRIPT_DIR/main.py" "$@"
-else
-    exec python3 "$SCRIPT_DIR/main.py" "$@"
+VENV_PY="$SCRIPT_DIR/.venv/bin/python"
+
+# Check if .venv exists and has a working Python interpreter
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
+    echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs repair."
+    echo "[RakuTrans AI] Running automatic setup..."
+    bash "$SCRIPT_DIR/setup_env.sh"
 fi
+
+exec "$VENV_PY" "$SCRIPT_DIR/main.py" "$@"

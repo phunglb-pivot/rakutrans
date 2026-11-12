@@ -23,26 +23,32 @@ AI-powered Desktop translation application supporting multiple formats: **PDF (`
 
 ## Quick Start & Installation
 
-### Installation
+The project includes zero-config self-healing scripts that automatically locate Python 3.10+, create/repair `.venv`, and install dependencies:
 
-```bash
-git clone https://github.com/phunglb-pivot/rakutrans.git
-cd rakutrans
-pip install -r requirements.txt
-```
+### Option 1: One-Click Run (Recommended)
 
-### Run Desktop Application
+- **macOS / Linux**:
+  ```bash
+  ./run.sh
+  ```
+- **Windows**: Double-click `run_windows.bat` or run:
+  ```cmd
+  run_windows.bat
+  ```
 
-```bash
-./run.sh
-# or: python3 main.py
-```
+*(The scripts automatically set up `.venv`, recover from broken/moved directory paths, and launch the application).*
+
+### Option 2: Standalone Environment Setup
+
+If you prefer to initialize the environment ahead of time:
+- **macOS / Linux**: `./setup_env.sh`
+- **Windows**: `setup_env.bat`
 
 ---
 
 ## Standalone Packaging
 
-Build standalone executables without requiring a Python environment:
+Build standalone executables without requiring end-users to have Python installed:
 
 - **macOS (`.app` & `.dmg`)**: `./build_macos.sh`
 - **Windows (`.exe`)**: `build_windows.bat`

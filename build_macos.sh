@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
+# ==============================================================================
 # Script to build standalone macOS Application (.app) and Disk Image (.dmg)
+# ==============================================================================
 set -e
 
 echo "============================================="
@@ -9,12 +11,20 @@ echo "============================================="
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
 
-PYTHON="$SCRIPT_DIR/.venv/bin/python"
+VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 PYINSTALLER="$SCRIPT_DIR/.venv/bin/pyinstaller"
 
-if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
-    echo "Ensuring required packages are installed..."
-    "$SCRIPT_DIR/.venv/bin/pip" install -q -r "$SCRIPT_DIR/requirements.txt" pyinstaller
+# Ensure .venv is healthy
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
+    echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs repair."
+    echo "[RakuTrans AI] Running automatic setup..."
+    bash "$SCRIPT_DIR/setup_env.sh"
+fi
+
+# Ensure pyinstaller is available
+if [ ! -f "$PYINSTALLER" ]; then
+    echo "Installing PyInstaller into .venv..."
+    "$VENV_PY" -m pip install -q pyinstaller
 fi
 
 echo "Cleaning previous builds..."

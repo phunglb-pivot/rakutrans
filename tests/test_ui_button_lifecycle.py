@@ -4,15 +4,21 @@ Verifies proper show/hide/disable transitions and minimalist palette consistency
 """
 
 import unittest
-import customtkinter as ctk
 
-from components.ui_system import (
-    BUTTON_SIZES,
-    BUTTON_VARIANTS
-)
-from ui import RakuTransApp
+try:
+    import tkinter
+    import customtkinter as ctk
+    HAS_TKINTER = True
+    from components.ui_system import (
+        BUTTON_SIZES,
+        BUTTON_VARIANTS
+    )
+    from ui import RakuTransApp
+except (ImportError, ModuleNotFoundError):
+    HAS_TKINTER = False
 
 
+@unittest.skipUnless(HAS_TKINTER, "Tkinter is not available in this Python environment")
 class TestUIButtonLifecycle(unittest.TestCase):
 
     @classmethod

@@ -42,8 +42,22 @@ if not exist "%PYINSTALLER%" (
 )
 
 echo Cleaning previous builds...
+tasklist /FI "IMAGENAME eq RakuTrans.exe" 2>nul | find /I "RakuTrans.exe" >nul
+if not errorlevel 1 (
+    echo [Notice] Closing running RakuTrans.exe so dist\ can be replaced...
+    taskkill /F /IM RakuTrans.exe >nul 2>&1
+    timeout /t 1 /nobreak >nul
+)
+
 if exist "build" rmdir /s /q build
 if exist "dist" rmdir /s /q dist
+if exist "dist\RakuTrans" (
+    echo.
+    echo [Error] Cannot remove "dist\RakuTrans" because a file inside it is locked by another process.
+    echo         Please close RakuTrans.exe, Explorer windows, or terminal tabs using "dist\RakuTrans" and retry.
+    pause
+    exit /b 1
+)
 
 echo Compiling standalone Windows executable...
 "%PYINSTALLER%" --noconfirm --clean ^

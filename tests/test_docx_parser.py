@@ -98,6 +98,121 @@ class TestDocxTranslator(unittest.TestCase):
         translator.process_file(file_path=str(self.test_docx_path), target_lang="Vietnamese")
         self.assertEqual(mock_llm.call_count, first_calls)
 
+        # 3rd run with different options: MUST NOT poison/reuse default cache
+        from config import TranslationOptions
+        translator.process_file(
+            file_path=str(self.test_docx_path),
+            target_lang="Vietnamese",
+            options=TranslationOptions(append_original_words=True),
+        )
+        self.assertGreater(mock_llm.call_count, first_calls)
+
+    def test_hyperlinks_nested_tables_and_textboxes_translated(self):
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        doc_path = Path(self.temp_dir.name) / "complex.docx"
+        doc = Document()
+
+        # Paragraph with <w:hyperlink>
+        p = doc.add_paragraph("Prefix ")
+        hl = OxmlElement("w:hyperlink")
+        r = OxmlElement("w:r")
+        t = OxmlElement("w:t")
+        t.text = "Click here"
+        r.append(t)
+        hl.append(r)
+        p._p.append(hl)
+        p.add_run(" suffix")
+
+        # Nested table inside outer table
+        outer = doc.add_table(rows=1, cols=1)
+        inner = outer.cell(0, 0).add_table(rows=1, cols=1)
+        inner.cell(0, 0).text = "Nested cell text"
+
+        doc.save(str(doc_path))
+
+        config = AppConfig()
+        mock_llm = MockLLMManager()
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "cache_complex.db")
+        translator = DocxTranslator(config, mock_llm, cache=cache)
+
+        out_file = translator.process_file(file_path=str(doc_path), target_lang="Vietnamese")
+        out_doc = Document(out_file)
+
+        # Hyperlink text must not be duplicated untranslated after translation
+        self.assertEqual(out_doc.paragraphs[0].text, "[Vietnamese] Prefix Click here suffix")
+        nested_text = out_doc.tables[0].cell(0, 0).tables[0].cell(0, 0).text
+        self.assertEqual(nested_text, "[Vietnamese] Nested cell text")
+
+    def test_inline_style_preservation_reordering_and_type3_coalescing(self):
+        from docx.shared import RGBColor
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+
+        doc_path = Path(self.temp_dir.name) / "inline_styles.docx"
+        doc = Document()
+
+        # Paragraph 0: Mixed bold + normal red -> reordered grammar in translation
+        p0 = doc.add_paragraph()
+        r0 = p0.add_run("Important")
+        r0.bold = True
+        r1 = p0.add_run(" notice")
+        r1.font.color.rgb = RGBColor(0xFF, 0x00, 0x00)
+
+        # Paragraph 1: Uniform runs differing only in Type3 (N 0 R) font names -> 0 inline tags
+        p1 = doc.add_paragraph()
+        for idx, ch in enumerate(["A", "B", "C"]):
+            r = p1.add_run(ch)
+            rPr = r._r.get_or_add_rPr()
+            rFonts = OxmlElement("w:rFonts")
+            rFonts.set(qn("w:ascii"), f"Type3 ({idx + 10} 0 R)")
+            rPr.append(rFonts)
+
+        # Paragraph 2: Mixed styles where LLM drops tags -> safe fallback without data loss
+        p2 = doc.add_paragraph()
+        ra = p2.add_run("Bold")
+        ra.bold = True
+        p2.add_run(" tail")
+
+        doc.save(str(doc_path))
+
+        seen_inputs = []
+
+        class _InlineMockLLM:
+            def translate_batch(self, texts, *args, **kwargs):
+                seen_inputs.extend(texts)
+                out = []
+                for t in texts:
+                    if "<s0>Important</s0>" in t:
+                        # Reorder <s1> before <s0>
+                        out.append("<s1>Thông báo </s1><s0>quan trọng</s0>")
+                    elif "<s0>Bold</s0>" in t:
+                        # Drop tags on purpose
+                        out.append("Đậm đuôi")
+                    else:
+                        out.append(f"TR:{t}")
+                return out
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "inline_cache.db")
+        translator = DocxTranslator(AppConfig(), _InlineMockLLM(), cache=cache)
+        out_path = translator.process_file(file_path=str(doc_path), target_lang="Vietnamese")
+
+        # Type3-only font diffs must NOT inject <s0> tags
+        self.assertIn("ABC", seen_inputs)
+        self.assertFalse(any("<s0>A" in s for s in seen_inputs))
+
+        out_doc = Document(out_path)
+        res_p0 = out_doc.paragraphs[0]
+        self.assertEqual(res_p0.text, "Thông báo quan trọng")
+        # Slot 0 now has non-bold red style from group 1; slot 1 now has bold style from group 0
+        self.assertFalse(bool(res_p0.runs[0].bold))
+        self.assertEqual(str(res_p0.runs[0].font.color.rgb), "FF0000")
+        self.assertTrue(bool(res_p0.runs[1].bold))
+
+        self.assertEqual(out_doc.paragraphs[1].text, "TR:ABC")
+        self.assertEqual(out_doc.paragraphs[2].text, "Đậm đuôi")
+
 
 if __name__ == "__main__":
     unittest.main()

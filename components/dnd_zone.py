@@ -4,7 +4,7 @@ Supports both native TkinterDnD2 drag & drop and interactive click-to-browse fal
 """
 
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 import customtkinter as ctk
 from tkinter import filedialog
 
@@ -62,6 +62,8 @@ class DropZone(ctk.CTkFrame):
         master,
         on_file_selected: Callable[[str], None],
         get_translation: Callable[[str], str],
+        is_file_supported: Optional[Callable[[Path], bool]] = None,
+        supported_extensions_fn: Optional[Callable[[], List[str]]] = None,
         **kwargs
     ):
         super().__init__(
@@ -74,6 +76,8 @@ class DropZone(ctk.CTkFrame):
         )
         self.on_file_selected = on_file_selected
         self.t = get_translation
+        self._is_file_supported = is_file_supported or TranslatorRegistry.is_supported
+        self._supported_extensions_fn = supported_extensions_fn or TranslatorRegistry.get_supported_extensions
         self.selected_file: Optional[str] = None
 
         self._setup_ui()
@@ -206,15 +210,22 @@ class DropZone(ctk.CTkFrame):
         self.set_file(cleaned)
 
     def _browse_file(self):
-        filetypes = [
-            (self.t("filetype_supported"), "*.xlsx *.docx *.pptx *.pdf *.csv *.tsv *.md *.json *.txt"),
-            (self.t("filetype_pdf"), "*.pdf"),
-            (self.t("filetype_office"), "*.docx *.pptx"),
-            (self.t("filetype_spreadsheets"), "*.xlsx *.csv *.tsv"),
-            (self.t("filetype_text"), "*.md *.txt"),
-            (self.t("filetype_json"), "*.json"),
-            (self.t("filetype_all"), "*.*")
-        ]
+        supported_exts = {e.lower() for e in self._supported_extensions_fn()}
+        all_pattern = " ".join(f"*{ext}" for ext in sorted(supported_exts)) or "*.*"
+        filetypes = [(self.t("filetype_supported"), all_pattern)]
+
+        def _filter_exts(label_key: str, exts: list[str]):
+            allowed = [f"*{e}" for e in exts if e in supported_exts]
+            if allowed:
+                filetypes.append((self.t(label_key), " ".join(allowed)))
+
+        _filter_exts("filetype_pdf", [".pdf"])
+        _filter_exts("filetype_office", [".docx", ".pptx"])
+        _filter_exts("filetype_spreadsheets", [".xlsx", ".csv", ".tsv"])
+        _filter_exts("filetype_text", [".md", ".txt"])
+        _filter_exts("filetype_json", [".json"])
+        filetypes.append((self.t("filetype_all"), "*.*"))
+
         chosen = filedialog.askopenfilename(title=self.t("dialog_select_file"), filetypes=filetypes)
         if chosen:
             self.set_file(chosen)
@@ -224,7 +235,7 @@ class DropZone(ctk.CTkFrame):
         if not path.exists():
             return
 
-        if not TranslatorRegistry.is_supported(path):
+        if not self._is_file_supported(path):
             return
 
         suffix = path.suffix.lower()

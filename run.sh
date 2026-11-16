@@ -9,8 +9,8 @@ cd "$SCRIPT_DIR"
 
 VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 
-# Check if .venv exists and has a working Python interpreter
-if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
+# Check if .venv exists, meets Python >= 3.10, and has core dependencies installed
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys, customtkinter; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
     echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs repair."
     echo "[RakuTrans AI] Running automatic setup..."
     bash "$SCRIPT_DIR/setup_env.sh"

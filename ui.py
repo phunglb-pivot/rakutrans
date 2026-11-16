@@ -24,14 +24,19 @@ from markdown_parser import MarkdownTranslator
 from translator_registry import TranslatorRegistry
 from base_translator import BaseTranslator
 from translation_cache import TranslationCache
-from format_converter import convert_file_direct, get_convert_options
+from format_converter import (
+    convert_file_direct,
+    get_convert_options,
+    get_convertible_extensions,
+    is_convert_supported,
+)
 from components.dnd_zone import DropZone
 from components.settings_modal import SettingsView
 from components.error_modal import ErrorModal
 from components.searchable_select import SearchableLanguageSelect
 from components.ui_system import CustomButton
 from components.confirm_modal import ConfirmModal
-from components.icons import get_icon, init_windows_app_id, apply_windows_window_icon
+from components.icons import get_icon, get_provider_icon, init_windows_app_id, apply_windows_window_icon
 from error_handler import diagnose_error, DiagnosticInfo
 
 try:
@@ -232,7 +237,9 @@ class RakuTransApp(ctk.CTk):
 
         self.provider_badge = ctk.CTkLabel(
             right_header,
-            text=f"AI: {self.config.active_provider} ({self.config.get_active_model()})",
+            text=self._format_provider_badge(),
+            image=get_provider_icon(self.config.active_provider, "muted", 14),
+            compound="left",
             font=ctk.CTkFont(size=11),
             fg_color=("#F4F4F5", "#27272A"),
             text_color=("#71717A", "#A1A1AA"),
@@ -537,7 +544,9 @@ class RakuTransApp(ctk.CTk):
         self.convert_drop_zone = DropZone(
             parent,
             on_file_selected=self._on_convert_file_selected,
-            get_translation=self.i18n.t
+            get_translation=self.i18n.t,
+            is_file_supported=is_convert_supported,
+            supported_extensions_fn=get_convertible_extensions,
         )
         self.convert_drop_zone.pack(fill="x", pady=(0, 15))
 
@@ -621,6 +630,8 @@ class RakuTransApp(ctk.CTk):
 
         active_file = self.selected_convert_file if self.current_mode == "convert" else self.selected_file
         self._update_button_states("file_ready" if active_file else "idle_no_file")
+        if hasattr(self, "shortcut_hint_label"):
+            self.shortcut_hint_label.configure(text=self._get_shortcut_hint_text())
         self._refresh_status_text()
 
     def _toggle_options(self):
@@ -682,7 +693,7 @@ class RakuTransApp(ctk.CTk):
 
         self.shortcut_hint_label = ctk.CTkLabel(
             self.status_row,
-            text=self.i18n.t("shortcut_hint"),
+            text=self._get_shortcut_hint_text(),
             font=ctk.CTkFont(size=11),
             text_color=("#A1A1AA", "#71717A")
         )
@@ -991,10 +1002,11 @@ class RakuTransApp(ctk.CTk):
 
     def _show_error_modal(self):
         if self.last_diagnostic:
+            retry_fn = self._start_conversion if self.current_mode == "convert" else self._start_translation
             ErrorModal(
                 self,
                 diag=self.last_diagnostic,
-                on_retry=self._start_translation,
+                on_retry=retry_fn,
                 on_open_settings=self._open_settings,
                 get_translation=self.i18n.t
             )
@@ -1255,11 +1267,24 @@ class RakuTransApp(ctk.CTk):
         self.settings_btn.set_icon("settings", 15)
         self.settings_btn.set_variant("secondary")
 
+    def _get_shortcut_hint_text(self) -> str:
+        """Returns OS-appropriate and mode-appropriate keyboard shortcut hint text."""
+        mod = "⌘" if platform.system() == "Darwin" else "Ctrl"
+        key = "shortcut_hint_convert" if self.current_mode == "convert" else "shortcut_hint_translate"
+        return self.i18n.t(key, mod=mod)
+
+    def _format_provider_badge(self) -> str:
+        model = (self.config.get_active_model() or "").strip()
+        if model:
+            return f" {self.config.active_provider} ({model})"
+        return f" {self.config.active_provider}"
+
     def _on_settings_changed(self, updated_config: AppConfig):
         self.config = updated_config
         self.i18n.set_language(self.config.ui_language)
         self.provider_badge.configure(
-            text=f"AI: {self.config.active_provider} ({self.config.get_active_model()})"
+            text=self._format_provider_badge(),
+            image=get_provider_icon(self.config.active_provider, "muted", 14),
         )
         self.refresh_ui_texts()
 
@@ -1344,7 +1369,7 @@ class RakuTransApp(ctk.CTk):
         self.save_as_btn.configure(text=self.i18n.t("save_as"))
         self.error_btn.configure(text=self.i18n.t("view_error_details"))
         if hasattr(self, "shortcut_hint_label"):
-            self.shortcut_hint_label.configure(text=self.i18n.t("shortcut_hint"))
+            self.shortcut_hint_label.configure(text=self._get_shortcut_hint_text())
 
         self._refresh_cache_display()
         if hasattr(self, "clear_cache_btn"):
@@ -1447,7 +1472,7 @@ class RakuTransApp(ctk.CTk):
 
             def on_progress(current: int, total: int, msg: str):
                 fraction = current / max(1, total)
-                self.after(0, lambda: self._update_progress(fraction, msg))
+                self.after(0, lambda f=fraction, m=msg: self._update_progress(f, m))
 
             translator = TranslatorRegistry.create_translator(
                 file_path_or_ext=path,
@@ -1460,12 +1485,13 @@ class RakuTransApp(ctk.CTk):
             output_file = translator.process_file(
                 file_path=file_path,
                 target_lang=tgt_lang,
+                source_lang=self.config.source_language or "auto",
                 options=self.config.translation_options,
                 progress_callback=on_progress
             )
 
             self.last_output_file = output_file
-            self.after(0, lambda: self._on_translation_completed(output_file))
+            self.after(0, lambda p=output_file: self._on_translation_completed(p))
 
         except InterruptedError:
             self.after(0, lambda: self._on_translation_cancelled())
@@ -1496,8 +1522,11 @@ class RakuTransApp(ctk.CTk):
         if system_os == "Darwin":
             try:
                 subprocess.Popen([
-                    "osascript", "-e",
-                    f'display notification "{out_name}" with title "RakuTrans AI" subtitle "{self.i18n.t("notification_completed")}"'
+                    "osascript",
+                    "-e",
+                    'on run argv\ndisplay notification (item 1 of argv) with title "RakuTrans AI" subtitle (item 2 of argv)\nend run',
+                    out_name,
+                    self.i18n.t("notification_completed"),
                 ])
             except Exception:
                 pass
@@ -1574,8 +1603,11 @@ class RakuTransApp(ctk.CTk):
         if system_os == "Darwin":
             try:
                 subprocess.Popen([
-                    "osascript", "-e",
-                    f'display notification "{out_name}" with title "RakuTrans AI" subtitle "{self.i18n.t("notification_convert_completed")}"'
+                    "osascript",
+                    "-e",
+                    'on run argv\ndisplay notification (item 1 of argv) with title "RakuTrans AI" subtitle (item 2 of argv)\nend run',
+                    out_name,
+                    self.i18n.t("notification_convert_completed"),
                 ])
             except Exception:
                 pass
@@ -1584,6 +1616,8 @@ class RakuTransApp(ctk.CTk):
         self.is_converting = False
         self.progress_bar.set(0)
         self.last_convert_error = error_msg
+        self.last_exception = exc if exc else Exception(error_msg)
+        self.last_diagnostic = diagnose_error(self.last_exception, self.i18n)
         msg = self.i18n.t("convert_error", error=error_msg)
         self._set_status(msg, is_error=True)
         self._update_button_states("error")

@@ -9,10 +9,9 @@ Enables cross-format document and data conversions:
 - CSV/TSV (.csv, .tsv) <-> Excel (.xlsx)
 - CSV/TSV (.csv, .tsv) <-> Markdown (.md)
 - Word (.docx) <-> Markdown (.md)
-- Word (.docx) -> Text (.txt)
-- PowerPoint (.pptx) -> Markdown (.md)
-- PowerPoint (.pptx) -> Text (.txt)
-- Markdown (.md) -> Word (.docx)
+- Word (.docx) -> PDF (.pdf) / Text (.txt)
+- PowerPoint (.pptx) -> Markdown (.md) / Text (.txt)
+- Markdown (.md) -> Word (.docx) / Excel (.xlsx) / CSV (.csv)
 - Text (.txt) -> Markdown (.md) / Word (.docx)
 """
 
@@ -20,23 +19,368 @@ import csv
 import os
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
+from xml.sax.saxutils import escape as xml_escape
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+from base_translator import detect_text_encoding
 from config import get_smart_output_path, get_unique_output_path
+from data_parser import CsvTranslator
+
+_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+_MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
+_MD_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
+_STRICT_INT_RE = re.compile(r"^-?(?:0|[1-9]\d*)$")
+_STRICT_FLOAT_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d+)$")
+
+
+# -----------------------------------------------------------------------------
+# Shared Deterministic Markdown & Value Helpers
+# -----------------------------------------------------------------------------
+
+def _is_md_table_line(line: str) -> bool:
+    s = line.strip()
+    return len(s) >= 2 and s.startswith("|") and s.endswith("|")
+
+
+def _split_md_table_row(line: str) -> List[str]:
+    """
+    Splits a GitHub-Flavored Markdown table row into unescaped cell strings.
+    Properly keeps escaped pipes ('\\|') inside their cell while splitting on
+    unescaped delimiters ('|' or '\\\\|').
+    """
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    # Strip trailing '|' only if unescaped (preceded by an even number of backslashes)
+    if s.endswith("|"):
+        bs_count = 0
+        idx = len(s) - 2
+        while idx >= 0 and s[idx] == "\\":
+            bs_count += 1
+            idx -= 1
+        if bs_count % 2 == 0:
+            s = s[:-1]
+
+    cells: List[str] = []
+    buf: List[str] = []
+    i = 0
+    n = len(s)
+
+    while i < n:
+        ch = s[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = s[i + 1]
+            if nxt in ("|", "\\"):
+                buf.append(nxt)
+                i += 2
+                continue
+        if ch == "|":
+            cell_raw = "".join(buf).strip()
+            cell_clean = re.sub(r"<br\s*/?>", "\n", cell_raw, flags=re.IGNORECASE)
+            cells.append(cell_clean)
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+
+    cell_raw = "".join(buf).strip()
+    cell_clean = re.sub(r"<br\s*/?>", "\n", cell_raw, flags=re.IGNORECASE)
+    cells.append(cell_clean)
+    return cells
+
+
+def _is_md_separator_row(cells: List[str], row_idx: int) -> bool:
+    """
+    Returns True only for the GFM delimiter row immediately following the table header
+    (row_idx == 1) where every cell matches ':?-{1,}:?'.
+    Preserves real data rows containing '---' in row_idx >= 2.
+    """
+    if row_idx != 1 or not cells:
+        return False
+    return all(bool(_MD_SEP_CELL_RE.fullmatch(c.strip())) for c in cells)
+
+
+def _escape_md_cell(val: Any) -> str:
+    if val is None:
+        return ""
+    s = str(val).replace("\\", "\\\\").replace("|", "\\|")
+    s = s.replace("\r\n", "<br>").replace("\n", "<br>")
+    return s.strip()
+
+
+def _coerce_excel_value(raw: str) -> Tuple[Union[int, float, str], Optional[str]]:
+    """
+    Converts strictly formatted numeric strings to int/float without corrupting
+    leading-zero identifiers ('001', '0912...'), version strings ('1.2.3'),
+    or non-finite words ('nan', 'inf'). Returns (value, optional_number_format).
+    """
+    s = raw.strip()
+    if not s:
+        return s, None
+
+    if _STRICT_INT_RE.fullmatch(s):
+        return int(s), None
+
+    m_float = _STRICT_FLOAT_RE.fullmatch(s)
+    if m_float:
+        frac = m_float.group(1)
+        num_format = f"0.{'0' * len(frac)}" if frac.endswith("0") else None
+        return float(s), num_format
+
+    return raw, None
+
+
+def _unique_sheet_name(raw_title: str, existing_names: List[str]) -> str:
+    """Builds a valid, unique Excel sheet name <= 31 characters."""
+    cleaned = re.sub(r'[\\/*?:\[\]]', "_", (raw_title or "").strip())
+    base = cleaned[:31] or "Sheet1"
+    if base not in existing_names:
+        return base
+    counter = 1
+    while True:
+        suffix = f"_{counter}"
+        candidate = f"{(cleaned or 'Sheet')[: max(1, 31 - len(suffix))]}{suffix}"
+        if candidate not in existing_names:
+            return candidate
+        counter += 1
 
 
 # -----------------------------------------------------------------------------
 # PDF Conversions
 # -----------------------------------------------------------------------------
 
+_BULLET_START_RE = re.compile(r"^(?:[•●▪◦・\-*]|\d+[.)])\s+")
+
+
+def _is_cjk_char(ch: str) -> bool:
+    o = ord(ch)
+    return (
+        0x3000 <= o <= 0x30FF
+        or 0x3400 <= o <= 0x4DBF
+        or 0x4E00 <= o <= 0x9FFF
+        or 0xF900 <= o <= 0xFAFF
+        or 0xAC00 <= o <= 0xD7AF
+        or 0xFF00 <= o <= 0xFFEF
+    )
+
+
+def _join_text_pair(prev: str, curr: str) -> str:
+    if not prev:
+        return curr
+    if not curr:
+        return prev
+    if len(prev) >= 2 and prev.endswith("-") and prev[-2].isascii() and prev[-2].isalpha() and curr[0].isascii() and curr[0].islower():
+        return prev[:-1] + curr
+    if _is_cjk_char(prev[-1]) or _is_cjk_char(curr[0]):
+        return prev + curr
+    return f"{prev} {curr}"
+
+
+def _clean_pdf_cell_text(raw: Optional[str]) -> str:
+    if not raw:
+        return ""
+    lines = [ln.strip() for ln in str(raw).splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    acc = lines[0]
+    for ln in lines[1:]:
+        acc = _join_text_pair(acc, ln)
+    return acc
+
+
+def _compute_pdf_body_font_size(pdf_doc) -> float:
+    """Computes character-weighted modal font size across the PDF document."""
+    size_weights: dict[float, int] = {}
+    for page in pdf_doc:
+        try:
+            page_dict = page.get_text("dict")
+        except Exception:
+            continue
+        for block in page_dict.get("blocks", []):
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    txt = (span.get("text") or "").strip()
+                    if not txt:
+                        continue
+                    sz = round(float(span.get("size", 11.0)), 1)
+                    size_weights[sz] = size_weights.get(sz, 0) + len(txt)
+    if not size_weights:
+        return 11.0
+    return max(size_weights.items(), key=lambda kv: kv[1])[0]
+
+
+def _bbox_overlaps_any(bbox: Tuple[float, float, float, float], targets: List[Tuple[float, float, float, float]]) -> bool:
+    x0, y0, x1, y1 = bbox
+    area = max(1e-6, (x1 - x0) * (y1 - y0))
+    cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+    for tx0, ty0, tx1, ty1 in targets:
+        if tx0 <= cx <= tx1 and ty0 <= cy <= ty1:
+            return True
+        ix0, iy0 = max(x0, tx0), max(y0, ty0)
+        ix1, iy1 = min(x1, tx1), min(y1, ty1)
+        if ix1 > ix0 and iy1 > iy0:
+            if ((ix1 - ix0) * (iy1 - iy0)) / area >= 0.5:
+                return True
+    return False
+
+
+def _extract_pdf_page_elements(page, body_size: float) -> List[Tuple[str, Any]]:
+    """
+    Extracts structured elements [('h1'|'h2'|'h3'|'p'|'bullet', str) | ('table', List[List[str]])]
+    in vertical reading order using PyMuPDF layout coordinates and font sizes.
+    """
+    positioned: List[Tuple[float, float, float, str, Any]] = []
+    table_bboxes: List[Tuple[float, float, float, float]] = []
+
+    if hasattr(page, "find_tables"):
+        try:
+            found = page.find_tables()
+            for tbl in getattr(found, "tables", []):
+                raw_rows = tbl.extract() or []
+                cleaned_rows = [
+                    [_clean_pdf_cell_text(c) for c in row]
+                    for row in raw_rows
+                ]
+                non_empty_rows = [r for r in cleaned_rows if any(c for c in r)]
+                if len(non_empty_rows) >= 2 or (non_empty_rows and len(non_empty_rows[0]) >= 2):
+                    table_bboxes.append(tuple(tbl.bbox))
+                    positioned.append((tbl.bbox[1], tbl.bbox[0], tbl.bbox[3], "table", non_empty_rows))
+        except Exception:
+            pass
+
+    page_dict = page.get_text("dict")
+    for block in page_dict.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        bbox = tuple(block.get("bbox", (0.0, 0.0, 0.0, 0.0)))
+        if table_bboxes and _bbox_overlaps_any(bbox, table_bboxes):
+            continue
+
+        raw_lines = block.get("lines", [])
+        parsed_lines: List[Tuple[Tuple[float, float, float, float], str, float, bool]] = []
+        for ln in raw_lines:
+            spans = ln.get("spans", [])
+            line_text = "".join(sp.get("text", "") for sp in spans).strip()
+            if not line_text:
+                continue
+            total_chars = 0
+            weighted_sz = 0.0
+            bold_chars = 0
+            for sp in spans:
+                st = (sp.get("text") or "").strip()
+                if not st:
+                    continue
+                n_ch = len(st)
+                total_chars += n_ch
+                weighted_sz += float(sp.get("size", body_size)) * n_ch
+                if int(sp.get("flags", 0)) & 16:
+                    bold_chars += n_ch
+            avg_sz = weighted_sz / max(1, total_chars)
+            is_bold = bold_chars > (total_chars * 0.5)
+            parsed_lines.append((tuple(ln.get("bbox", bbox)), line_text, avg_sz, is_bold))
+
+        if not parsed_lines:
+            continue
+
+        heights = [max(1.0, lb[3] - lb[1]) for lb, _, _, _ in parsed_lines]
+        median_h = sorted(heights)[len(heights) // 2]
+
+        # Group visual lines into logical paragraphs inside the block
+        sub_paras: List[Tuple[float, float, float, List[str], float, bool]] = []
+        cur_y0, cur_x0 = parsed_lines[0][0][1], parsed_lines[0][0][0]
+        cur_texts = [parsed_lines[0][1]]
+        cur_sz_acc = parsed_lines[0][2] * len(parsed_lines[0][1])
+        cur_len = len(parsed_lines[0][1])
+        cur_bold_len = len(parsed_lines[0][1]) if parsed_lines[0][3] else 0
+        prev_y1 = parsed_lines[0][0][3]
+
+        for lb, ltext, lsz, lbold in parsed_lines[1:]:
+            v_gap = lb[1] - prev_y1
+            starts_bullet = bool(_BULLET_START_RE.match(ltext))
+            if starts_bullet or v_gap > max(4.0, median_h * 0.55):
+                sub_paras.append((
+                    cur_y0,
+                    cur_x0,
+                    prev_y1,
+                    cur_texts,
+                    cur_sz_acc / max(1, cur_len),
+                    cur_bold_len > (cur_len * 0.5),
+                ))
+                cur_y0, cur_x0 = lb[1], lb[0]
+                cur_texts = [ltext]
+                cur_sz_acc = lsz * len(ltext)
+                cur_len = len(ltext)
+                cur_bold_len = len(ltext) if lbold else 0
+            else:
+                cur_texts.append(ltext)
+                cur_sz_acc += lsz * len(ltext)
+                cur_len += len(ltext)
+                if lbold:
+                    cur_bold_len += len(ltext)
+            prev_y1 = lb[3]
+
+        sub_paras.append((
+            cur_y0,
+            cur_x0,
+            prev_y1,
+            cur_texts,
+            cur_sz_acc / max(1, cur_len),
+            cur_bold_len > (cur_len * 0.5),
+        ))
+
+        for py0, px0, py1, p_lines, p_sz, p_bold in sub_paras:
+            joined = p_lines[0]
+            for nxt in p_lines[1:]:
+                joined = _join_text_pair(joined, nxt)
+            joined = joined.strip()
+            if not joined:
+                continue
+
+            if _BULLET_START_RE.match(joined):
+                clean_bullet = _BULLET_START_RE.sub("", joined, count=1).strip()
+                positioned.append((py0, px0, py1, "bullet", clean_bullet))
+            elif p_sz >= body_size * 1.55 and len(joined) < 200:
+                positioned.append((py0, px0, py1, "h1", joined))
+            elif p_sz >= body_size * 1.25 and len(joined) < 200:
+                positioned.append((py0, px0, py1, "h2", joined))
+            elif (
+                (p_sz >= body_size * 1.1 or (p_bold and len(joined) < 100 and not joined.endswith((".", "。", "!", "?"))))
+                and len(p_lines) <= 2
+            ):
+                positioned.append((py0, px0, py1, "h3", joined))
+            else:
+                positioned.append((py0, px0, py1, "p", joined))
+
+    positioned.sort(key=lambda item: (round(item[0], 1), round(item[1], 1)))
+
+    # Coalesce consecutive body 'p' blocks separated only by single-line leading (common in Notion/Web PDFs)
+    line_gap_limit = max(6.5, body_size * 0.55)
+    merged: List[Tuple[float, float, float, str, Any]] = []
+    for item in positioned:
+        y0, x0, y1, kind, payload = item
+        if merged and kind == "p" and merged[-1][3] == "p":
+            prev_y0, prev_x0, prev_y1, prev_kind, prev_payload = merged[-1]
+            v_gap = y0 - prev_y1
+            if abs(x0 - prev_x0) <= 12.0 and -1.0 <= v_gap <= line_gap_limit:
+                merged[-1] = (prev_y0, prev_x0, max(prev_y1, y1), "p", _join_text_pair(prev_payload, payload))
+                continue
+        merged.append(item)
+
+    return [(kind, payload) for _, _, _, kind, payload in merged]
+
+
 def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
     """
     Converts a PDF (.pdf) document into an editable Microsoft Word (.docx) document.
-    Uses pdf2docx to reconstruct flow-based paragraphs, styles, images, and tables.
+    Uses pdf2docx to reconstruct flow-based paragraphs, styles, images, and tables,
+    with layout-aware PyMuPDF structured fallback.
     """
     src = Path(pdf_path)
     if not src.exists():
@@ -50,27 +394,43 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
         cv = Converter(str(src))
         cv.convert(str(out_file))
         cv.close()
-    except Exception as e:
-        # Fallback using python-docx with text blocks if pdf2docx encounters issues
+    except Exception:
         import docx
         doc = docx.Document()
-        doc.add_heading(src.stem, level=0)
         try:
             import pymupdf
             pdoc = pymupdf.open(str(src))
-            for page_idx, page in enumerate(pdoc):
-                doc.add_heading(f"Page {page_idx + 1}", level=1)
-                text = page.get_text()
-                for para in text.split("\n\n"):
-                    p_str = para.strip()
-                    if p_str:
-                        doc.add_paragraph(p_str)
-            pdoc.close()
+            try:
+                body_size = _compute_pdf_body_font_size(pdoc)
+                for page_idx, page in enumerate(pdoc):
+                    if page_idx > 0:
+                        doc.add_page_break()
+                    for kind, payload in _extract_pdf_page_elements(page, body_size):
+                        if kind == "h1":
+                            doc.add_heading(payload, level=1)
+                        elif kind == "h2":
+                            doc.add_heading(payload, level=2)
+                        elif kind == "h3":
+                            doc.add_heading(payload, level=3)
+                        elif kind == "bullet":
+                            doc.add_paragraph(payload, style="List Bullet")
+                        elif kind == "p":
+                            doc.add_paragraph(payload)
+                        elif kind == "table" and payload:
+                            num_cols = max(len(r) for r in payload)
+                            tbl = doc.add_table(rows=len(payload), cols=num_cols)
+                            tbl.style = "Table Grid"
+                            for r_i, row in enumerate(payload):
+                                for c_i, val in enumerate(row):
+                                    tbl.cell(r_i, c_i).text = val
+            finally:
+                pdoc.close()
         except Exception:
             import pypdf
             reader = pypdf.PdfReader(str(src))
             for page_idx, page in enumerate(reader.pages):
-                doc.add_heading(f"Page {page_idx + 1}", level=1)
+                if page_idx > 0:
+                    doc.add_page_break()
                 text = page.extract_text() or ""
                 for para in text.split("\n\n"):
                     p_str = para.strip()
@@ -82,7 +442,10 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
 
 
 def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
-    """Converts a PDF file to clean structured Markdown."""
+    """
+    Converts a PDF file to clean structured Markdown using PyMuPDF layout & table extraction
+    (detecting headings relative to body font size and joining wrapped lines without splitting CJK words).
+    """
     src = Path(pdf_path)
     if not src.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
@@ -90,44 +453,80 @@ def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # Attempt conversion via markitdown first
+    md_lines: List[str] = []
+    try:
+        import pymupdf
+        doc = pymupdf.open(str(src))
+        try:
+            body_size = _compute_pdf_body_font_size(doc)
+            has_h1 = False
+            page_chunks: List[str] = []
+            for idx, page in enumerate(doc):
+                elems = _extract_pdf_page_elements(page, body_size)
+                if not elems:
+                    continue
+                p_out: List[str] = []
+                for kind, payload in elems:
+                    if kind == "h1":
+                        has_h1 = True
+                        p_out.append(f"# {payload}\n")
+                    elif kind == "h2":
+                        p_out.append(f"## {payload}\n")
+                    elif kind == "h3":
+                        p_out.append(f"### {payload}\n")
+                    elif kind == "bullet":
+                        p_out.append(f"- {payload}")
+                    elif kind == "p":
+                        p_out.append(f"{payload}\n")
+                    elif kind == "table" and payload:
+                        header = [_escape_md_cell(c) for c in payload[0]]
+                        p_out.append("\n| " + " | ".join(header) + " |")
+                        p_out.append("| " + " | ".join(["---"] * len(header)) + " |")
+                        for row in payload[1:]:
+                            cells = [_escape_md_cell(c) for c in row]
+                            padded = cells + [""] * (len(header) - len(cells))
+                            p_out.append("| " + " | ".join(padded[: len(header)]) + " |")
+                        p_out.append("")
+                page_chunks.append("\n".join(p_out).strip())
+
+            if not has_h1:
+                doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
+                md_lines.append(f"# {doc_title}\n")
+            md_lines.append("\n\n".join(c for c in page_chunks if c))
+        finally:
+            doc.close()
+
+        rendered = "\n".join(md_lines).strip()
+        if rendered:
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(rendered + "\n")
+            return str(out_file)
+    except Exception:
+        pass
+
+    # Secondary fallback via MarkItDown or pypdf
     try:
         from markitdown import MarkItDown
         mid = MarkItDown()
         res = mid.convert(str(src))
-        if res and res.text_content and len(res.text_content.strip()) > 20:
+        if res and res.text_content and res.text_content.strip():
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write(res.text_content.strip() + "\n")
             return str(out_file)
     except Exception:
         pass
 
-    # High-precision fallback via PyMuPDF or pypdf
-    md_lines: List[str] = []
     doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
-    md_lines.append(f"# {doc_title}\n")
-
-    try:
-        import pymupdf
-        doc = pymupdf.open(str(src))
-        for idx, page in enumerate(doc):
-            md_lines.append(f"\n## Page {idx + 1}\n")
-            text = page.get_text() or ""
-            for p in text.split("\n\n"):
-                p_clean = p.strip()
-                if p_clean:
-                    md_lines.append(f"{p_clean}\n")
-        doc.close()
-    except Exception:
-        import pypdf
-        reader = pypdf.PdfReader(str(src))
-        for idx, page in enumerate(reader.pages):
-            md_lines.append(f"\n## Page {idx + 1}\n")
-            text = page.extract_text() or ""
-            for p in text.split("\n\n"):
-                p_clean = p.strip()
-                if p_clean:
-                    md_lines.append(f"{p_clean}\n")
+    md_lines = [f"# {doc_title}\n"]
+    import pypdf
+    reader = pypdf.PdfReader(str(src))
+    for idx, page in enumerate(reader.pages):
+        md_lines.append(f"\n## Page {idx + 1}\n")
+        text = page.extract_text() or ""
+        for p in text.split("\n\n"):
+            p_clean = p.strip()
+            if p_clean:
+                md_lines.append(f"{p_clean}\n")
 
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines).strip() + "\n")
@@ -136,7 +535,7 @@ def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
 
 
 def pdf_to_text(pdf_path: str, txt_output_path: Optional[str] = None) -> str:
-    """Converts a PDF file to clean plain text with page dividers."""
+    """Converts a PDF file to clean plain text with unwrapped lines and page dividers."""
     src = Path(pdf_path)
     if not src.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
@@ -148,10 +547,23 @@ def pdf_to_text(pdf_path: str, txt_output_path: Optional[str] = None) -> str:
     try:
         import pymupdf
         doc = pymupdf.open(str(src))
-        for idx, page in enumerate(doc):
-            t = (page.get_text() or "").strip()
-            pages_text.append(f"--- Page {idx + 1} ---\n{t}")
-        doc.close()
+        try:
+            body_size = _compute_pdf_body_font_size(doc)
+            for idx, page in enumerate(doc):
+                elems = _extract_pdf_page_elements(page, body_size)
+                lines_out: List[str] = []
+                for kind, payload in elems:
+                    if kind == "table":
+                        for row in payload:
+                            lines_out.append("\t".join(row))
+                    elif kind == "bullet":
+                        lines_out.append(f"- {payload}")
+                    else:
+                        lines_out.append(str(payload))
+                t = "\n\n".join(lines_out).strip()
+                pages_text.append(f"--- Page {idx + 1} ---\n{t}")
+        finally:
+            doc.close()
     except Exception:
         import pypdf
         reader = pypdf.PdfReader(str(src))
@@ -169,62 +581,101 @@ def pdf_to_text(pdf_path: str, txt_output_path: Optional[str] = None) -> str:
 # Excel Conversions
 # -----------------------------------------------------------------------------
 
+def _merged_row_values(ws_values, ws_formulas) -> List[List[Any]]:
+    """
+    Reads cell values from a worksheet, falling back to formula strings from ws_formulas
+    when data_only=True returns None for uncached formulas.
+    """
+    val_rows = list(ws_values.iter_rows(values_only=True))
+    if ws_formulas is None:
+        return [list(r) for r in val_rows]
+
+    f_rows = list(ws_formulas.iter_rows(values_only=True))
+    merged_rows: List[List[Any]] = []
+    for r_idx, v_row in enumerate(val_rows):
+        f_row = f_rows[r_idx] if r_idx < len(f_rows) else ()
+        out_row: List[Any] = []
+        for c_idx, v_val in enumerate(v_row):
+            if v_val is None and c_idx < len(f_row):
+                f_val = f_row[c_idx]
+                if isinstance(f_val, str) and f_val.strip().startswith("="):
+                    out_row.append(f_val)
+                    continue
+            out_row.append(v_val)
+        merged_rows.append(out_row)
+    return merged_rows
+
+
 def excel_to_markdown(xlsx_path: str, md_output_path: Optional[str] = None) -> str:
     """
     Converts an Excel (.xlsx) workbook into a clean, multi-sheet Markdown document.
     Each sheet is represented with a heading and a GitHub-flavored Markdown table.
+    Preserves formula text when cached formula results are absent.
     """
     src = Path(xlsx_path)
     if not src.exists():
         raise FileNotFoundError(f"Excel file not found: {xlsx_path}")
 
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
-    wb = openpyxl.load_workbook(str(src), data_only=True)
+    wb_val = openpyxl.load_workbook(str(src), data_only=True)
+    wb_formula = openpyxl.load_workbook(str(src), data_only=False, read_only=True)
 
     md_lines: List[str] = []
     doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
     md_lines.append(f"# {doc_title}\n")
 
-    def sanitize_cell(val) -> str:
-        if val is None:
-            return ""
-        s = str(val).replace("\r\n", "<br>").replace("\n", "<br>").replace("|", "\\|")
-        return s.strip()
+    try:
+        for sheet_name in wb_val.sheetnames:
+            ws_val = wb_val[sheet_name]
+            ws_formula = wb_formula[sheet_name] if sheet_name in wb_formula.sheetnames else None
+            raw_rows = _merged_row_values(ws_val, ws_formula)
+            filtered_rows = [
+                row for row in raw_rows if any(c is not None and str(c).strip() != "" for c in row)
+            ]
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        raw_rows = list(ws.iter_rows(values_only=True))
-        filtered_rows = [row for row in raw_rows if any(c is not None and str(c).strip() != "" for c in row)]
+            if not filtered_rows:
+                continue
 
-        if not filtered_rows:
-            continue
+            md_lines.append(f"## {sheet_name}\n")
 
-        md_lines.append(f"## {sheet_name}\n")
-        max_cols = max(len(r) for r in filtered_rows)
-        active_cols = [c for c in range(max_cols) if any(c < len(r) and r[c] is not None and str(r[c]).strip() != "" for r in filtered_rows)]
+            # If row 0 is a single-cell title banner followed by multi-column rows, emit it as a subheading
+            first_non_empty = [c for c in filtered_rows[0] if c is not None and str(c).strip() != ""]
+            if (
+                len(filtered_rows) >= 2
+                and len(first_non_empty) == 1
+                and sum(1 for c in filtered_rows[1] if c is not None and str(c).strip() != "") >= 2
+            ):
+                md_lines.append(f"### {str(first_non_empty[0]).strip()}\n")
+                filtered_rows = filtered_rows[1:]
 
-        if not active_cols:
-            continue
+            max_cols = max(len(r) for r in filtered_rows)
+            active_cols = [
+                c
+                for c in range(max_cols)
+                if any(c < len(r) and r[c] is not None and str(r[c]).strip() != "" for r in filtered_rows)
+            ]
 
-        table_rows = []
-        for r in filtered_rows:
-            row_cells = [sanitize_cell(r[c] if c < len(r) else None) for c in active_cols]
-            table_rows.append(row_cells)
+            if not active_cols:
+                continue
 
-        if not table_rows:
-            continue
+            table_rows = [
+                [_escape_md_cell(r[c] if c < len(r) else None) for c in active_cols]
+                for r in filtered_rows
+            ]
 
-        header_cells = table_rows[0]
-        md_lines.append("| " + " | ".join(header_cells) + " |")
-        md_lines.append("| " + " | ".join(["---"] * len(header_cells)) + " |")
+            header_cells = table_rows[0]
+            md_lines.append("| " + " | ".join(header_cells) + " |")
+            md_lines.append("| " + " | ".join(["---"] * len(header_cells)) + " |")
 
-        for data_row in table_rows[1:]:
-            padded = data_row + [""] * (len(header_cells) - len(data_row))
-            md_lines.append("| " + " | ".join(padded[:len(header_cells)]) + " |")
+            for data_row in table_rows[1:]:
+                padded = data_row + [""] * (len(header_cells) - len(data_row))
+                md_lines.append("| " + " | ".join(padded[: len(header_cells)]) + " |")
 
-        md_lines.append("")
+            md_lines.append("")
+    finally:
+        wb_val.close()
+        wb_formula.close()
 
-    wb.close()
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines).strip() + "\n")
@@ -233,14 +684,18 @@ def excel_to_markdown(xlsx_path: str, md_output_path: Optional[str] = None) -> s
 
 
 def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> str:
-    """Converts a Markdown (.md) document into a styled Excel (.xlsx) workbook."""
+    """
+    Converts a Markdown (.md) document into a styled Excel (.xlsx) workbook.
+    Preserves tables (including escaped pipes and dash-only cells), leading zeros,
+    subheadings, lists, code blocks, and prose paragraphs without leaving orphan sheets.
+    """
     src = Path(md_path)
     if not src.exists():
         raise FileNotFoundError(f"Markdown file not found: {md_path}")
 
     out_file = Path(xlsx_output_path) if xlsx_output_path else get_unique_output_path(src.with_suffix(".xlsx"))
-
-    with open(src, "r", encoding="utf-8", errors="replace") as f:
+    enc = detect_text_encoding(src)
+    with open(src, "r", encoding=enc, errors="replace") as f:
         content = f.read()
 
     wb = openpyxl.Workbook()
@@ -250,12 +705,14 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
     header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     title_font = Font(name="Segoe UI", size=13, bold=True, color="1F4E79")
+    subhead_font = Font(name="Segoe UI", size=11, bold=True, color="1F4E79")
     normal_font = Font(name="Segoe UI", size=10)
+    code_font = Font(name="Consolas", size=10)
     thin_border = Border(
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
         top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9")
+        bottom=Side(style="thin", color="D9D9D9"),
     )
     center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
@@ -263,65 +720,110 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
     lines = content.splitlines()
     current_sheet = default_sheet
     current_row = 1
-    sheet_created_count = 0
+    sheet_has_content = False
+    has_named_section_sheet = False
+    pending_doc_title: Optional[str] = None
     idx = 0
 
+    def flush_pending_title():
+        nonlocal current_row, pending_doc_title, sheet_has_content
+        if pending_doc_title is not None:
+            c = current_sheet.cell(row=current_row, column=1, value=pending_doc_title)
+            c.font = title_font
+            current_row += 2
+            pending_doc_title = None
+            sheet_has_content = True
+
     while idx < len(lines):
-        line = lines[idx].strip()
+        raw_line = lines[idx]
+        line = raw_line.strip()
         if not line:
             idx += 1
             continue
 
-        if line.startswith("# "):
-            title_text = line[2:].strip()
-            cell = current_sheet.cell(row=current_row, column=1, value=title_text)
-            cell.font = title_font
-            current_row += 2
+        # Fenced code block (must be checked before '#' headings and '|' tables)
+        fence_m = _FENCE_OPEN_RE.match(raw_line)
+        if fence_m:
+            flush_pending_title()
+            fence_seq = fence_m.group(1)
+            fence_char = fence_seq[0]
+            fence_len = len(fence_seq)
+            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            code_lines: List[str] = []
             idx += 1
+            while idx < len(lines) and not close_re.match(lines[idx]):
+                code_lines.append(lines[idx])
+                idx += 1
+            if idx < len(lines):
+                idx += 1
+            if code_lines:
+                c = current_sheet.cell(row=current_row, column=1, value="\n".join(code_lines))
+                c.font = code_font
+                c.alignment = left_align
+                current_row += 2
+                sheet_has_content = True
             continue
 
-        if line.startswith("## "):
-            section_title = line[3:].strip()
-            clean_title = re.sub(r'[\\/*?:\[\]]', "_", section_title)[:31]
-            if sheet_created_count == 0 and current_row == 1:
-                current_sheet.title = clean_title or "Sheet1"
+        heading_m = _MD_HEADING_RE.match(line)
+        if heading_m:
+            level = len(heading_m.group(1))
+            heading_text = heading_m.group(2).strip()
+            if level == 1:
+                if not sheet_has_content and not has_named_section_sheet and pending_doc_title is None:
+                    pending_doc_title = heading_text
+                else:
+                    flush_pending_title()
+                    c = current_sheet.cell(row=current_row, column=1, value=heading_text)
+                    c.font = title_font
+                    current_row += 2
+                    sheet_has_content = True
+            elif level == 2:
+                if not sheet_has_content and not has_named_section_sheet:
+                    # Reuse initial default_sheet cleanly without creating an orphan "Document" sheet
+                    current_sheet.title = _unique_sheet_name(heading_text, [])
+                    if pending_doc_title:
+                        wb.properties.title = pending_doc_title
+                        pending_doc_title = None
+                else:
+                    new_name = _unique_sheet_name(heading_text, list(wb.sheetnames))
+                    current_sheet = wb.create_sheet(title=new_name)
+                    current_row = 1
+                has_named_section_sheet = True
+                sheet_has_content = False
             else:
-                sheet_name = clean_title or f"Sheet{len(wb.sheetnames) + 1}"
-                counter = 1
-                while sheet_name in wb.sheetnames:
-                    sheet_name = f"{clean_title[:28]}_{counter}"
-                    counter += 1
-                current_sheet = wb.create_sheet(title=sheet_name)
-                current_row = 1
-            sheet_created_count += 1
+                flush_pending_title()
+                c = current_sheet.cell(row=current_row, column=1, value=heading_text)
+                c.font = subhead_font
+                current_row += 1
+                sheet_has_content = True
             idx += 1
             continue
 
-        if line.startswith("|") and line.endswith("|"):
-            table_lines = []
-            while idx < len(lines) and lines[idx].strip().startswith("|") and lines[idx].strip().endswith("|"):
+        if _is_md_table_line(line):
+            flush_pending_title()
+            table_lines: List[str] = []
+            while idx < len(lines) and _is_md_table_line(lines[idx]):
                 table_lines.append(lines[idx].strip())
                 idx += 1
 
-            table_data = []
-            for t_line in table_lines:
-                inner = t_line[1:-1]
-                cells = [c.strip().replace("<br>", "\n").replace("\\|", "|") for c in inner.split("|")]
-                if set("".join(cells).replace("-", "").replace(":", "").strip()) == set():
+            table_data: List[List[str]] = []
+            for t_idx, t_line in enumerate(table_lines):
+                cells = _split_md_table_row(t_line)
+                if _is_md_separator_row(cells, t_idx):
                     continue
                 table_data.append(cells)
 
             for r_idx, row_values in enumerate(table_data):
-                is_header = (r_idx == 0)
+                is_header = r_idx == 0
                 for c_idx, val in enumerate(row_values):
                     cell = current_sheet.cell(row=current_row + r_idx, column=c_idx + 1)
-                    if val.isdigit():
-                        cell.value = int(val)
+                    if is_header:
+                        cell.value = val
                     else:
-                        try:
-                            cell.value = float(val) if ("." in val or "," in val) else val
-                        except ValueError:
-                            cell.value = val
+                        coerced_val, num_fmt = _coerce_excel_value(val)
+                        cell.value = coerced_val
+                        if num_fmt:
+                            cell.number_format = num_fmt
 
                     cell.border = thin_border
                     if is_header:
@@ -332,14 +834,28 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
                         cell.font = normal_font
                         cell.alignment = left_align
 
-                current_sheet.row_dimensions[current_row + r_idx].height = 24 if is_header else 20
+                line_count = max((str(v).count("\n") + 1 for v in row_values), default=1)
+                base_h = 24 if is_header else 20
+                current_sheet.row_dimensions[current_row + r_idx].height = max(base_h, line_count * 16)
 
-            current_row += len(table_data) + 1
+            if table_data:
+                current_row += len(table_data) + 1
+                sheet_has_content = True
             continue
 
+        # Prose / list / blockquote fallback (preserve instead of silently skipping)
+        flush_pending_title()
+        c = current_sheet.cell(row=current_row, column=1, value=line)
+        c.font = normal_font
+        c.alignment = left_align
+        current_row += 1
+        sheet_has_content = True
         idx += 1
 
-    # Auto-adjust column widths
+    # If document had only '# Title' and nothing else, flush it so sheet isn't blank
+    if not sheet_has_content and pending_doc_title is not None:
+        flush_pending_title()
+
     for ws in wb.worksheets:
         for col in ws.columns:
             max_len = 0
@@ -353,6 +869,7 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(out_file))
+    wb.close()
     return str(out_file)
 
 
@@ -361,27 +878,9 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
 # -----------------------------------------------------------------------------
 
 def _detect_csv_params(file_path: Path) -> Tuple[str, str]:
-    """Detects encoding and delimiter for CSV/TSV."""
-    candidate_enc = ["utf-8-sig", "utf-8", "cp1252", "latin1"]
-    enc = "utf-8"
-    for e in candidate_enc:
-        try:
-            with open(file_path, "r", encoding=e) as f:
-                f.read(4096)
-            enc = e
-            break
-        except (UnicodeDecodeError, LookupError):
-            continue
-
-    delim = "\t" if file_path.suffix.lower() == ".tsv" else ","
-    try:
-        with open(file_path, "r", encoding=enc) as f:
-            sample = f.read(4096)
-            dialect = csv.Sniffer().sniff(sample, delimiters=",\t;|")
-            delim = dialect.delimiter
-    except Exception:
-        pass
-
+    """Detects encoding and delimiter deterministically via shared helpers."""
+    enc = detect_text_encoding(file_path)
+    delim = CsvTranslator._detect_delimiter(file_path, enc)
     return enc, delim
 
 
@@ -396,7 +895,7 @@ def csv_to_excel(csv_path: str, xlsx_output_path: Optional[str] = None) -> str:
 
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = src.stem[:31]
+    ws.title = _unique_sheet_name(src.stem, [])
 
     header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
@@ -405,7 +904,7 @@ def csv_to_excel(csv_path: str, xlsx_output_path: Optional[str] = None) -> str:
         left=Side(style="thin", color="D9D9D9"),
         right=Side(style="thin", color="D9D9D9"),
         top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9")
+        bottom=Side(style="thin", color="D9D9D9"),
     )
     left_align = Alignment(horizontal="left", vertical="center")
     center_align = Alignment(horizontal="center", vertical="center")
@@ -413,17 +912,17 @@ def csv_to_excel(csv_path: str, xlsx_output_path: Optional[str] = None) -> str:
     with open(src, "r", encoding=enc, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delim)
         for r_idx, row in enumerate(reader, start=1):
-            is_header = (r_idx == 1)
+            is_header = r_idx == 1
             for c_idx, val in enumerate(row, start=1):
                 cell = ws.cell(row=r_idx, column=c_idx)
                 val_str = str(val).strip()
-                if val_str.isdigit():
-                    cell.value = int(val_str)
+                if is_header:
+                    cell.value = val_str
                 else:
-                    try:
-                        cell.value = float(val_str) if "." in val_str else val_str
-                    except ValueError:
-                        cell.value = val_str
+                    coerced_val, num_fmt = _coerce_excel_value(val_str)
+                    cell.value = coerced_val
+                    if num_fmt:
+                        cell.number_format = num_fmt
 
                 cell.border = thin_border
                 if is_header:
@@ -441,27 +940,51 @@ def csv_to_excel(csv_path: str, xlsx_output_path: Optional[str] = None) -> str:
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(out_file))
+    wb.close()
     return str(out_file)
 
 
 def excel_to_csv(xlsx_path: str, csv_output_path: Optional[str] = None) -> str:
-    """Exports active sheet of an Excel (.xlsx) workbook to CSV with UTF-8-SIG."""
+    """
+    Exports Excel (.xlsx) worksheet to CSV with UTF-8-SIG.
+    Uses the active sheet if non-empty, otherwise falls back to the first non-empty sheet,
+    preserving formula strings when cached values are missing.
+    """
     src = Path(xlsx_path)
     if not src.exists():
         raise FileNotFoundError(f"Excel file not found: {xlsx_path}")
 
     out_file = Path(csv_output_path) if csv_output_path else get_unique_output_path(src.with_suffix(".csv"))
-    wb = openpyxl.load_workbook(str(src), data_only=True)
-    ws = wb.active
+    wb_val = openpyxl.load_workbook(str(src), data_only=True)
+    wb_formula = openpyxl.load_workbook(str(src), data_only=False, read_only=True)
 
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_file, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        for row in ws.iter_rows(values_only=True):
-            if any(c is not None and str(c).strip() != "" for c in row):
+    try:
+        ws_val = wb_val.active
+        ws_formula = wb_formula[ws_val.title] if ws_val.title in wb_formula.sheetnames else None
+        rows = _merged_row_values(ws_val, ws_formula)
+        non_empty = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]
+
+        if not non_empty:
+            for s_name in wb_val.sheetnames:
+                cand_val = wb_val[s_name]
+                cand_f = wb_formula[s_name] if s_name in wb_formula.sheetnames else None
+                cand_rows = _merged_row_values(cand_val, cand_f)
+                cand_non_empty = [
+                    r for r in cand_rows if any(c is not None and str(c).strip() != "" for c in r)
+                ]
+                if cand_non_empty:
+                    non_empty = cand_non_empty
+                    break
+
+        out_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_file, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            for row in non_empty:
                 writer.writerow(["" if c is None else str(c) for c in row])
+    finally:
+        wb_val.close()
+        wb_formula.close()
 
-    wb.close()
     return str(out_file)
 
 
@@ -479,8 +1002,9 @@ def csv_to_markdown(csv_path: str, md_output_path: Optional[str] = None) -> str:
         reader = csv.reader(f, delimiter=delim)
         for r in reader:
             if any(c.strip() != "" for c in r):
-                rows.append([c.strip().replace("\r\n", "<br>").replace("\n", "<br>").replace("|", "\\|") for c in r])
+                rows.append([_escape_md_cell(c) for c in r])
 
+    out_file.parent.mkdir(parents=True, exist_ok=True)
     if not rows:
         out_file.write_text(f"# {src.stem}\n\n*Empty CSV dataset*\n", encoding="utf-8")
         return str(out_file)
@@ -492,9 +1016,8 @@ def csv_to_markdown(csv_path: str, md_output_path: Optional[str] = None) -> str:
 
     for data_row in rows[1:]:
         padded = data_row + [""] * (len(header) - len(data_row))
-        md_lines.append("| " + " | ".join(padded[:len(header)]) + " |")
+        md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
 
-    out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines).strip() + "\n")
 
@@ -508,19 +1031,42 @@ def markdown_to_csv(md_path: str, csv_output_path: Optional[str] = None) -> str:
         raise FileNotFoundError(f"Markdown file not found: {md_path}")
 
     out_file = Path(csv_output_path) if csv_output_path else get_unique_output_path(src.with_suffix(".csv"))
-    with open(src, "r", encoding="utf-8", errors="replace") as f:
+    enc = detect_text_encoding(src)
+    with open(src, "r", encoding=enc, errors="replace") as f:
         content = f.read()
 
     lines = content.splitlines()
-    table_rows = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("|") and stripped.endswith("|"):
-            inner = stripped[1:-1]
-            cells = [c.strip().replace("<br>", "\n").replace("\\|", "|") for c in inner.split("|")]
-            if set("".join(cells).replace("-", "").replace(":", "").strip()) == set():
-                continue
-            table_rows.append(cells)
+    table_rows: List[List[str]] = []
+    idx = 0
+    in_fence = False
+    fence_char = ""
+    fence_len = 0
+
+    while idx < len(lines):
+        raw_line = lines[idx]
+        fence_m = _FENCE_OPEN_RE.match(raw_line)
+        if not in_fence and fence_m:
+            in_fence = True
+            fence_char = fence_m.group(1)[0]
+            fence_len = len(fence_m.group(1))
+            idx += 1
+            continue
+        if in_fence:
+            if re.match(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$", raw_line):
+                in_fence = False
+            idx += 1
+            continue
+
+        if _is_md_table_line(raw_line):
+            block_idx = 0
+            while idx < len(lines) and _is_md_table_line(lines[idx]):
+                cells = _split_md_table_row(lines[idx])
+                if not _is_md_separator_row(cells, block_idx):
+                    table_rows.append(cells)
+                block_idx += 1
+                idx += 1
+            continue
+        idx += 1
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8-sig", newline="") as f:
@@ -560,12 +1106,56 @@ def _find_soffice_binary() -> Optional[str]:
     return None
 
 
+def _register_unicode_pdf_font() -> str:
+    """Registers the broadest Unicode/CJK font available for ReportLab fallback."""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    font_candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/Library/Fonts/Arial Unicode.ttf",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        r"C:\Windows\Fonts\arialuni.ttf",
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\meiryo.ttc",
+        r"C:\Windows\Fonts\msgothic.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        r"C:\Windows\Fonts\arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for fp in font_candidates:
+        if os.path.exists(fp):
+            try:
+                fname = f"RakuDocxFont_{re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(fp))}"
+                if fname in pdfmetrics.getRegisteredFontNames():
+                    return fname
+                if fp.lower().endswith(".ttc"):
+                    pdfmetrics.registerFont(TTFont(fname, fp, subfontIndex=0))
+                else:
+                    pdfmetrics.registerFont(TTFont(fname, fp))
+                return fname
+            except Exception:
+                continue
+    return "Helvetica"
+
+
+def _rl_safe_text(text: str) -> str:
+    """Escapes XML markup characters for ReportLab Paragraph and preserves line breaks."""
+    return xml_escape(text).replace("\r\n", "\n").replace("\n", "<br/>")
+
+
 def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
     """
     Converts a Microsoft Word (.docx) document to a PDF document.
     Attempts system engines (LibreOffice CLI / docx2pdf) first,
-    falling back to high-fidelity pure-Python flow-based rendering
-    via python-docx and ReportLab Platypus with Unicode fonts.
+    falling back to pure-Python flow-based rendering via python-docx and ReportLab Platypus.
     """
     src = Path(docx_path)
     if not src.exists():
@@ -574,7 +1164,7 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
     out_file = Path(pdf_output_path) if pdf_output_path else get_unique_output_path(src.with_suffix(".pdf"))
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Try LibreOffice CLI if available (preserves 100% typography, exact sizes, fonts, styles, tables, and images)
+    # 1. Try LibreOffice CLI if available
     import shutil
     import subprocess
     soffice_bin = _find_soffice_binary()
@@ -599,7 +1189,7 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
         except Exception as e:
             print(f"[Warning] LibreOffice conversion failed, falling back to python renderer: {e}")
 
-    # 2. Try docx2pdf if installed (macOS with MS Word, Windows with MS Word)
+    # 2. Try docx2pdf if installed (macOS/Windows with MS Word)
     try:
         from docx2pdf import convert
         convert(str(src), str(out_file))
@@ -615,35 +1205,8 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
 
-    # Resolve Unicode font
-    font_candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/Library/Fonts/Arial.ttf",
-        r"C:\Windows\Fonts\arialuni.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-        r"C:\Windows\Fonts\msjh.ttc",
-        r"C:\Windows\Fonts\meiryo.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ]
-    font_name = "Helvetica"
-    for fp in font_candidates:
-        if os.path.exists(fp):
-            try:
-                fname = f"RakuDocxFont_{os.path.basename(fp).replace('.', '_')}"
-                pdfmetrics.registerFont(TTFont(fname, fp))
-                font_name = fname
-                break
-            except Exception:
-                continue
-
+    font_name = _register_unicode_pdf_font()
     doc = docx.Document(str(src))
     styles = getSampleStyleSheet()
 
@@ -684,19 +1247,20 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
     )
 
     story = []
+    usable_width = letter[0] - 80.0
 
-    def get_element_images(elem):
+    def get_element_images(elem, max_w: float = 480.0, max_h: float = 380.0):
         imgs = []
         try:
-            blips = elem.xpath('.//a:blip/@r:embed')
+            blips = elem.xpath(".//a:blip/@r:embed")
             for rId in blips:
                 if rId in doc.part.rels:
                     rel = doc.part.rels[rId]
-                    if 'image' in rel.target_ref:
+                    if "image" in rel.target_ref:
                         blob = rel.target_part.blob
                         im = PILImage.open(io.BytesIO(blob))
                         w, h = im.size
-                        scale = min(1.0, 480.0 / max(1, w), 380.0 / max(1, h))
+                        scale = min(1.0, max_w / max(1, w), max_h / max(1, h))
                         disp_w = max(10.0, w * scale)
                         disp_h = max(10.0, h * scale)
                         imgs.append(RLImage(io.BytesIO(blob), width=disp_w, height=disp_h))
@@ -704,14 +1268,11 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
             pass
         return imgs
 
-    # Process document elements in order
     for elem in doc.element.body:
         tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
         if tag == "p":
             p = docx.text.paragraph.Paragraph(elem, doc)
-            # 1. Check and add any images embedded in paragraph
-            p_imgs = get_element_images(p._p)
-            for img in p_imgs:
+            for img in get_element_images(p._p):
                 story.append(img)
                 story.append(Spacer(1, 4))
 
@@ -726,18 +1287,28 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
                     st = h3_style
                 else:
                     st = body_style
-                story.append(Paragraph(text, st))
+                story.append(Paragraph(_rl_safe_text(text), st))
         elif tag == "tbl":
             table = docx.table.Table(elem, doc)
             table_data = []
+            max_cols = max((len(r.cells) for r in table.rows), default=0)
+            col_w = usable_width / max(1, max_cols)
             for row in table.rows:
                 row_data = []
                 for cell in row.cells:
+                    cell_flowables = []
                     ctext = cell.text.strip()
-                    row_data.append(Paragraph(ctext, body_style))
+                    if ctext:
+                        cell_flowables.append(Paragraph(_rl_safe_text(ctext), body_style))
+                    cell_imgs = get_element_images(cell._tc, max_w=max(30.0, col_w - 12.0), max_h=240.0)
+                    cell_flowables.extend(cell_imgs)
+                    if not cell_flowables:
+                        cell_flowables.append(Paragraph("", body_style))
+                    row_data.append(cell_flowables if len(cell_flowables) > 1 else cell_flowables[0])
                 table_data.append(row_data)
             if table_data:
-                rl_table = Table(table_data)
+                col_widths = [usable_width / max_cols] * max_cols if max_cols > 0 else None
+                rl_table = Table(table_data, colWidths=col_widths)
                 rl_table.setStyle(TableStyle([
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -765,7 +1336,10 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
 
 
 def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> str:
-    """Converts a Microsoft Word (.docx) document to GitHub Flavored Markdown."""
+    """
+    Converts a Microsoft Word (.docx) document to GitHub Flavored Markdown,
+    strictly preserving the original interleaving order of paragraphs and tables.
+    """
     src = Path(docx_path)
     if not src.exists():
         raise FileNotFoundError(f"Word document not found: {docx_path}")
@@ -774,33 +1348,50 @@ def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> st
     import docx
     doc = docx.Document(str(src))
 
-    md_lines = [f"# {src.stem}\n"]
-    for p in doc.paragraphs:
-        txt = p.text.strip()
-        if not txt:
-            continue
-        style_name = p.style.name.lower() if p.style else ""
-        if "heading 1" in style_name:
-            md_lines.append(f"## {txt}\n")
-        elif "heading 2" in style_name:
-            md_lines.append(f"### {txt}\n")
-        elif "heading 3" in style_name:
-            md_lines.append(f"#### {txt}\n")
-        else:
-            md_lines.append(f"{txt}\n")
+    md_lines: List[str] = []
+    has_top_heading = any(
+        p.text.strip() and ("heading 1" in ((p.style.name if p.style else "").lower()) or "title" in ((p.style.name if p.style else "").lower()))
+        for p in doc.paragraphs[:3]
+    )
+    if not has_top_heading:
+        md_lines.append(f"# {src.stem}\n")
 
-    for t in doc.tables:
-        t_rows = []
-        for r in t.rows:
-            t_rows.append([cell.text.strip().replace("\n", "<br>").replace("|", "\\|") for cell in r.cells])
-        if t_rows:
-            header = t_rows[0]
-            md_lines.append("\n| " + " | ".join(header) + " |")
-            md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-            for row in t_rows[1:]:
-                padded = row + [""] * (len(header) - len(row))
-                md_lines.append("| " + " | ".join(padded[:len(header)]) + " |")
-            md_lines.append("")
+    for elem in doc.element.body:
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag == "p":
+            p = docx.text.paragraph.Paragraph(elem, doc)
+            txt = p.text.strip()
+            if not txt:
+                continue
+            style_name = p.style.name.lower() if p.style else ""
+            if "title" in style_name:
+                md_lines.append(f"# {txt}\n")
+            elif "heading 1" in style_name:
+                md_lines.append(f"# {txt}\n" if not has_top_heading else f"## {txt}\n")
+            elif "heading 2" in style_name:
+                md_lines.append(f"### {txt}\n")
+            elif "heading 3" in style_name:
+                md_lines.append(f"#### {txt}\n")
+            elif "heading 4" in style_name:
+                md_lines.append(f"##### {txt}\n")
+            elif "list bullet" in style_name:
+                md_lines.append(f"- {txt}")
+            else:
+                md_lines.append(f"{txt}\n")
+        elif tag == "tbl":
+            t = docx.table.Table(elem, doc)
+            t_rows = [
+                [_escape_md_cell(cell.text) for cell in r.cells]
+                for r in t.rows
+            ]
+            if t_rows:
+                header = t_rows[0]
+                md_lines.append("\n| " + " | ".join(header) + " |")
+                md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+                for row in t_rows[1:]:
+                    padded = row + [""] * (len(header) - len(row))
+                    md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+                md_lines.append("")
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:
@@ -819,42 +1410,56 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
     import docx
     doc = docx.Document()
 
-    with open(src, "r", encoding="utf-8", errors="replace") as f:
+    enc = detect_text_encoding(src)
+    with open(src, "r", encoding=enc, errors="replace") as f:
         content = f.read()
 
     lines = content.splitlines()
     idx = 0
     while idx < len(lines):
-        line = lines[idx].rstrip()
-        stripped = line.strip()
+        raw_line = lines[idx]
+        stripped = raw_line.strip()
         if not stripped:
             idx += 1
             continue
 
-        if stripped.startswith("# "):
-            doc.add_heading(stripped[2:], level=0)
+        # Fenced code blocks
+        fence_m = _FENCE_OPEN_RE.match(raw_line)
+        if fence_m:
+            fence_seq = fence_m.group(1)
+            fence_char = fence_seq[0]
+            fence_len = len(fence_seq)
+            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            code_lines: List[str] = []
             idx += 1
+            while idx < len(lines) and not close_re.match(lines[idx]):
+                code_lines.append(lines[idx])
+                idx += 1
+            if idx < len(lines):
+                idx += 1
+            if code_lines:
+                p = doc.add_paragraph()
+                run = p.add_run("\n".join(code_lines))
+                run.font.name = "Courier New"
             continue
-        if stripped.startswith("## "):
-            doc.add_heading(stripped[3:], level=1)
-            idx += 1
-            continue
-        if stripped.startswith("### "):
-            doc.add_heading(stripped[4:], level=2)
+
+        heading_m = _MD_HEADING_RE.match(stripped)
+        if heading_m:
+            level = min(len(heading_m.group(1)) - 1, 9)
+            doc.add_heading(heading_m.group(2).strip(), level=level)
             idx += 1
             continue
 
-        if stripped.startswith("|") and stripped.endswith("|"):
+        if _is_md_table_line(stripped):
             table_lines = []
-            while idx < len(lines) and lines[idx].strip().startswith("|") and lines[idx].strip().endswith("|"):
+            while idx < len(lines) and _is_md_table_line(lines[idx]):
                 table_lines.append(lines[idx].strip())
                 idx += 1
 
             parsed_rows = []
-            for tl in table_lines:
-                inner = tl[1:-1]
-                cells = [c.strip().replace("<br>", "\n").replace("\\|", "|") for c in inner.split("|")]
-                if set("".join(cells).replace("-", "").replace(":", "").strip()) == set():
+            for t_idx, tl in enumerate(table_lines):
+                cells = _split_md_table_row(tl)
+                if _is_md_separator_row(cells, t_idx):
                     continue
                 parsed_rows.append(cells)
 
@@ -872,6 +1477,12 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
                                     run.bold = True
             continue
 
+        if re.match(r"^[-*+]\s+", stripped):
+            item_text = re.sub(r"^[-*+]\s+", "", stripped)
+            doc.add_paragraph(item_text, style="List Bullet")
+            idx += 1
+            continue
+
         p = doc.add_paragraph()
         p.add_run(stripped)
         idx += 1
@@ -881,8 +1492,32 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
     return str(out_file)
 
 
+def text_to_docx(txt_path: str, docx_output_path: Optional[str] = None) -> str:
+    """Converts a Plain Text (.txt) file into a clean Word (.docx) document without Markdown heuristics."""
+    src = Path(txt_path)
+    if not src.exists():
+        raise FileNotFoundError(f"Text file not found: {txt_path}")
+
+    out_file = Path(docx_output_path) if docx_output_path else get_unique_output_path(src.with_suffix(".docx"))
+    import docx
+    doc = docx.Document()
+
+    enc = detect_text_encoding(src)
+    with open(src, "r", encoding=enc, errors="replace") as f:
+        content = f.read()
+
+    for block in content.split("\n\n"):
+        cleaned = block.strip("\r\n")
+        if cleaned.strip():
+            doc.add_paragraph(cleaned)
+
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(out_file))
+    return str(out_file)
+
+
 def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
-    """Extracts text from Word document into plain text (.txt)."""
+    """Extracts text from Word document into plain text (.txt) in document order."""
     src = Path(docx_path)
     if not src.exists():
         raise FileNotFoundError(f"Word document not found: {docx_path}")
@@ -891,12 +1526,19 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
     import docx
     doc = docx.Document(str(src))
 
-    texts = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-    for t in doc.tables:
-        for row in t.rows:
-            row_text = "\t".join(cell.text.strip() for cell in row.cells)
-            if row_text:
-                texts.append(row_text)
+    texts: List[str] = []
+    for elem in doc.element.body:
+        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+        if tag == "p":
+            p = docx.text.paragraph.Paragraph(elem, doc)
+            if p.text.strip():
+                texts.append(p.text.strip())
+        elif tag == "tbl":
+            t = docx.table.Table(elem, doc)
+            for row in t.rows:
+                row_text = "\t".join(cell.text.strip() for cell in row.cells)
+                if row_text.strip():
+                    texts.append(row_text)
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
     with open(out_file, "w", encoding="utf-8") as f:
@@ -906,36 +1548,47 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
 
 
 def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> str:
-    """Extracts slides outline and tables from PowerPoint (.pptx) to Markdown."""
+    """Extracts slides outline (including grouped shapes), tables, and speaker notes to Markdown."""
     src = Path(pptx_path)
     if not src.exists():
         raise FileNotFoundError(f"PowerPoint presentation not found: {pptx_path}")
 
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
     from pptx import Presentation
+    from pptx_parser import iter_pptx_shapes
+
     prs = Presentation(str(src))
 
     md_lines = [f"# {src.stem}\n"]
     for idx, slide in enumerate(prs.slides, start=1):
         md_lines.append(f"## Slide {idx}\n")
-        for shape in slide.shapes:
+        title_shape = getattr(slide.shapes, "title", None)
+        for shape in iter_pptx_shapes(slide.shapes):
             if shape.has_text_frame:
+                is_title = title_shape is not None and shape == title_shape
                 for p in shape.text_frame.paragraphs:
                     txt = p.text.strip()
                     if txt:
-                        md_lines.append(f"- {txt}")
+                        md_lines.append(f"### {txt}" if is_title else f"- {txt}")
             if shape.has_table:
-                t_rows = []
-                for row in shape.table.rows:
-                    t_rows.append([c.text.strip().replace("\n", "<br>").replace("|", "\\|") for c in row.cells])
+                t_rows = [
+                    [_escape_md_cell(c.text) for c in row.cells]
+                    for row in shape.table.rows
+                ]
                 if t_rows:
                     header = t_rows[0]
                     md_lines.append("\n| " + " | ".join(header) + " |")
                     md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
                     for r in t_rows[1:]:
                         padded = r + [""] * (len(header) - len(r))
-                        md_lines.append("| " + " | ".join(padded[:len(header)]) + " |")
+                        md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
                     md_lines.append("")
+
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            notes_txt = slide.notes_slide.notes_text_frame.text.strip()
+            if notes_txt:
+                md_lines.append(f"\n> **Notes:** {notes_txt}\n")
+
         md_lines.append("")
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -946,19 +1599,21 @@ def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> st
 
 
 def pptx_to_text(pptx_path: str, txt_output_path: Optional[str] = None) -> str:
-    """Extracts text from PowerPoint (.pptx) into plain text."""
+    """Extracts text from PowerPoint (.pptx) including grouped shapes and speaker notes into plain text."""
     src = Path(pptx_path)
     if not src.exists():
         raise FileNotFoundError(f"PowerPoint presentation not found: {pptx_path}")
 
     out_file = Path(txt_output_path) if txt_output_path else get_unique_output_path(src.with_suffix(".txt"))
     from pptx import Presentation
+    from pptx_parser import iter_pptx_shapes
+
     prs = Presentation(str(src))
 
     texts = []
     for idx, slide in enumerate(prs.slides, start=1):
         texts.append(f"=== Slide {idx} ===")
-        for shape in slide.shapes:
+        for shape in iter_pptx_shapes(slide.shapes):
             if shape.has_text_frame:
                 for p in shape.text_frame.paragraphs:
                     txt = p.text.strip()
@@ -967,8 +1622,14 @@ def pptx_to_text(pptx_path: str, txt_output_path: Optional[str] = None) -> str:
             if shape.has_table:
                 for row in shape.table.rows:
                     row_txt = "\t".join(c.text.strip() for c in row.cells)
-                    if row_txt:
+                    if row_txt.strip():
                         texts.append(row_txt)
+
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            notes_txt = slide.notes_slide.notes_text_frame.text.strip()
+            if notes_txt:
+                texts.append(f"[Notes] {notes_txt}")
+
         texts.append("")
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -985,7 +1646,8 @@ def text_to_markdown(txt_path: str, md_output_path: Optional[str] = None) -> str
         raise FileNotFoundError(f"Text file not found: {txt_path}")
 
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
-    with open(src, "r", encoding="utf-8", errors="replace") as f:
+    enc = detect_text_encoding(src)
+    with open(src, "r", encoding=enc, errors="replace") as f:
         content = f.read()
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -996,93 +1658,72 @@ def text_to_markdown(txt_path: str, md_output_path: Optional[str] = None) -> str
 
 
 # -----------------------------------------------------------------------------
-# Options & Dispatcher
+# Options & Unified Registry Dispatcher
 # -----------------------------------------------------------------------------
+
+_CONVERSION_REGISTRY = {
+    ("pdf", "docx"): pdf_to_docx,
+    ("pdf", "md"): pdf_to_markdown,
+    ("pdf", "txt"): pdf_to_text,
+    ("xlsx", "csv"): excel_to_csv,
+    ("xlsx", "md"): excel_to_markdown,
+    ("csv", "xlsx"): csv_to_excel,
+    ("csv", "md"): csv_to_markdown,
+    ("tsv", "xlsx"): csv_to_excel,
+    ("tsv", "md"): csv_to_markdown,
+    ("docx", "pdf"): docx_to_pdf,
+    ("docx", "md"): docx_to_markdown,
+    ("docx", "txt"): docx_to_text,
+    ("pptx", "md"): pptx_to_markdown,
+    ("pptx", "txt"): pptx_to_text,
+    ("md", "docx"): markdown_to_docx,
+    ("md", "xlsx"): markdown_to_excel,
+    ("md", "csv"): markdown_to_csv,
+    ("txt", "md"): text_to_markdown,
+    ("txt", "docx"): text_to_docx,
+}
+
+
+def get_convertible_extensions() -> List[str]:
+    """Returns sorted list of supported source extensions (e.g. ['.csv', '.docx', ...]) from _CONVERSION_REGISTRY."""
+    return sorted({f".{src}" for (src, _) in _CONVERSION_REGISTRY})
+
+
+def is_convert_supported(file_path_or_ext: Union[str, Path]) -> bool:
+    """Returns True if source file extension has at least one conversion target in _CONVERSION_REGISTRY."""
+    raw = str(file_path_or_ext).lower().strip()
+    ext = raw.lstrip(".") if raw.startswith(".") else Path(raw).suffix.lower().lstrip(".")
+    return any(src == ext for (src, _) in _CONVERSION_REGISTRY)
+
 
 def get_convert_options(file_path_or_ext: str) -> List[str]:
     """
-    Returns available target format keys for a given source file extension.
-    E.g.:
-      '.pdf' -> ['docx', 'md', 'txt']
-      '.xlsx' -> ['csv', 'md']
-      '.csv', '.tsv' -> ['xlsx', 'md']
-      '.docx' -> ['md', 'txt']
-      '.pptx' -> ['md', 'txt']
-      '.md' -> ['docx', 'xlsx', 'csv']
-      '.txt' -> ['md', 'docx']
+    Returns available target format keys for a given source file extension,
+    derived directly from _CONVERSION_REGISTRY (Single Source of Truth).
     """
     ext = file_path_or_ext.lower().lstrip(".")
     if "." in ext:
         ext = ext.split(".")[-1]
 
-    if ext == "pdf":
-        return ["docx", "md", "txt"]
-    elif ext == "xlsx":
-        return ["csv", "md"]
-    elif ext in ["csv", "tsv"]:
-        return ["xlsx", "md"]
-    elif ext == "docx":
-        return ["pdf", "md", "txt"]
-    elif ext == "pptx":
-        return ["md", "txt"]
-    elif ext == "md":
-        return ["docx", "xlsx", "csv"]
-    elif ext == "txt":
-        return ["md", "docx"]
-    return []
+    return [tgt for (src, tgt) in _CONVERSION_REGISTRY if src == ext]
 
 
 def convert_file_direct(
     source_path: str,
     target_format: str,
-    output_path: Optional[str] = None
+    output_path: Optional[str] = None,
 ) -> str:
     """
     Directly converts a document to target_format without translation.
-    target_format: 'docx', 'xlsx', 'md', 'csv', 'txt'
     Returns the path to the converted output file.
     """
     path = Path(source_path)
     src_fmt = path.suffix.lower().lstrip(".")
     tgt_fmt = target_format.lower().lstrip(".")
 
-    out = output_path or str(get_smart_output_path(source_path=path, target_format=f".{tgt_fmt}"))
-
-    key = (src_fmt, tgt_fmt)
-    if key == ("pdf", "docx"):
-        return pdf_to_docx(str(path), out)
-    elif key == ("pdf", "md"):
-        return pdf_to_markdown(str(path), out)
-    elif key == ("pdf", "txt"):
-        return pdf_to_text(str(path), out)
-    elif key == ("xlsx", "md"):
-        return excel_to_markdown(str(path), out)
-    elif key == ("xlsx", "csv"):
-        return excel_to_csv(str(path), out)
-    elif key in [("csv", "xlsx"), ("tsv", "xlsx")]:
-        return csv_to_excel(str(path), out)
-    elif key in [("csv", "md"), ("tsv", "md")]:
-        return csv_to_markdown(str(path), out)
-    elif key == ("md", "xlsx"):
-        return markdown_to_excel(str(path), out)
-    elif key == ("md", "docx"):
-        return markdown_to_docx(str(path), out)
-    elif key == ("md", "csv"):
-        return markdown_to_csv(str(path), out)
-    elif key == ("docx", "pdf"):
-        return docx_to_pdf(str(path), out)
-    elif key == ("docx", "md"):
-        return docx_to_markdown(str(path), out)
-    elif key == ("docx", "txt"):
-        return docx_to_text(str(path), out)
-    elif key == ("pptx", "md"):
-        return pptx_to_markdown(str(path), out)
-    elif key == ("pptx", "txt"):
-        return pptx_to_text(str(path), out)
-    elif key == ("txt", "md"):
-        return text_to_markdown(str(path), out)
-    elif key == ("txt", "docx"):
-        return markdown_to_docx(str(path), out)
-    else:
+    handler = _CONVERSION_REGISTRY.get((src_fmt, tgt_fmt))
+    if handler is None:
         raise ValueError(f"Cannot convert .{src_fmt} to .{tgt_fmt}")
 
+    out = output_path or str(get_smart_output_path(source_path=path, target_format=f".{tgt_fmt}"))
+    return handler(str(path), out)

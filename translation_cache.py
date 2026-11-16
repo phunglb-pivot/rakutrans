@@ -10,18 +10,41 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
-from config import TranslationOptions, CONFIG_DIR
+from config import TranslationOptions, CONFIG_DIR, normalize_language_name
 
 CACHE_DB_PATH = CONFIG_DIR / "cache.db"
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
+_SQL_CHUNK_SIZE = 400
 
 
-def compute_options_hash(options: Optional[TranslationOptions]) -> str:
-    """Compute deterministic hash of translation options affecting output."""
-    if not options:
-        return f"{PROMPT_VERSION}_default"
-    raw = f"{PROMPT_VERSION}|it:{options.keep_it_terms}|orig:{options.append_original_words}|ctx:{options.custom_context.strip()}"
-    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+def _normalize_cache_langs(source_lang: Optional[str], target_lang: str) -> Tuple[str, str]:
+    """Normalize source and target languages so CLI/GUI aliases share cache entries."""
+    src_raw = (source_lang or "").strip()
+    if not src_raw or src_raw.lower() == "auto":
+        norm_src = "auto"
+    else:
+        norm_src = normalize_language_name(src_raw)
+
+    tgt_raw = (target_lang or "").strip()
+    norm_tgt = normalize_language_name(tgt_raw) if tgt_raw else tgt_raw
+    return norm_src, norm_tgt
+
+
+def compute_options_hash(
+    options: Optional[TranslationOptions],
+    mode: str = "batch",
+    model_id: str = "",
+) -> str:
+    """Compute deterministic hash of translation options, mode, and model affecting output."""
+    opts = options or TranslationOptions()
+    clean_mode = (mode or "batch").strip().lower()
+    clean_model = (model_id or "").strip()
+    raw = (
+        f"{PROMPT_VERSION}|mode:{clean_mode}|model:{clean_model}"
+        f"|it:{bool(opts.keep_it_terms)}|orig:{bool(opts.append_original_words)}"
+        f"|ctx:{(opts.custom_context or '').strip()}"
+    )
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:16]
 
 
 class TranslationCache:
@@ -29,8 +52,8 @@ class TranslationCache:
     Thread-safe local translation cache backed by SQLite.
     """
 
-    def __init__(self, db_path: Path = CACHE_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: Optional[Path] = None):
+        self.db_path = Path(db_path) if db_path is not None else CACHE_DB_PATH
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -62,9 +85,33 @@ class TranslationCache:
                 );
             """)
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_lookup 
+                CREATE INDEX IF NOT EXISTS idx_lookup
                 ON translations (source_lang, target_lang, options_hash);
             """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lookup_auto
+                ON translations (target_lang, options_hash, source_text);
+            """)
+
+    @staticmethod
+    def _resolve_legacy_args(
+        target_lang: str,
+        options: Optional[TranslationOptions],
+        source_lang: Optional[str],
+        args: tuple,
+        kwargs: dict,
+    ) -> Tuple[str, Optional[TranslationOptions], str]:
+        """Support explicit legacy signature (..., source_lang, target_lang, options) cleanly."""
+        if isinstance(options, str):
+            legacy_source = target_lang
+            legacy_target = options
+            legacy_opts = (
+                source_lang
+                if isinstance(source_lang, TranslationOptions)
+                else (args[0] if args else kwargs.get("options", None))
+            )
+            return legacy_target, legacy_opts, legacy_source or "auto"
+        return target_lang, options, source_lang or "auto"
 
     def get_batch(
         self,
@@ -72,8 +119,10 @@ class TranslationCache:
         target_lang: str,
         options: Optional[TranslationOptions] = None,
         source_lang: str = "auto",
+        mode: str = "batch",
+        model_id: str = "",
         *args,
-        **kwargs
+        **kwargs,
     ) -> Tuple[Dict[int, str], List[Tuple[int, str]]]:
         """
         Splits an input list of texts into cached items and uncached items.
@@ -84,43 +133,47 @@ class TranslationCache:
         if not texts:
             return {}, []
 
-        # Support legacy call signature: get_batch(texts, source_lang, target_lang, options)
-        if isinstance(options, str):
-            legacy_source = target_lang
-            legacy_target = options
-            legacy_opts = source_lang if isinstance(source_lang, TranslationOptions) else (args[0] if args else kwargs.get("options", None))
-            target_lang = legacy_target
-            source_lang = legacy_source
-            options = legacy_opts
-        elif source_lang is None:
-            source_lang = "auto"
+        target_lang, options, source_lang = self._resolve_legacy_args(
+            target_lang, options, source_lang, args, kwargs
+        )
+        norm_src, norm_tgt = _normalize_cache_langs(source_lang, target_lang)
+        opt_hash = compute_options_hash(options, mode=mode, model_id=model_id)
 
-        opt_hash = compute_options_hash(options)
+        unique_queries = list(dict.fromkeys(texts))
+        db_map: Dict[str, str] = {}
+
+        with self._connection() as conn:
+            for start in range(0, len(unique_queries), _SQL_CHUNK_SIZE):
+                chunk = unique_queries[start:start + _SQL_CHUNK_SIZE]
+                placeholders = ",".join("?" for _ in chunk)
+                if norm_src == "auto":
+                    cursor = conn.execute(
+                        f"""
+                        SELECT source_text, translated_text FROM translations
+                        WHERE target_lang = ? AND options_hash = ? AND source_text IN ({placeholders})
+                        ORDER BY (source_lang = 'auto') DESC, created_at DESC;
+                        """,
+                        [norm_tgt, opt_hash, *chunk],
+                    )
+                else:
+                    cursor = conn.execute(
+                        f"""
+                        SELECT source_text, translated_text FROM translations
+                        WHERE source_lang = ? AND target_lang = ? AND options_hash = ?
+                          AND source_text IN ({placeholders});
+                        """,
+                        [norm_src, norm_tgt, opt_hash, *chunk],
+                    )
+                for src_text, trans_text in cursor:
+                    db_map.setdefault(src_text, trans_text)
+
         cached_map: Dict[int, str] = {}
         uncached_list: List[Tuple[int, str]] = []
-
-        # Find in DB
-        with self._connection() as conn:
-            for idx, text in enumerate(texts):
-                if source_lang == "auto":
-                    cursor = conn.execute("""
-                        SELECT translated_text FROM translations
-                        WHERE target_lang = ? AND source_text = ? AND options_hash = ?
-                        ORDER BY (source_lang = 'auto') DESC, created_at DESC
-                        LIMIT 1;
-                    """, (target_lang, text, opt_hash))
-                else:
-                    cursor = conn.execute("""
-                        SELECT translated_text FROM translations
-                        WHERE source_lang = ? AND target_lang = ? 
-                          AND source_text = ? AND options_hash = ?
-                        LIMIT 1;
-                    """, (source_lang, target_lang, text, opt_hash))
-                row = cursor.fetchone()
-                if row:
-                    cached_map[idx] = row[0]
-                else:
-                    uncached_list.append((idx, text))
+        for idx, text in enumerate(texts):
+            if text in db_map:
+                cached_map[idx] = db_map[text]
+            else:
+                uncached_list.append((idx, text))
 
         return cached_map, uncached_list
 
@@ -131,50 +184,56 @@ class TranslationCache:
         target_lang: str,
         options: Optional[TranslationOptions] = None,
         source_lang: str = "auto",
+        mode: str = "batch",
+        model_id: str = "",
         *args,
-        **kwargs
+        **kwargs,
     ):
         """Persist newly translated pairs into the cache."""
         if not source_texts or len(source_texts) != len(translated_texts):
             return
 
-        # Support legacy call signature: save_batch(source_texts, translated_texts, source_lang, target_lang, options)
-        if isinstance(options, str):
-            legacy_source = target_lang
-            legacy_target = options
-            legacy_opts = source_lang if isinstance(source_lang, TranslationOptions) else (args[0] if args else kwargs.get("options", None))
-            target_lang = legacy_target
-            source_lang = legacy_source
-            options = legacy_opts
-        elif source_lang is None:
-            source_lang = "auto"
+        target_lang, options, source_lang = self._resolve_legacy_args(
+            target_lang, options, source_lang, args, kwargs
+        )
+        norm_src, norm_tgt = _normalize_cache_langs(source_lang, target_lang)
+        opt_hash = compute_options_hash(options, mode=mode, model_id=model_id)
 
-        opt_hash = compute_options_hash(options)
         records = [
-            (source_lang, target_lang, src, tr, opt_hash)
+            (norm_src, norm_tgt, src, tr, opt_hash)
             for src, tr in zip(source_texts, translated_texts)
+            if src is not None and tr is not None
         ]
+        if not records:
+            return
 
         with self._connection() as conn:
-            conn.executemany("""
-                INSERT OR REPLACE INTO translations 
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO translations
                 (source_lang, target_lang, source_text, translated_text, options_hash)
                 VALUES (?, ?, ?, ?, ?);
-            """, records)
+                """,
+                records,
+            )
 
     def get(
         self,
         text: str,
         target_lang: str,
         options: Optional[TranslationOptions] = None,
-        source_lang: str = "auto"
+        source_lang: str = "auto",
+        mode: str = "batch",
+        model_id: str = "",
     ) -> Optional[str]:
         """Convenience method to look up a single cached string."""
         cached_map, _ = self.get_batch(
             texts=[text],
             target_lang=target_lang,
             options=options,
-            source_lang=source_lang
+            source_lang=source_lang,
+            mode=mode,
+            model_id=model_id,
         )
         return cached_map.get(0)
 
@@ -184,7 +243,9 @@ class TranslationCache:
         target_lang: str,
         translated_text: str,
         options: Optional[TranslationOptions] = None,
-        source_lang: str = "auto"
+        source_lang: str = "auto",
+        mode: str = "batch",
+        model_id: str = "",
     ):
         """Convenience method to store a single translated string."""
         self.save_batch(
@@ -192,7 +253,9 @@ class TranslationCache:
             translated_texts=[translated_text],
             target_lang=target_lang,
             options=options,
-            source_lang=source_lang
+            source_lang=source_lang,
+            mode=mode,
+            model_id=model_id,
         )
 
     def count(self) -> int:

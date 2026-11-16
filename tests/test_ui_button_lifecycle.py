@@ -23,7 +23,26 @@ class TestUIButtonLifecycle(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Initialize app headless without showing window
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        import model_fetcher
+        import translation_cache
+
+        cls._tmp_dir = tempfile.TemporaryDirectory()
+        tmp_path = Path(cls._tmp_dir.name)
+        cls._patches = [
+            patch.object(config_mod, "CONFIG_DIR", tmp_path),
+            patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"),
+            patch.object(model_fetcher, "CACHE_DIR", tmp_path),
+            patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"),
+            patch.object(translation_cache, "CACHE_DB_PATH", tmp_path / "cache.db"),
+        ]
+        for p in cls._patches:
+            p.start()
+
+        # Initialize app headless without showing window using isolated temp config/cache
         ctk.set_appearance_mode("Dark")
         cls.app = RakuTransApp()
         cls.app.withdraw()
@@ -34,6 +53,13 @@ class TestUIButtonLifecycle(unittest.TestCase):
             cls.app.destroy()
         except Exception:
             pass
+        for p in reversed(getattr(cls, "_patches", [])):
+            try:
+                p.stop()
+            except Exception:
+                pass
+        if hasattr(cls, "_tmp_dir"):
+            cls._tmp_dir.cleanup()
 
     def test_windows_taskbar_icon_guard(self):
         """On Windows, RakuTransApp must set iconbitmap so CustomTkinter doesn't overwrite it."""
@@ -174,10 +200,49 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.assertEqual(self.app.convert_btn.winfo_manager(), "pack")
         self.assertEqual(self.app.convert_btn.variant, "secondary")
 
-        # Switch back to translate mode restores provider badge
+        # Switch back to translate mode restores provider badge with logo icon
         self.app._on_mode_switched(self.app.tab_translate_label)
         self.assertEqual(self.app.current_mode, "translate")
         self.assertEqual(self.app.provider_badge.winfo_manager(), "pack")
+        self.assertIsNotNone(self.app.provider_badge.cget("image"))
+
+    def test_shortcut_hint_matches_os_and_mode(self):
+        """Verify shortcut hint displays only OS-specific modifier and active mode actions."""
+        from unittest.mock import patch
+
+        self.app.config.ui_language = "en"
+        self.app._on_settings_changed(self.app.config)
+
+        with patch("ui.platform.system", return_value="Darwin"):
+            self.app._on_mode_switched(self.app.tab_translate_label)
+            mac_tr = self.app.shortcut_hint_label.cget("text")
+            self.assertIn("⌘+O", mac_tr)
+            self.assertIn("Translate", mac_tr)
+            self.assertNotIn("Ctrl", mac_tr)
+            self.assertNotIn("Convert", mac_tr)
+
+            self.app._on_mode_switched(self.app.tab_convert_label)
+            mac_cv = self.app.shortcut_hint_label.cget("text")
+            self.assertIn("⌘+O", mac_cv)
+            self.assertIn("Convert", mac_cv)
+            self.assertNotIn("Ctrl", mac_cv)
+            self.assertNotIn("Translate", mac_cv)
+
+        with patch("ui.platform.system", return_value="Windows"):
+            self.app._on_mode_switched(self.app.tab_translate_label)
+            win_tr = self.app.shortcut_hint_label.cget("text")
+            self.assertIn("Ctrl+O", win_tr)
+            self.assertIn("Translate", win_tr)
+            self.assertNotIn("⌘", win_tr)
+
+            self.app._on_mode_switched(self.app.tab_convert_label)
+            win_cv = self.app.shortcut_hint_label.cget("text")
+            self.assertIn("Ctrl+O", win_cv)
+            self.assertIn("Convert", win_cv)
+            self.assertNotIn("⌘", win_cv)
+
+        # Restore translate mode
+        self.app._on_mode_switched(self.app.tab_translate_label)
 
     def test_clear_cache_button_state(self):
         """Verify cache button disabled when empty, enabled when populated."""
@@ -199,8 +264,9 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._on_settings_changed(self.app.config)
 
         self.assertEqual(self.app.i18n.current_lang, "vi")
-        self.assertEqual(self.app.shortcut_hint_label.cget("text"), self.app.i18n.t("shortcut_hint"))
+        self.assertEqual(self.app.shortcut_hint_label.cget("text"), self.app._get_shortcut_hint_text())
         self.assertIn("Phím tắt", self.app.shortcut_hint_label.cget("text"))
+        self.assertNotIn("⌘/Ctrl", self.app.shortcut_hint_label.cget("text"))
         self.assertEqual(self.app.status_label.cget("text"), self.app.i18n.t("status_ready"))
         self.assertEqual(self.app.subtitle_label.cget("text"), self.app.i18n.t("app_subtitle"))
         self.assertEqual(self.app.tgt_label.cget("text"), self.app.i18n.t("target_lang"))
@@ -264,6 +330,41 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app.last_exception = None
         self.app.last_diagnostic = None
         self.app.selected_file = None
+        self.app._update_button_states("idle_no_file")
+        self.app._refresh_status_text()
+
+    def test_convert_dropzone_filters_unsupported_and_diagnoses_errors(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_file = Path(tmpdir) / "locale.json"
+            json_file.write_text('{"a": "b"}', encoding="utf-8")
+            csv_file = Path(tmpdir) / "table.csv"
+            csv_file.write_text("A,B\n1,2\n", encoding="utf-8")
+
+            # Convert DropZone must ignore .json (not in _CONVERSION_REGISTRY)
+            self.app.convert_drop_zone.clear()
+            self.app.convert_drop_zone.set_file(str(json_file))
+            self.assertIsNone(self.app.convert_drop_zone.selected_file)
+
+            # Convert DropZone accepts .csv
+            self.app.convert_drop_zone.set_file(str(csv_file))
+            self.assertEqual(self.app.convert_drop_zone.selected_file, str(csv_file.resolve()))
+            self.app.convert_drop_zone.clear()
+
+        # Conversion failures should create DiagnosticInfo for ErrorModal
+        self.app._on_mode_switched(self.app.tab_convert_label)
+        self.app._on_conversion_failed("Permission denied", PermissionError("[Errno 13] Permission denied"))
+        self.assertEqual(self.app.current_button_state, "error")
+        self.assertIsNotNone(self.app.last_diagnostic)
+        self.assertEqual(self.app.last_diagnostic.category, "file_lock")
+
+        # Cleanup back to translate mode
+        self.app.last_exception = None
+        self.app.last_diagnostic = None
+        self.app.last_convert_error = None
+        self.app._on_mode_switched(self.app.tab_translate_label)
         self.app._update_button_states("idle_no_file")
         self.app._refresh_status_text()
 

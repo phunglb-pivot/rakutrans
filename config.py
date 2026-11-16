@@ -10,7 +10,7 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, Optional, Union
 
-from model_fetcher import SEED_MODELS, load_cached_models
+from model_fetcher import load_cached_models
 
 APP_NAME = "RakuTrans AI"
 APP_VERSION = "1.0.0"
@@ -132,8 +132,6 @@ DEFAULT_RECENT_TARGET_LANGUAGES: list[str] = [
 AI_PROVIDERS = {
     "Gemini": {
         "name": "Google Gemini",
-        "default_model": "gemini-3.6-flash",
-        "available_models": SEED_MODELS["Gemini"],
         "env_key": "GEMINI_API_KEY",
         "api_url_guide": "https://aistudio.google.com/app/apikey",
         "guide_key": "guide_gemini",
@@ -141,8 +139,6 @@ AI_PROVIDERS = {
     },
     "OpenAI": {
         "name": "OpenAI (GPT)",
-        "default_model": "gpt-4o-mini",
-        "available_models": SEED_MODELS["OpenAI"],
         "env_key": "OPENAI_API_KEY",
         "api_url_guide": "https://platform.openai.com/api-keys",
         "guide_key": "guide_openai",
@@ -150,8 +146,6 @@ AI_PROVIDERS = {
     },
     "Claude": {
         "name": "Anthropic Claude",
-        "default_model": "claude-3-7-sonnet-latest",
-        "available_models": SEED_MODELS["Claude"],
         "env_key": "ANTHROPIC_API_KEY",
         "api_url_guide": "https://console.anthropic.com/settings/keys",
         "guide_key": "guide_claude",
@@ -160,7 +154,7 @@ AI_PROVIDERS = {
 }
 
 def get_provider_models(provider: str) -> list[str]:
-    """Returns available models for provider from local cache, falling back to seed models."""
+    """Returns live-fetched models for provider from local cache."""
     return load_cached_models(provider)
 
 # Fallback default demo keys or placeholders if user has not provided their own.
@@ -226,11 +220,10 @@ class AppConfig:
         "Claude": DEFAULT_FALLBACK_KEYS["Claude"]
     })
     selected_models: Dict[str, str] = field(default_factory=lambda: {
-        "Gemini": "gemini-3.6-flash",
-        "OpenAI": "gpt-4o-mini",
-        "Claude": "claude-3-7-sonnet-latest"
+        prov: "" for prov in AI_PROVIDERS
     })
     batch_size: int = 60
+    max_concurrent_requests: int = 2
     target_language: str = DEFAULT_TARGET_LANGUAGE
     recent_target_languages: list[str] = field(default_factory=lambda: list(DEFAULT_RECENT_TARGET_LANGUAGES))
     source_language: Optional[str] = None
@@ -259,11 +252,12 @@ class AppConfig:
         return DEFAULT_FALLBACK_KEYS.get(target_provider, "").strip()
 
     def get_active_model(self) -> str:
-        """Returns current model for the active provider."""
-        return self.selected_models.get(
-            self.active_provider, 
-            AI_PROVIDERS[self.active_provider]["default_model"]
-        )
+        """Returns selected model for the active provider, or first cached live model if unset."""
+        selected = (self.selected_models.get(self.active_provider) or "").strip()
+        if selected:
+            return selected
+        cached = self.get_available_models(self.active_provider)
+        return cached[0] if cached else ""
 
     def get_available_models(self, provider: Optional[str] = None) -> list[str]:
         """Returns cached/fresh available models for the given or active provider."""
@@ -281,6 +275,7 @@ class AppConfig:
                 "api_keys": self.api_keys,
                 "selected_models": self.selected_models,
                 "batch_size": self.batch_size,
+                "max_concurrent_requests": self.max_concurrent_requests,
                 "target_language": self.target_language,
                 "recent_target_languages": self.recent_target_languages,
                 "translation_options": asdict(self.translation_options)
@@ -306,19 +301,22 @@ class AppConfig:
             
             raw_options = data.get("translation_options", {})
             options = TranslationOptions(
-                keep_it_terms=raw_options.get("keep_it_terms", True),
-                append_original_words=raw_options.get("append_original_words", False),
-                custom_context=raw_options.get("custom_context", "")
+                keep_it_terms=bool(raw_options.get("keep_it_terms", True)),
+                append_original_words=bool(raw_options.get("append_original_words", False)),
+                custom_context=str(raw_options.get("custom_context", "") or ""),
+                bilingual_mode=bool(raw_options.get("bilingual_mode", False)),
             )
 
             loaded_models = data.get("selected_models", {})
-            gemini_model = loaded_models.get("Gemini", "gemini-3.6-flash")
-            # Auto-migrate deprecated/unavailable legacy models
-            if gemini_model in ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"]:
-                gemini_model = "gemini-3.6-flash"
+            if not isinstance(loaded_models, dict):
+                loaded_models = {}
+            resolved_models = {
+                prov: str(loaded_models.get(prov) or "").strip()
+                for prov in AI_PROVIDERS
+            }
 
-            openai_model = loaded_models.get("OpenAI", "gpt-4o-mini")
-            claude_model = loaded_models.get("Claude", "claude-3-7-sonnet-latest")
+            raw_provider = str(data.get("active_provider", "Gemini") or "Gemini")
+            active_provider = raw_provider if raw_provider in AI_PROVIDERS else "Gemini"
 
             raw_target = data.get("target_language", DEFAULT_TARGET_LANGUAGE)
             normalized_target = normalize_language_name(raw_target)
@@ -342,18 +340,15 @@ class AppConfig:
             config = cls(
                 ui_language=data.get("ui_language", "en"),
                 theme_mode=data.get("theme_mode", "dark"),
-                active_provider=data.get("active_provider", "Gemini"),
+                active_provider=active_provider,
                 api_keys={
                     "Gemini": data.get("api_keys", {}).get("Gemini", DEFAULT_FALLBACK_KEYS["Gemini"]),
                     "OpenAI": data.get("api_keys", {}).get("OpenAI", DEFAULT_FALLBACK_KEYS["OpenAI"]),
                     "Claude": data.get("api_keys", {}).get("Claude", DEFAULT_FALLBACK_KEYS["Claude"])
                 },
-                selected_models={
-                    "Gemini": gemini_model,
-                    "OpenAI": openai_model,
-                    "Claude": claude_model
-                },
-                batch_size=data.get("batch_size", 60),
+                selected_models=resolved_models,
+                batch_size=max(1, int(data.get("batch_size", 60) or 60)),
+                max_concurrent_requests=max(1, min(int(data.get("max_concurrent_requests", 2) or 2), 5)),
                 target_language=normalized_target,
                 recent_target_languages=recents,
                 source_language=data.get("source_language", None),

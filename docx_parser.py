@@ -1,40 +1,368 @@
 """
 Word (.docx) parsing and translation engine for RakuTrans AI.
 Uses python-docx to translate documents while preserving paragraphs,
-tables, formatting, and structural properties.
+tables (including nested), text boxes, headers/footers, hyperlinks, and inline run styles.
 """
 
+import copy
 from pathlib import Path
-from typing import List, Dict, Set, Callable, Optional, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import List, Dict, Set, Callable, Optional, Any, Tuple
 import docx
 from docx import Document
+from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
-from base_translator import BaseTranslator, safe_save_file
+from base_translator import (
+    BaseTranslator,
+    build_inline_tagged_text,
+    contains_literal_inline_tags,
+    count_words_multilingual,
+    parse_inline_tagged_text,
+    safe_save_file,
+    should_translate_text,
+    strip_inline_tags,
+)
 from config import TranslationOptions, get_smart_output_path
+
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_TXBX_CONTENT_TAG = f"{_W_NS}txbxContent"
+_HYPERLINK_TAG = f"{_W_NS}hyperlink"
+_R_TAG = f"{_W_NS}r"
+_RPR_TAG = f"{_W_NS}rPr"
+_RFONTS_TAG = f"{_W_NS}rFonts"
+_P_TAG = f"{_W_NS}p"
+_T_TAG = f"{_W_NS}t"
 
 
 def _should_translate(text: Optional[str]) -> bool:
     """Checks if a string has translatable content."""
-    if not text:
-        return False
-    trimmed = text.strip()
-    if not trimmed:
-        return False
-    # Skip pure numbers and single symbols
-    try:
-        float(trimmed.replace(",", ""))
-        return False
-    except ValueError:
-        pass
-    return any(c.isalnum() for c in trimmed)
+    return should_translate_text(text, ignore_formulas=False)
+
+
+def _collect_direct_t_elements(p_elem) -> List[Any]:
+    """
+    Collects all <w:t> elements belonging directly to paragraph element p_elem
+    (including inside <w:hyperlink> or <w:r>), without descending into nested
+    text boxes (<w:txbxContent>) or nested paragraphs (<w:p>).
+    """
+    return [u[0] for u in _collect_direct_t_units(p_elem)]
+
+
+def _collect_direct_t_units(p_elem) -> List[Tuple[Any, Optional[Any], Optional[Any]]]:
+    """
+    Collects (t_elem, r_elem, hyperlink_elem) tuples belonging directly to p_elem
+    without descending into nested text boxes or nested paragraphs.
+    """
+    units: List[Tuple[Any, Optional[Any], Optional[Any]]] = []
+
+    def walk(node, curr_r=None, curr_hl=None):
+        for child in node:
+            tag = child.tag
+            if tag == _TXBX_CONTENT_TAG or tag == _P_TAG:
+                continue
+            next_r = child if tag == _R_TAG else curr_r
+            next_hl = child if tag == _HYPERLINK_TAG else curr_hl
+            if tag == _T_TAG:
+                units.append((child, next_r, next_hl))
+            else:
+                walk(child, next_r, next_hl)
+
+    walk(p_elem)
+    return units
+
+
+def _semantic_run_style(r_elem: Optional[Any], hl_elem: Optional[Any]) -> Tuple:
+    """
+    Extracts semantic visual styling of a Word run while ignoring per-glyph
+    PDF conversion artifacts (e.g. 'Type3 (N 0 R)' font entries, kerning, lang tags).
+    """
+    hl_id = id(hl_elem) if hl_elem is not None else None
+    if r_elem is None:
+        return (hl_id, False, False, None, False, None, None, None, None, None)
+
+    rpr = r_elem.find(_RPR_TAG)
+    if rpr is None:
+        return (hl_id, False, False, None, False, None, None, None, None, None)
+
+    def _bool_prop(local_name: str) -> bool:
+        el = rpr.find(f"{_W_NS}{local_name}")
+        if el is None:
+            return False
+        val = el.get(f"{_W_NS}val")
+        return val not in ("0", "false", "off")
+
+    def _val_prop(local_name: str) -> Optional[str]:
+        el = rpr.find(f"{_W_NS}{local_name}")
+        return el.get(f"{_W_NS}val") if el is not None else None
+
+    color = _val_prop("color")
+    if color == "auto":
+        color = None
+
+    font_name = None
+    rfonts = rpr.find(_RFONTS_TAG)
+    if rfonts is not None:
+        raw_font = (
+            rfonts.get(f"{_W_NS}ascii")
+            or rfonts.get(f"{_W_NS}eastAsia")
+            or rfonts.get(f"{_W_NS}hAnsi")
+        )
+        if raw_font and not raw_font.startswith("Type3 ("):
+            font_name = raw_font
+
+    return (
+        hl_id,
+        _bool_prop("b"),
+        _bool_prop("i"),
+        _val_prop("u"),
+        _bool_prop("strike") or _bool_prop("dstrike"),
+        color,
+        _val_prop("highlight"),
+        _val_prop("sz"),
+        _val_prop("vertAlign"),
+        font_name,
+    )
+
+
+def _iter_table_paragraphs(table, seen_p_ids: Set[int]):
+    """Recursively yields paragraphs inside tables and nested tables."""
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                pid = id(p._p)
+                if pid not in seen_p_ids:
+                    seen_p_ids.add(pid)
+                    yield p
+            for nested_tbl in cell.tables:
+                yield from _iter_table_paragraphs(nested_tbl, seen_p_ids)
+
+
+def _iter_container_paragraphs(container, parent_doc, seen_p_ids: Set[int]):
+    """Yields paragraphs from a document or header/footer container including tables and text boxes."""
+    for p in getattr(container, "paragraphs", []):
+        pid = id(p._p)
+        if pid not in seen_p_ids:
+            seen_p_ids.add(pid)
+            yield p
+
+    for tbl in getattr(container, "tables", []):
+        yield from _iter_table_paragraphs(tbl, seen_p_ids)
+
+    root_elem = getattr(container, "_element", None)
+    if root_elem is not None:
+        for p_elem in root_elem.xpath(".//w:txbxContent//w:p"):
+            pid = id(p_elem)
+            if pid not in seen_p_ids:
+                seen_p_ids.add(pid)
+                yield Paragraph(p_elem, parent_doc)
+
+
+def _iter_all_paragraphs(doc: docx.document.Document):
+    """Yields unique paragraphs across body, tables, nested tables, headers/footers, and text boxes."""
+    seen_p_ids: Set[int] = set()
+
+    for p in doc.paragraphs:
+        pid = id(p._p)
+        if pid not in seen_p_ids:
+            seen_p_ids.add(pid)
+            yield p
+
+    for table in doc.tables:
+        yield from _iter_table_paragraphs(table, seen_p_ids)
+
+    for p_elem in doc.element.body.xpath(".//w:txbxContent//w:p"):
+        pid = id(p_elem)
+        if pid not in seen_p_ids:
+            seen_p_ids.add(pid)
+            yield Paragraph(p_elem, doc)
+
+    for section in doc.sections:
+        for hf_attr in (
+            "header",
+            "first_page_header",
+            "even_page_header",
+            "footer",
+            "first_page_footer",
+            "even_page_footer",
+        ):
+            hf = getattr(section, hf_attr, None)
+            if hf is not None and not getattr(hf, "is_linked_to_previous", False):
+                yield from _iter_container_paragraphs(hf, doc, seen_p_ids)
+
+
+def _set_w_t_text(t_elem, value: str) -> None:
+    t_elem.text = value
+    if value and (value[0].isspace() or value[-1].isspace()):
+        t_elem.set(qn("xml:space"), "preserve")
+    elif qn("xml:space") in t_elem.attrib:
+        del t_elem.attrib[qn("xml:space")]
+
+
+def _prepare_paragraph_item(
+    p: Paragraph,
+) -> Tuple[Paragraph, str, Optional[List[Dict[str, Any]]], str, str]:
+    """
+    Extracts translation payload and semantic inline style groups for a paragraph.
+    Returns (paragraph, query_text, style_groups_or_None, outer_prefix, outer_suffix).
+    """
+    raw_text = p.text
+    prefix = raw_text[: len(raw_text) - len(raw_text.lstrip())]
+    suffix = raw_text[len(raw_text.rstrip()) :]
+
+    units = _collect_direct_t_units(p._p)
+    non_empty_units = [(t, r, hl, t.text or "") for t, r, hl in units if (t.text or "") != ""]
+    if not non_empty_units:
+        return p, raw_text.strip(), None, prefix, suffix
+
+    # 1. Group contiguous units sharing semantic visual style
+    raw_groups: List[Dict[str, Any]] = []
+    for t_el, r_el, hl_el, txt in non_empty_units:
+        sig = _semantic_run_style(r_el, hl_el)
+        rpr = r_el.find(_RPR_TAG) if r_el is not None else None
+        if raw_groups and raw_groups[-1]["sig"] == sig:
+            raw_groups[-1]["nodes"].append(t_el)
+            raw_groups[-1]["runs"].append(r_el)
+            raw_groups[-1]["text"] += txt
+        else:
+            raw_groups.append({
+                "sig": sig,
+                "nodes": [t_el],
+                "runs": [r_el],
+                "text": txt,
+                "has_hl": hl_el is not None,
+                "rpr_template": copy.deepcopy(rpr) if rpr is not None else None,
+            })
+
+    # 2. Merge whitespace-only boundary groups into adjacent content groups
+    groups: List[Dict[str, Any]] = []
+    pending_ws_nodes: List[Any] = []
+    pending_ws_runs: List[Any] = []
+    pending_ws_text = ""
+
+    for g in raw_groups:
+        if not g["text"].strip():
+            if groups:
+                groups[-1]["nodes"].extend(g["nodes"])
+                groups[-1]["runs"].extend(g["runs"])
+                groups[-1]["text"] += g["text"]
+            else:
+                pending_ws_nodes.extend(g["nodes"])
+                pending_ws_runs.extend(g["runs"])
+                pending_ws_text += g["text"]
+        else:
+            if pending_ws_text:
+                g["nodes"] = pending_ws_nodes + g["nodes"]
+                g["runs"] = pending_ws_runs + g["runs"]
+                g["text"] = pending_ws_text + g["text"]
+                pending_ws_nodes = []
+                pending_ws_runs = []
+                pending_ws_text = ""
+            groups.append(g)
+
+    if pending_ws_text and groups:
+        groups[-1]["nodes"].extend(pending_ws_nodes)
+        groups[-1]["runs"].extend(pending_ws_runs)
+        groups[-1]["text"] += pending_ws_text
+
+    if len(groups) < 2 or contains_literal_inline_tags(raw_text):
+        return p, raw_text.strip(), None, prefix, suffix
+
+    # Strip outer paragraph whitespace once before encoding <s0>...</s0>
+    if prefix and groups[0]["text"].startswith(prefix):
+        groups[0]["text"] = groups[0]["text"][len(prefix) :]
+    if suffix and groups[-1]["text"].endswith(suffix):
+        groups[-1]["text"] = groups[-1]["text"][: len(groups[-1]["text"]) - len(suffix)]
+
+    tagged_query = build_inline_tagged_text([(g, g["text"]) for g in groups])
+    return p, tagged_query, groups, prefix, suffix
+
+
+def _apply_paragraph_translation(
+    p: Paragraph,
+    translated: str,
+    groups: Optional[List[Dict[str, Any]]] = None,
+    prefix: str = "",
+    suffix: str = "",
+) -> None:
+    """Applies translated text back to paragraph preserving inline run styles and hyperlinks."""
+    if groups:
+        segments = parse_inline_tagged_text(translated, len(groups))
+        if segments is not None:
+            # Attach outer paragraph whitespace back cleanly
+            first_idx, first_txt = segments[0]
+            segments[0] = (first_idx, f"{prefix}{first_txt}")
+            last_idx, last_txt = segments[-1]
+            segments[-1] = (last_idx, f"{last_txt}{suffix}")
+
+            order = [idx for idx, _ in segments]
+            all_t_elems = _collect_direct_t_elements(p._p)
+
+            # Case 1: Standard order [0, 1, ..., N-1] (or repeated idx in-order)
+            if order == list(range(len(groups))):
+                for idx, seg_text in segments:
+                    nodes = groups[idx]["nodes"]
+                    _set_w_t_text(nodes[0], seg_text)
+                    for extra in nodes[1:]:
+                        _set_w_t_text(extra, "")
+                assigned = {g["nodes"][0] for g in groups}
+                for t_el in all_t_elems:
+                    if t_el not in assigned:
+                        _set_w_t_text(t_el, "")
+                return
+
+            # Case 2: Reordered target-language grammar without hyperlinks -> swap run rPr templates
+            has_hyperlinks = any(g["has_hl"] for g in groups)
+            if not has_hyperlinks and len(segments) == len(groups) and len(set(order)) == len(groups):
+                for pos, (src_idx, seg_text) in enumerate(segments):
+                    slot_nodes = groups[pos]["nodes"]
+                    slot_run = groups[pos]["runs"][0]
+                    _set_w_t_text(slot_nodes[0], seg_text)
+                    for extra in slot_nodes[1:]:
+                        _set_w_t_text(extra, "")
+                    if slot_run is not None:
+                        old_rpr = slot_run.find(_RPR_TAG)
+                        if old_rpr is not None:
+                            slot_run.remove(old_rpr)
+                        tpl_rpr = groups[src_idx]["rpr_template"]
+                        if tpl_rpr is not None:
+                            slot_run.insert(0, copy.deepcopy(tpl_rpr))
+                assigned = {g["nodes"][0] for g in groups}
+                for t_el in all_t_elems:
+                    if t_el not in assigned:
+                        _set_w_t_text(t_el, "")
+                return
+
+            # Safe fallback when tags were reordered around hyperlinks or split irregularly:
+            # emit clean reading-order text without scrambling sentence order.
+            plain = "".join(seg_text for _, seg_text in segments)
+            target_t = next((t for t in all_t_elems if (t.text or "").strip()), all_t_elems[0] if all_t_elems else None)
+            if target_t is not None:
+                for t_el in all_t_elems:
+                    _set_w_t_text(t_el, plain if t_el is target_t else "")
+                return
+
+        # Fallback if LLM dropped/corrupted tags: strip markers and apply cleanly
+        translated = strip_inline_tags(translated)
+
+    final_text = f"{prefix}{translated}{suffix}"
+    t_elems = _collect_direct_t_elements(p._p)
+    if t_elems:
+        target_t = next((t for t in t_elems if (t.text or "").strip()), t_elems[0])
+        for t in t_elems:
+            _set_w_t_text(t, final_text if t is target_t else "")
+    elif p.runs:
+        runs = list(p.runs)
+        runs[0].text = final_text
+        for r in runs[1:]:
+            r.text = ""
+    else:
+        p.text = final_text
 
 
 class DocxTranslator(BaseTranslator):
     """
     Handles translation of Microsoft Word (.docx) documents.
-    Preserves document structure, headings, lists, table cells, and run styles.
+    Preserves document structure, headings, lists, table cells, hyperlinks, text boxes, and inline run styles.
     Features text deduplication, SQLite translation memory cache, and concurrent batching.
     """
 
@@ -52,35 +380,19 @@ class DocxTranslator(BaseTranslator):
             total_words = 0
             unique_texts: Set[str] = set()
 
-            def scan_paragraph(p: Paragraph):
-                nonlocal total_words
+            for p in _iter_all_paragraphs(doc):
                 text = p.text
                 if text:
-                    total_words += len(text.split())
+                    total_words += count_words_multilingual(text)
                     if _should_translate(text):
                         unique_texts.add(text.strip())
-
-            for p in doc.paragraphs:
-                scan_paragraph(p)
-
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        for p in cell.paragraphs:
-                            scan_paragraph(p)
-
-            for section in doc.sections:
-                for p in section.header.paragraphs:
-                    scan_paragraph(p)
-                for p in section.footer.paragraphs:
-                    scan_paragraph(p)
 
             return {
                 "type": "docx",
                 "paragraphs": p_count,
                 "tables": t_count,
                 "word_count": total_words,
-                "translatable_segments": len(unique_texts)
+                "translatable_segments": len(unique_texts),
             }
         except Exception as e:
             return {"type": "docx", "error": str(e)}
@@ -94,127 +406,55 @@ class DocxTranslator(BaseTranslator):
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         custom_output_path: Optional[str] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> str:
         """
         Translates a Word document into the target language.
-        Extracts translatable text segments, translates via LLM in concurrent batches,
-        and saves output file with style preservation.
+        Extracts translatable text segments (with inline style markers when runs differ),
+        translates via LLM in concurrent batches, and saves output file with style preservation.
         """
+        self._is_cancelled = False
         src = Path(file_path)
         if not src.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        target_lang = target_lang or kwargs.get("target_lang") or self.config.target_language
-        options = options or self.config.translation_options
+        target_lang, source_lang, options = self._resolve_params(
+            target_lang, source_lang, options, kwargs
+        )
 
         if progress_callback:
             progress_callback(5, 100, "Reading Word document structure...")
 
         doc = Document(str(src))
-
-        # Collect paragraphs to translate
-        paragraphs_to_process: List[Paragraph] = []
-
-        def collect_from_p(p: Paragraph):
-            if _should_translate(p.text):
-                paragraphs_to_process.append(p)
-
-        for p in doc.paragraphs:
-            collect_from_p(p)
-
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for p in cell.paragraphs:
-                        collect_from_p(p)
-
-        for section in doc.sections:
-            for p in section.header.paragraphs:
-                collect_from_p(p)
-            for p in section.footer.paragraphs:
-                collect_from_p(p)
+        paragraphs_to_process: List[Paragraph] = [
+            p for p in _iter_all_paragraphs(doc) if _should_translate(p.text)
+        ]
 
         if not paragraphs_to_process:
-            # Document has no translatable text
-            out_path = get_smart_output_path(src, target_lang=target_lang, custom_output_path=custom_output_path)
-            safe_save_file(lambda p: doc.save(str(p)), out_path)
+            out_path = get_smart_output_path(
+                src, target_lang=target_lang, custom_output_path=custom_output_path
+            )
+            saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)
             if progress_callback:
                 progress_callback(100, 100, "Document contains no text to translate.")
-            return str(out_path)
+            return str(saved_path)
 
-        # Collect unique texts for batch translation
-        unique_texts = list({p.text.strip() for p in paragraphs_to_process if _should_translate(p.text)})
+        prepared_items = [_prepare_paragraph_item(p) for p in paragraphs_to_process]
+        unique_texts = list(dict.fromkeys(query for _, query, _, _, _ in prepared_items if query))
         total_unique = len(unique_texts)
 
         if progress_callback:
             progress_callback(10, 100, f"Found {total_unique} unique text blocks. Checking cache...")
 
-        translation_map: Dict[str, str] = {}
-        uncached_texts: List[str] = []
-
-        for text in unique_texts:
-            cached = self.cache.get(text, target_lang)
-            if cached:
-                translation_map[text] = cached
-            else:
-                uncached_texts.append(text)
-
-        if uncached_texts:
-            max_b_items = max(5, min(getattr(self.config, "batch_size", 25), 25))
-            max_b_chars = 3500
-            batches: List[List[str]] = []
-            curr_b: List[str] = []
-            curr_b_chars = 0
-            for item in uncached_texts:
-                item_chars = len(item)
-                if curr_b and (len(curr_b) >= max_b_items or (curr_b_chars + item_chars > max_b_chars)):
-                    batches.append(curr_b)
-                    curr_b = [item]
-                    curr_b_chars = item_chars
-                else:
-                    curr_b.append(item)
-                    curr_b_chars += item_chars
-            if curr_b:
-                batches.append(curr_b)
-
-            total_batches = len(batches)
-
-            completed_batches = 0
-
-            def translate_worker(batch: List[str]) -> List[str]:
-                if self.is_cancelled:
-                    raise InterruptedError("Translation cancelled by user.")
-                return self.llm_manager.translate_batch(
-                    texts=batch,
-                    target_lang=target_lang,
-                    source_lang=source_lang,
-                    options=options
-                )
-
-            max_workers = min(3, max(1, total_batches))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(translate_worker, b): b for b in batches}
-                for future in as_completed(futures):
-                    if self.is_cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise InterruptedError("Translation cancelled by user.")
-
-                    orig_batch = futures[future]
-                    try:
-                        translated_batch = future.result()
-                        for orig, trans in zip(orig_batch, translated_batch):
-                            translation_map[orig] = trans
-                            self.cache.set(orig, target_lang, trans)
-                    except Exception as e:
-                        if self.is_cancelled:
-                            raise InterruptedError("Translation cancelled by user.")
-                        raise e
-
-                    completed_batches += 1
-                    pct = 10 + int(completed_batches / total_batches * 75)
-                    if progress_callback:
-                        progress_callback(pct, 100, f"Translating batch {completed_batches}/{total_batches}...")
+        translation_map = self.translate_unique_texts(
+            unique_texts=unique_texts,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            options=options,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_span=75,
+        )
 
         if self.is_cancelled:
             raise InterruptedError("Translation cancelled by user.")
@@ -222,24 +462,10 @@ class DocxTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(90, 100, "Applying translations to Word document...")
 
-        # Apply translations back to paragraphs
-        for p in paragraphs_to_process:
-            orig_text = p.text.strip()
-            translated = translation_map.get(orig_text)
-            if not translated:
-                continue
-
-            if len(p.runs) <= 1:
-                # Direct replacement preserving overall paragraph formatting
-                if p.runs:
-                    p.runs[0].text = translated
-                else:
-                    p.text = translated
-            else:
-                # Multiple runs: preserve formatting of first run and clear subsequent runs
-                p.runs[0].text = translated
-                for r in p.runs[1:]:
-                    r.text = ""
+        for p, query, groups, prefix, suffix in prepared_items:
+            translated = translation_map.get(query)
+            if translated is not None:
+                _apply_paragraph_translation(p, translated, groups=groups, prefix=prefix, suffix=suffix)
 
         if progress_callback:
             progress_callback(95, 100, "Saving translated Word document...")
@@ -248,7 +474,7 @@ class DocxTranslator(BaseTranslator):
             source_path=src,
             target_lang=target_lang,
             target_format=".docx",
-            custom_output_path=custom_output_path
+            custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)
 

@@ -13,9 +13,9 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES
-from model_fetcher import fetch_models_async
+from model_fetcher import fetch_live_models, fetch_models_async
 from components.ui_system import CustomButton
-from components.icons import get_icon
+from components.icons import get_icon, get_provider_icon
 
 
 class SettingsView(ctk.CTkFrame):
@@ -128,6 +128,7 @@ class SettingsView(ctk.CTkFrame):
         )
         for i in range(len(providers_list)):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
+        self._apply_provider_icons()
         self.provider_selector.pack(fill="x", padx=4, pady=(0, 12))
 
         # --------------------------------------------------------------------
@@ -145,14 +146,15 @@ class SettingsView(ctk.CTkFrame):
 
         current_prov = self.config.active_provider
         available_models = self.config.get_available_models(current_prov)
-        self.model_var = ctk.StringVar(value=self.config.get_active_model())
+        active_model = self.config.get_active_model()
+        self.model_var = ctk.StringVar(value=active_model)
 
         model_row = ctk.CTkFrame(self.model_group, fg_color="transparent")
         model_row.pack(fill="x", padx=4, pady=(0, 4))
 
         self.model_combo = ctk.CTkOptionMenu(
             model_row,
-            values=available_models,
+            values=[],
             variable=self.model_var,
             command=self._on_model_changed,
             height=34,
@@ -165,6 +167,7 @@ class SettingsView(ctk.CTkFrame):
             dropdown_hover_color=("#F4F4F5", "#27272A"),
             dropdown_text_color=("#18181B", "#FAFAFA")
         )
+        self._apply_model_options(available_models, active_model)
         self.model_combo.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
         self.fetch_btn = CustomButton(
@@ -219,7 +222,7 @@ class SettingsView(ctk.CTkFrame):
             text_color=("#18181B", "#FAFAFA")
         )
         self.key_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        self.key_entry.bind("<FocusOut>", lambda e: self.on_save(self.config))
+        self.key_entry.bind("<FocusOut>", self._on_key_focus_out)
 
         self.toggle_btn = CustomButton(
             entry_frame,
@@ -357,15 +360,44 @@ class SettingsView(ctk.CTkFrame):
         # Auto-fetch latest models in background if key is present
         self.after(250, lambda: self._fetch_live_models(is_manual=False))
 
+    def _apply_provider_icons(self) -> None:
+        """Attaches crisp provider logo icons alongside provider names in the selector."""
+        try:
+            btns = getattr(self.provider_selector, "_buttons_dict", {})
+            for prov in AI_PROVIDERS:
+                if prov in btns:
+                    btns[prov].configure(
+                        image=get_provider_icon(prov, "secondary", 15),
+                        compound="left",
+                    )
+        except Exception:
+            pass
+
+    def _apply_model_options(self, models: list[str], selected: str) -> None:
+        """Synchronizes model dropdown values and enabled state without hardcoded fallback models."""
+        clean_selected = (selected or "").strip()
+        if models:
+            display_values = list(models)
+            state = "normal"
+        elif clean_selected:
+            display_values = [clean_selected]
+            state = "normal"
+        else:
+            display_values = []
+            state = "disabled"
+        self.model_combo.configure(values=display_values, state=state)
+        self.model_var.set(clean_selected)
+
     def refresh_values(self):
         """Synchronizes UI fields with latest config when switching into settings view."""
         current_prov = self.config.active_provider
         self.provider_var.set(current_prov)
         for i in range(len(list(AI_PROVIDERS.keys()))):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
+        self._apply_provider_icons()
+        self._apply_provider_icons()
         models = self.config.get_available_models(current_prov)
-        self.model_combo.configure(values=models)
-        self.model_var.set(self.config.get_active_model())
+        self._apply_model_options(models, self.config.get_active_model())
         self.key_var.set(self.config.api_keys.get(current_prov, ""))
         self.guide_text_label.configure(text=self._get_guide_text(current_prov))
         self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
@@ -393,6 +425,7 @@ class SettingsView(ctk.CTkFrame):
         self.theme_var.set(self._get_current_theme_display())
         for i in range(len(list(AI_PROVIDERS.keys()))):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
+        self._apply_provider_icons()
 
     def _toggle_key_visibility(self):
         self._show_key = not self._show_key
@@ -431,22 +464,34 @@ class SettingsView(ctk.CTkFrame):
                 if self.provider_var.get() != provider:
                     return
 
-                if models:
-                    self.model_combo.configure(values=models)
-                    if self.model_var.get() not in models:
-                        self.model_var.set(models[0])
-                        self.config.selected_models[provider] = models[0]
+                if error_msg:
+                    if models:
+                        selected = self.model_var.get().strip()
+                        if selected not in models:
+                            selected = models[0]
+                        self._apply_model_options(models, selected)
+                    if is_manual or not models:
+                        self.model_hint_label.configure(
+                            text=error_msg,
+                            text_color="#EF4444"
+                        )
+                    else:
+                        self.model_hint_label.configure(
+                            text=self.t("model_hint"),
+                            text_color="gray"
+                        )
+                elif models:
+                    selected = self.model_var.get().strip()
+                    if selected not in models:
+                        selected = models[0]
+                        self.config.selected_models[provider] = selected
                         self.config.save()
                         self.on_save(self.config)
+                    self._apply_model_options(models, selected)
                     msg = self.t("models_fetched_success", count=len(models), provider=provider)
                     self.model_hint_label.configure(
                         text=msg,
                         text_color="#10B981"
-                    )
-                elif error_msg and is_manual:
-                    self.model_hint_label.configure(
-                        text=error_msg,
-                        text_color="#EF4444"
                     )
                 elif not is_manual:
                     self.model_hint_label.configure(
@@ -458,6 +503,13 @@ class SettingsView(ctk.CTkFrame):
 
         fetch_models_async(provider, key, on_done)
 
+    def _on_key_focus_out(self, _event=None):
+        self.on_save(self.config)
+        provider = self.provider_var.get()
+        key = self.key_var.get().strip() if self.key_var else ""
+        if key and not self.config.get_available_models(provider):
+            self._fetch_live_models(is_manual=False)
+
     def _on_provider_changed(self, new_provider: str):
         if self.key_var is None or self.model_var is None:
             return
@@ -468,15 +520,11 @@ class SettingsView(ctk.CTkFrame):
         self.config.active_provider = new_provider
         self.provider_var.set(new_provider)
         available_models = self.config.get_available_models(new_provider)
-        self.model_combo.configure(values=available_models)
 
-        saved_model = self.config.selected_models.get(
-            new_provider,
-            AI_PROVIDERS[new_provider]["default_model"]
-        )
-        if available_models and saved_model not in available_models:
+        saved_model = (self.config.selected_models.get(new_provider) or "").strip()
+        if available_models and (not saved_model or saved_model not in available_models):
             saved_model = available_models[0]
-        self.model_var.set(saved_model)
+        self._apply_model_options(available_models, saved_model)
         self.config.selected_models[new_provider] = saved_model
 
         self.key_var.set(self.config.api_keys.get(new_provider, ""))
@@ -531,7 +579,7 @@ class SettingsView(ctk.CTkFrame):
     def _test_api_connection(self):
         provider = self.provider_var.get()
         key = self.key_var.get().strip() or self.config.get_effective_api_key(provider)
-        model = self.model_var.get().strip() or AI_PROVIDERS[provider]["default_model"]
+        selected_model = self.model_var.get().strip()
 
         if not key:
             self.test_conn_status.configure(
@@ -550,46 +598,44 @@ class SettingsView(ctk.CTkFrame):
             t0 = time.time()
             success = False
             err_msg = ""
+            tested_model = selected_model
+            fetched_models: list[str] = []
             try:
-                if provider == "Gemini":
-                    from llm_manager import GeminiClient
-                    client = GeminiClient(key)
-                    res = client.generate_completion(
-                        system_prompt="You are a ping test assistant. Reply with one word.",
-                        user_prompt="Ping",
-                        model_name=model,
-                        is_json=False
-                    )
-                    success = bool(res and res.strip())
-                elif provider == "OpenAI":
-                    from llm_manager import OpenAIClient
-                    client = OpenAIClient(key)
-                    res = client.generate_completion(
-                        system_prompt="You are a ping test assistant. Reply with one word.",
-                        user_prompt="Ping",
-                        model_name=model,
-                        is_json=False
-                    )
-                    success = bool(res and res.strip())
-                elif provider == "Claude":
-                    from llm_manager import ClaudeClient
-                    client = ClaudeClient(key)
-                    res = client.generate_completion(
-                        system_prompt="You are a ping test assistant. Reply with one word.",
-                        user_prompt="Ping",
-                        model_name=model,
-                        is_json=False
-                    )
-                    success = bool(res and res.strip())
+                from llm_manager import create_llm_client
+
+                if not tested_model:
+                    fetched_models = fetch_live_models(provider, key)
+                    if not fetched_models:
+                        raise RuntimeError(f"No models returned by {provider} API.")
+                    tested_model = fetched_models[0]
+
+                client = create_llm_client(provider, key)
+                res = client.generate_completion(
+                    system_prompt="You are a ping test assistant. Reply with one word.",
+                    user_prompt="Ping",
+                    model_name=tested_model,
+                    is_json=False
+                )
+                success = bool(res and res.strip())
             except Exception as e:
                 err_msg = str(e)
 
             elapsed_ms = int((time.time() - t0) * 1000)
 
             def update_ui():
+                try:
+                    if not self.winfo_exists():
+                        return
+                except Exception:
+                    return
                 self.test_conn_btn.stop_loading(self.t("test_connection"))
+                if fetched_models and self.provider_var.get() == provider:
+                    self._apply_model_options(fetched_models, tested_model)
+                    self.config.selected_models[provider] = tested_model
+                    self.config.save()
+                    self.on_save(self.config)
                 if success:
-                    msg = self.t("test_conn_success", model=model, ms=elapsed_ms)
+                    msg = self.t("test_conn_success", model=tested_model, ms=elapsed_ms)
                     self.test_conn_status.configure(text=msg, text_color="#10B981")
                 else:
                     msg = self.t("test_conn_failed", error=err_msg)

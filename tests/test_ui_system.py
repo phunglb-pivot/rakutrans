@@ -75,42 +75,55 @@ class TestUISystem(unittest.TestCase):
 
     def test_settings_direct_save_and_equal_segmented_proportions(self):
         """Verify SettingsView direct changes without close/save buttons, and equal segmented ratios."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
         import customtkinter as ctk
+        import config as config_mod
+        import model_fetcher
         from config import AppConfig
         from components.settings_modal import SettingsView
 
-        cfg = AppConfig()
-        cfg.active_provider = "Gemini"
-        save_events = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
+                 patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
+                 patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+                 patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
+                cfg = AppConfig()
+                cfg.active_provider = "Gemini"
+                save_events = []
 
-        root = ctk.CTk()
-        sv = SettingsView(
-            root,
-            config=cfg,
-            get_translation=lambda k, **kw: k,
-            on_save_callback=lambda c: save_events.append(c),
-            on_close_callback=lambda: None
-        )
-        root.update()
+                root = ctk.CTk()
+                sv = SettingsView(
+                    root,
+                    config=cfg,
+                    get_translation=lambda k, **kw: k,
+                    on_save_callback=lambda c: save_events.append(c),
+                    on_close_callback=lambda: None
+                )
+                root.update()
 
-        # 1. No close_btn or save_btn in SettingsView, back_header_btn not mapped by default to avoid duplicate button
-        self.assertFalse(hasattr(sv, "save_btn"))
-        self.assertFalse(hasattr(sv, "close_btn"))
-        self.assertTrue(hasattr(sv, "back_header_btn"))
-        self.assertFalse(sv.back_header_btn.winfo_ismapped())
+                # 1. No close_btn or save_btn in SettingsView, back_header_btn not mapped by default to avoid duplicate button
+                self.assertFalse(hasattr(sv, "save_btn"))
+                self.assertFalse(hasattr(sv, "close_btn"))
+                self.assertTrue(hasattr(sv, "back_header_btn"))
+                self.assertFalse(sv.back_header_btn.winfo_ismapped())
 
-        # 2. Provider selector has thin border and equal column weights/uniform
-        self.assertEqual(sv.provider_selector.cget("border_width"), 1)
+                # 2. Provider selector has thin border, equal column weights/uniform, and provider logo icons
+                self.assertEqual(sv.provider_selector.cget("border_width"), 1)
+                for prov in ("Gemini", "OpenAI", "Claude"):
+                    self.assertIsNotNone(sv.provider_selector._buttons_dict[prov].cget("image"))
 
-        # 3. Direct changes immediately persist to config
-        sv._on_provider_changed("OpenAI")
-        self.assertEqual(cfg.active_provider, "OpenAI")
-        self.assertTrue(len(save_events) >= 1)
+                # 3. Direct changes immediately persist to isolated temp config (never user's ~/.rakutrans)
+                sv._on_provider_changed("OpenAI")
+                self.assertEqual(cfg.active_provider, "OpenAI")
+                self.assertTrue(len(save_events) >= 1)
 
-        sv._on_model_changed("gpt-4o")
-        self.assertEqual(cfg.selected_models["OpenAI"], "gpt-4o")
+                sv._on_model_changed("gpt-4o")
+                self.assertEqual(cfg.selected_models["OpenAI"], "gpt-4o")
 
-        root.destroy()
+                root.destroy()
 
 
     def test_vector_icons_and_hidpi_assets(self):
@@ -126,10 +139,15 @@ class TestUISystem(unittest.TestCase):
             "file_text", "file_excel", "file_word", "file_ppt", "file_pdf",
             "database", "save", "trash", "alert_triangle", "check", "info",
             "close", "plus", "minus", "arrow_left", "zap", "eye", "lock",
-            "key", "clock", "stop_circle", "lightbulb", "copy", "format"
+            "key", "clock", "stop_circle", "lightbulb", "copy", "format",
+            "provider_gemini", "provider_openai", "provider_claude"
         ):
             img = get_icon(name, "secondary", 16)
             self.assertIsInstance(img, ctk.CTkImage)
+
+        from components.icons import get_provider_icon
+        for prov in ("Gemini", "OpenAI", "Claude"):
+            self.assertIsInstance(get_provider_icon(prov, "muted", 14), ctk.CTkImage)
 
         ico_path = Path(__file__).resolve().parent.parent / "assets" / "icon.ico"
         self.assertTrue(ico_path.exists())

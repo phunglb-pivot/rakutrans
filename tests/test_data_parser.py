@@ -29,8 +29,10 @@ class MockLLMManager:
 class TestDataParsers(unittest.TestCase):
 
     def setUp(self):
+        from translation_cache import TranslationCache
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dir_path = Path(self.temp_dir.name)
+        self.cache = TranslationCache(db_path=self.dir_path / "test_data_cache.db")
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -56,7 +58,7 @@ class TestDataParsers(unittest.TestCase):
 
         config = AppConfig()
         mock_llm = MockLLMManager()
-        translator = CsvTranslator(config, mock_llm)
+        translator = CsvTranslator(config, mock_llm, cache=self.cache)
 
         out_path = translator.process_file(str(csv_file), target_lang="Vietnamese")
         self.assertTrue(Path(out_path).exists())
@@ -76,7 +78,7 @@ class TestDataParsers(unittest.TestCase):
 
         config = AppConfig()
         mock_llm = MockLLMManager()
-        translator = CsvTranslator(config, mock_llm)
+        translator = CsvTranslator(config, mock_llm, cache=self.cache)
 
         out_path = translator.process_file(str(tsv_file), target_lang="Vietnamese")
         self.assertEqual(Path(out_path).name, "data_vi.tsv")
@@ -109,7 +111,7 @@ class TestDataParsers(unittest.TestCase):
 
         config = AppConfig()
         mock_llm = MockLLMManager()
-        translator = JsonTranslator(config, mock_llm)
+        translator = JsonTranslator(config, mock_llm, cache=self.cache)
 
         out_path = translator.process_file(str(json_file), target_lang="Vietnamese")
         self.assertEqual(Path(out_path).name, "en_vi.json")
@@ -145,7 +147,7 @@ class TestDataParsers(unittest.TestCase):
 
         config = AppConfig()
         mock_llm = MockLLMManager()
-        translator = TextTranslator(config, mock_llm)
+        translator = TextTranslator(config, mock_llm, cache=self.cache)
 
         out_path = translator.process_file(str(txt_file), target_lang="Vietnamese")
         self.assertEqual(Path(out_path).name, "notes_vi.txt")
@@ -153,6 +155,32 @@ class TestDataParsers(unittest.TestCase):
         content = Path(out_path).read_text(encoding="utf-8")
         self.assertIn("[Vietnamese] First paragraph of instructions.", content)
         self.assertIn("Second paragraph with details.", content)
+
+    def test_text_passes_plain_text_flag_and_isolates_cache_options(self):
+        from config import TranslationOptions
+        from translation_cache import TranslationCache
+
+        seen_plain_flags = []
+
+        class _SpyLLM(MockLLMManager):
+            def translate_markdown_text(self, markdown_text, target_lang=None, *args, **kwargs):
+                seen_plain_flags.append(kwargs.get("plain_text"))
+                return super().translate_markdown_text(markdown_text, target_lang=target_lang, *args, **kwargs)
+
+        txt_file = self.dir_path / "plain.txt"
+        txt_file.write_text("# Not a heading\n\nPlain body line.", encoding="utf-8")
+
+        cache = TranslationCache(db_path=self.dir_path / "data_cache.db")
+        spy = _SpyLLM()
+        t1 = TextTranslator(AppConfig(translation_options=TranslationOptions(custom_context="A")), spy, cache=cache)
+        t1.process_file(str(txt_file), target_lang="Vietnamese")
+        self.assertEqual(seen_plain_flags, [True])
+        calls_1 = spy.call_count
+
+        # Different context option must NOT hit cache from context A
+        t2 = TextTranslator(AppConfig(translation_options=TranslationOptions(custom_context="B")), spy, cache=cache)
+        t2.process_file(str(txt_file), target_lang="Vietnamese")
+        self.assertGreater(spy.call_count, calls_1)
 
 
 if __name__ == "__main__":

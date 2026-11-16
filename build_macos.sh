@@ -15,7 +15,7 @@ VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 PYINSTALLER="$SCRIPT_DIR/.venv/bin/pyinstaller"
 
 # Ensure .venv is healthy
-if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys" >/dev/null 2>&1; then
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
     echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs repair."
     echo "[RakuTrans AI] Running automatic setup..."
     bash "$SCRIPT_DIR/setup_env.sh"

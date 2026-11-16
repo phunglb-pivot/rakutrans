@@ -52,9 +52,10 @@ For more info, visit [Documentation](https://api.example.com).
         self.temp_dir.cleanup()
 
     def test_markdown_translation_flow(self):
+        from translation_cache import TranslationCache
         config = AppConfig()
         mock_llm = MockLLMManager()
-        translator = MarkdownTranslator(config, mock_llm)
+        translator = MarkdownTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_cache.db"))
 
         out_path = translator.process_file(
             file_path=str(self.test_md_path),
@@ -109,6 +110,47 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertGreater(info["char_count"], 0)
         self.assertGreater(info["line_count"], 0)
         self.assertGreater(info["section_count"], 0)
+
+    def test_chunking_preserves_code_blocks_and_large_tables(self):
+        config = AppConfig()
+        from translation_cache import TranslationCache
+        translator = MarkdownTranslator(
+            config,
+            MockLLMManager(),
+            cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_chunk_init.db"),
+        )
+
+        # Fenced code block containing blank lines must not be split across chunks
+        code_md = (
+            "# Title\n\n"
+            + ("Intro paragraph.\n\n" * 80)
+            + "```python\ndef f1():\n    return 1\n\ndef f2():\n    return 2\n```\n\n"
+            + "Tail paragraph."
+        )
+        chunks = translator._split_into_chunks(code_md, max_chars=800)
+        fence_chunks = [c for c in chunks if "```python" in c]
+        self.assertEqual(len(fence_chunks), 1)
+        self.assertIn("def f2():", fence_chunks[0])
+        self.assertIn("\n```", fence_chunks[0])
+
+        # Oversized table splits at row boundaries and reassembles without '\n\n' gaps
+        rows = ["| Col1 | Col2 |", "| --- | --- |"] + [f"| R{i} | {'x' * 120} |" for i in range(40)]
+        table_md = "# Data\n\n" + "\n".join(rows) + "\n"
+        big_md_path = Path(self.temp_dir.name) / "big_table.md"
+        big_md_path.write_text(table_md, encoding="utf-8")
+
+        class _PassthroughMock:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                return markdown_text
+
+        tr_pass = MarkdownTranslator(
+            config,
+            _PassthroughMock(),
+            cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_chunk_cache.db"),
+        )
+        out_path = tr_pass.process_file(file_path=str(big_md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+        self.assertEqual(out_text, table_md)
 
 
 if __name__ == "__main__":

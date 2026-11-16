@@ -325,6 +325,49 @@ def _render_vector_icon(name: str, color_hex: str, px_size: int) -> Image.Image:
         _draw_thick_line(draw, [p(15.5, 7.0), p(20.5, 12.0), p(15.5, 17.0)], col, sw)
         _draw_thick_line(draw, [p(13.5, 5.0), p(10.5, 19.0)], col, sw_thin)
 
+    elif name == "provider_gemini":
+        # Iconic 4-point curved sparkle star
+        cx, cy = 12.0, 12.0
+        pts = []
+        steps = 64
+        for i in range(steps):
+            t = (2.0 * math.pi * i) / steps
+            # Superellipse / astroid-inspired 4-point sparkle
+            ca = math.cos(t)
+            sa = math.sin(t)
+            r = 9.6 / ((abs(ca) ** 0.72 + abs(sa) ** 0.72) ** (1.0 / 0.72))
+            pts.append(p(cx + r * ca, cy + r * sa))
+        draw.polygon(pts, fill=col)
+
+    elif name == "provider_openai":
+        # Hexagonal interlocking loop rosette
+        cx, cy = 12.0, 12.0
+        r_ring = 5.4
+        r_loop = 4.6
+        sw_oai = max(2, round(1.5 * scale))
+        for k in range(6):
+            ang = math.radians(k * 60 - 90)
+            lx = cx + r_ring * math.cos(ang)
+            ly = cy + r_ring * math.sin(ang)
+            draw.ellipse(rect(lx - r_loop, ly - r_loop, lx + r_loop, ly + r_loop), outline=col, width=sw_oai)
+
+    elif name == "provider_claude":
+        # Sunburst / radial rays mark
+        cx, cy = 12.0, 12.0
+        sw_ray = max(2, round(1.8 * scale))
+        draw.ellipse(rect(cx - 2.2, cy - 2.2, cx + 2.2, cy + 2.2), fill=col)
+        for k in range(10):
+            ang = math.radians(k * 36)
+            r_in = 2.0
+            r_out = 9.6 if k % 2 == 0 else 7.6
+            _draw_thick_line(
+                draw,
+                [p(cx + r_in * math.cos(ang), cy + r_in * math.sin(ang)),
+                 p(cx + r_out * math.cos(ang), cy + r_out * math.sin(ang))],
+                col,
+                sw_ray,
+            )
+
     else:
         draw.ellipse(rect(5.0, 5.0, 19.0, 19.0), outline=col, width=sw)
 
@@ -349,6 +392,19 @@ def get_icon(name: str, color: ColorPair = "default", size: int = 16) -> ctk.CTk
     light_hex, dark_hex = _resolve_colors(color)
     light_img, dark_img = _cached_pil_pair(name, light_hex, dark_hex, size)
     return ctk.CTkImage(light_image=light_img, dark_image=dark_img, size=(size, size))
+
+
+_PROVIDER_ICON_MAP = {
+    "Gemini": "provider_gemini",
+    "OpenAI": "provider_openai",
+    "Claude": "provider_claude",
+}
+
+
+def get_provider_icon(provider: str, color: ColorPair = "default", size: int = 16) -> ctk.CTkImage:
+    """Returns the vector logo icon for a supported AI provider."""
+    icon_name = _PROVIDER_ICON_MAP.get(provider, "globe")
+    return get_icon(icon_name, color=color, size=size)
 
 
 # -----------------------------------------------------------------------------

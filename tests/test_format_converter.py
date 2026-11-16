@@ -200,6 +200,133 @@ class TestFormatConverter(unittest.TestCase):
         self.assertTrue(Path(out_pdf).exists())
         self.assertTrue(out_pdf.endswith(".pdf"))
 
+    def test_markdown_excel_roundtrip_preserves_pipes_dashes_zeros_formulas_and_prose(self):
+        src_xlsx = self.tmp_path / "edge.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "DataSheet"
+        ws.append(["ID", "Expr", "Note", "Calc"])
+        ws.append(["001", "A | B", "---", "=1+1"])
+        ws.append(["0912345678", "1.2.3", "ok", "10.50"])
+        wb.save(str(src_xlsx))
+        wb.close()
+
+        md_file = excel_to_markdown(str(src_xlsx))
+        md_text = Path(md_file).read_text(encoding="utf-8")
+        self.assertIn("=1+1", md_text)
+        self.assertIn("A \\| B", md_text)
+
+        rt_xlsx = markdown_to_excel(md_file)
+        wb_rt = openpyxl.load_workbook(rt_xlsx)
+        self.assertEqual(wb_rt.sheetnames, ["DataSheet"])
+        ws_rt = wb_rt["DataSheet"]
+        self.assertEqual(ws_rt.cell(2, 1).value, "001")
+        self.assertEqual(ws_rt.cell(2, 2).value, "A | B")
+        self.assertEqual(ws_rt.cell(2, 3).value, "---")
+        self.assertEqual(ws_rt.cell(2, 4).value, "=1+1")
+        self.assertEqual(ws_rt.cell(3, 1).value, "0912345678")
+        self.assertEqual(ws_rt.cell(3, 2).value, "1.2.3")
+        wb_rt.close()
+
+        # Markdown with prose, ### heading, list, code fence should not be dropped in Excel
+        prose_md = self.tmp_path / "prose.md"
+        prose_md.write_text(
+            "# Report\n\n### Overview\n\nIntro paragraph line.\n\n- Bullet one\n\n```bash\n# comment\necho ok\n```\n",
+            encoding="utf-8",
+        )
+        prose_xlsx = markdown_to_excel(str(prose_md))
+        wb_p = openpyxl.load_workbook(prose_xlsx)
+        values = [r[0] for r in wb_p.active.iter_rows(values_only=True) if r and r[0] is not None]
+        wb_p.close()
+        joined = "\n".join(str(v) for v in values)
+        self.assertIn("Overview", joined)
+        self.assertIn("Intro paragraph line.", joined)
+        self.assertIn("- Bullet one", joined)
+        self.assertIn("echo ok", joined)
+
+    def test_csv_to_excel_preserves_leading_zeros(self):
+        csv_file = self.tmp_path / "ids.csv"
+        csv_file.write_text("ID,Phone,Amount\n001,0912345678,12.50\n", encoding="utf-8")
+        xlsx_file = csv_to_excel(str(csv_file))
+        wb = openpyxl.load_workbook(xlsx_file)
+        ws = wb.active
+        self.assertEqual(ws.cell(2, 1).value, "001")
+        self.assertEqual(ws.cell(2, 2).value, "0912345678")
+        self.assertEqual(ws.cell(2, 3).value, 12.5)
+        wb.close()
+
+    def test_docx_to_markdown_preserves_table_order_and_txt_to_docx_is_literal(self):
+        doc_path = self.tmp_path / "ordered.docx"
+        doc = docx.Document()
+        doc.add_paragraph("Before table")
+        tbl = doc.add_table(rows=2, cols=2)
+        tbl.cell(0, 0).text = "ColA"
+        tbl.cell(0, 1).text = "ColB"
+        tbl.cell(1, 0).text = "X | Y"
+        tbl.cell(1, 1).text = "---"
+        doc.add_paragraph("After table")
+        doc.save(str(doc_path))
+
+        md_out = docx_to_markdown(str(doc_path))
+        md_content = Path(md_out).read_text(encoding="utf-8")
+        self.assertLess(md_content.index("Before table"), md_content.index("ColA"))
+        self.assertLess(md_content.index("ColA"), md_content.index("After table"))
+
+        # Plain text -> DOCX must NOT turn '#' or '| a | b |' into headings/tables
+        txt_path = self.tmp_path / "raw.txt"
+        txt_path.write_text("# Not Heading\n\n| a | b |", encoding="utf-8")
+        out_docx = convert_file_direct(str(txt_path), "docx")
+        d2 = docx.Document(out_docx)
+        self.assertEqual(len(d2.tables), 0)
+        self.assertEqual([p.text for p in d2.paragraphs], ["# Not Heading", "| a | b |"])
+
+    def test_docx_to_pdf_reportlab_xml_escape_and_table_images(self):
+        from unittest.mock import patch
+        import pypdf
+        import format_converter
+        from PIL import Image
+
+        img_path = self.tmp_path / "cell.png"
+        Image.new("RGB", (40, 40), color="blue").save(img_path)
+
+        doc_path = self.tmp_path / "xml_markup.docx"
+        doc = docx.Document()
+        doc.add_paragraph("<br>Literal tag <tag>hello</tag> & ampersand")
+        tbl = doc.add_table(rows=1, cols=2)
+        tbl.cell(0, 0).text = "Row <1> & <br>"
+        run = tbl.cell(0, 1).paragraphs[0].add_run()
+        run.add_picture(str(img_path))
+        doc.save(str(doc_path))
+
+        with patch.object(format_converter, "_find_soffice_binary", return_value=None):
+            pdf_out = format_converter.docx_to_pdf(str(doc_path), str(self.tmp_path / "fallback.pdf"))
+
+        reader = pypdf.PdfReader(pdf_out)
+        text = "\n".join(p.extract_text() or "" for p in reader.pages)
+        self.assertIn("<tag>hello</tag>", text)
+        self.assertIn("<br>Literal tag", text)
+        self.assertIn("Row <1> & <br>", text)
+
+    def test_convertible_extensions_registry_and_structured_pdf_to_markdown(self):
+        import glob
+        from format_converter import get_convertible_extensions, is_convert_supported
+
+        exts = get_convertible_extensions()
+        self.assertIn(".pdf", exts)
+        self.assertIn(".xlsx", exts)
+        self.assertNotIn(".json", exts)
+        self.assertFalse(is_convert_supported("locale.json"))
+        self.assertTrue(is_convert_supported("report.pdf"))
+
+        # Verify structured PDF -> Markdown on real Japanese multi-page PDF with tables if present
+        sample_pdfs = glob.glob("examples/*.pdf")
+        if sample_pdfs:
+            md_path = pdf_to_markdown(sample_pdfs[0], str(self.tmp_path / "example.md"))
+            md_text = Path(md_path).read_text(encoding="utf-8")
+            self.assertIn("# 【社外向け】", md_text)
+            self.assertIn("映画『アイアンマン』で、主人公トニー・スタークがAIアシスタントの「J.A.R.V.I.S.（ジャーヴィス）」", md_text)
+            self.assertIn("| --- |", md_text)
+
 
 if __name__ == "__main__":
     unittest.main()

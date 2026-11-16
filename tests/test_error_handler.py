@@ -54,6 +54,29 @@ class TestErrorHandler(unittest.TestCase):
         self.assertEqual(diag.category, "cancelled")
         self.assertIn("hủy", diag.title.lower())
 
+    def test_structured_llm_error_classification_without_text_keywords(self):
+        from llm_manager import LLMError
+
+        auth_err = LLMError("Upstream failure", status_code=401)
+        self.assertEqual(diagnose_error(auth_err, self.i18n).category, "auth")
+
+        quota_err = LLMError("Slow down", status_code=429)
+        self.assertEqual(diagnose_error(quota_err, self.i18n).category, "quota")
+
+        fmt_err = LLMError("Output cut off", is_format_error=True)
+        self.assertEqual(diagnose_error(fmt_err, self.i18n).category, "format")
+
+        billing_err = LLMError(
+            "402 RESOURCE_EXHAUSTED: Your prepayment credits are depleted.",
+            status_code=402,
+            error_status="RESOURCE_EXHAUSTED",
+        )
+        billing_diag = diagnose_error(billing_err, self.i18n)
+        self.assertEqual(billing_diag.category, "quota")
+        self.assertTrue(billing_diag.requires_settings)
+        self.assertIn("402", billing_diag.message)
+        self.assertNotIn("429", billing_diag.title)
+
 
 if __name__ == "__main__":
     unittest.main()

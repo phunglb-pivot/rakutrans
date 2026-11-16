@@ -97,9 +97,10 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertTrue(translator.should_translate_cell("仕様書の確認"))
 
     def test_formula_and_style_preservation(self):
+        from translation_cache import TranslationCache
         config = AppConfig(batch_size=50)
         mock_llm = MockLLMManager()
-        translator = ExcelTranslator(config, mock_llm)
+        translator = ExcelTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "formula_cache.db"))
 
         output_path = translator.process_file(
             file_path=str(self.test_excel_path),
@@ -203,9 +204,10 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertGreater(info["formula_count"], 0)
 
     def test_bilingual_mode(self):
+        from translation_cache import TranslationCache
         mock_llm = MockLLMManager()
         config = AppConfig(batch_size=50)
-        translator = ExcelTranslator(config, mock_llm)
+        translator = ExcelTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "bilingual_cache.db"))
         options = TranslationOptions(bilingual_mode=True)
 
         out = translator.process_file(
@@ -240,6 +242,40 @@ class TestExcelTranslator(unittest.TestCase):
         out2 = safe_save_workbook(wb, target)
         self.assertIn("(1)", str(out2))
         self.assertTrue(out2.exists())
+
+    def test_bilingual_long_prefix_collision_and_options_cache_sync(self):
+        from translation_cache import TranslationCache
+        wb = openpyxl.Workbook()
+        ws1 = wb.active
+        ws1.title = "Project_Specification_Phase1"
+        ws1["A1"] = "Hello"
+        ws1["A2"] = "---"
+        ws1["A3"] = "1,2,3"
+        ws2 = wb.create_sheet(title="Project_Specification_Phase2")
+        ws2["A1"] = "World"
+
+        xlsx_path = Path(self.temp_dir.name) / "long_prefix.xlsx"
+        wb.save(str(xlsx_path))
+        wb.close()
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "excel_opt_cache.db")
+        mock_llm = MockLLMManager()
+        cfg1 = AppConfig(translation_options=TranslationOptions(bilingual_mode=True, custom_context="ctx1"))
+        translator = ExcelTranslator(cfg1, mock_llm, cache=cache)
+        out = translator.process_file(file_path=str(xlsx_path), target_lang="Vietnamese")
+        first_calls = mock_llm.call_count
+
+        res_wb = openpyxl.load_workbook(out)
+        self.assertEqual(len(res_wb.sheetnames), 4)
+        self.assertEqual(res_wb["Project_Specification_Phase1"]["A2"].value, "---")
+        self.assertEqual(res_wb["Project_Specification_Phase1"]["A3"].value, "[VI] 1,2,3")
+        res_wb.close()
+
+        # Different config.translation_options with options=None must NOT hit ctx1 cache
+        cfg2 = AppConfig(translation_options=TranslationOptions(bilingual_mode=False, custom_context="ctx2"))
+        translator2 = ExcelTranslator(cfg2, mock_llm, cache=cache)
+        translator2.process_file(file_path=str(xlsx_path), target_lang="Vietnamese")
+        self.assertGreater(mock_llm.call_count, first_calls)
 
 
 if __name__ == "__main__":

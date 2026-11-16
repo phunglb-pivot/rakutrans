@@ -153,6 +153,51 @@ class TestConfigAndI18n(unittest.TestCase):
             b_out = get_smart_output_path(f_bilingual, target_lang="Vietnamese", is_bilingual=True)
             self.assertEqual(b_out.name, "sales_vi_bilingual.xlsx")
 
+    def test_bilingual_mode_roundtrip_persistence(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        from config import TranslationOptions
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_dir = Path(tmpdir)
+            cfg_file = cfg_dir / "config.json"
+            with patch.object(config_mod, "CONFIG_DIR", cfg_dir), patch.object(config_mod, "CONFIG_FILE", cfg_file):
+                cfg = AppConfig(translation_options=TranslationOptions(bilingual_mode=True, custom_context="glossary"))
+                cfg.save()
+                loaded = AppConfig.load()
+                self.assertTrue(loaded.translation_options.bilingual_mode)
+                self.assertEqual(loaded.translation_options.custom_context, "glossary")
+
+    def test_user_selected_model_not_overwritten_and_cli_flags(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        from main import build_cli_parser
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_dir = Path(tmpdir)
+            cfg_file = cfg_dir / "config.json"
+            with patch.object(config_mod, "CONFIG_DIR", cfg_dir), patch.object(config_mod, "CONFIG_FILE", cfg_file):
+                fresh = AppConfig.load()
+                self.assertEqual(fresh.active_provider, "Gemini")
+
+                cfg = AppConfig()
+                cfg.selected_models["Gemini"] = "gemini-2.5-flash"
+                cfg.save()
+                loaded = AppConfig.load()
+                self.assertEqual(loaded.selected_models["Gemini"], "gemini-2.5-flash")
+
+        parser = build_cli_parser()
+        args = parser.parse_args([
+            "--cli", "-f", "doc.xlsx", "--no-keep-terms", "--bilingual", "-o", "custom_out.xlsx"
+        ])
+        self.assertFalse(args.keep_it)
+        self.assertTrue(args.bilingual)
+        self.assertEqual(args.output_path, "custom_out.xlsx")
+
 
 if __name__ == "__main__":
     unittest.main()

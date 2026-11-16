@@ -82,6 +82,77 @@ class TestPptxTranslator(unittest.TestCase):
         self.assertIn("[Vietnamese] Quarterly Business Review", joined)
         self.assertIn("[Vietnamese] Performance and Outlook", joined)
 
+    def test_options_cache_isolation_and_group_shapes_notes(self):
+        from config import TranslationOptions
+
+        pptx_path = Path(self.temp_dir.name) / "grouped.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        grp = slide.shapes.add_group_shape()
+        tb = grp.shapes.add_textbox(Inches(1), Inches(1), Inches(3), Inches(1))
+        tb.text_frame.text = "Inside group"
+        slide.notes_slide.notes_text_frame.text = "Speaker note line"
+        prs.save(str(pptx_path))
+
+        config = AppConfig()
+        mock_llm = MockLLMManager()
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "pptx_cache.db")
+        translator = PptxTranslator(config, mock_llm, cache=cache)
+
+        out1 = translator.process_file(file_path=str(pptx_path), target_lang="Vietnamese")
+        calls_after_1 = mock_llm.call_count
+        self.assertGreater(calls_after_1, 0)
+
+        out_prs = Presentation(out1)
+        grp_texts = [
+            p.text
+            for s in out_prs.slides[0].shapes
+            if hasattr(s, "shapes")
+            for sub in s.shapes
+            for p in sub.text_frame.paragraphs
+        ]
+        self.assertIn("[Vietnamese] Inside group", grp_texts)
+        self.assertIn("[Vietnamese] Speaker note line", out_prs.slides[0].notes_slide.notes_text_frame.text)
+
+        # Different TranslationOptions must NOT reuse previous cache
+        translator.process_file(
+            file_path=str(pptx_path),
+            target_lang="Vietnamese",
+            options=TranslationOptions(append_original_words=True),
+        )
+        self.assertGreater(mock_llm.call_count, calls_after_1)
+
+    def test_pptx_inline_style_preservation_and_reordering(self):
+        from pptx.dml.color import RGBColor
+
+        pptx_path = Path(self.temp_dir.name) / "inline_styles.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+        tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(5), Inches(1))
+        p = tb.text_frame.paragraphs[0]
+        r0 = p.add_run()
+        r0.text = "Critical"
+        r0.font.bold = True
+        r1 = p.add_run()
+        r1.text = " warning"
+        r1.font.color.rgb = RGBColor(0xCC, 0x00, 0x00)
+        prs.save(str(pptx_path))
+
+        class _ReorderLLM:
+            def translate_batch(self, texts, *args, **kwargs):
+                return ["<s1>Cảnh báo </s1><s0>nghiêm trọng</s0>" for _ in texts]
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "pptx_inline_cache.db")
+        translator = PptxTranslator(AppConfig(), _ReorderLLM(), cache=cache)
+        out_path = translator.process_file(file_path=str(pptx_path), target_lang="Vietnamese")
+
+        out_prs = Presentation(out_path)
+        res_p = out_prs.slides[0].shapes[0].text_frame.paragraphs[0]
+        self.assertEqual(res_p.text, "Cảnh báo nghiêm trọng")
+        self.assertFalse(bool(res_p.runs[0].font.bold))
+        self.assertEqual(str(res_p.runs[0].font.color.rgb), "CC0000")
+        self.assertTrue(bool(res_p.runs[1].font.bold))
+
 
 if __name__ == "__main__":
     unittest.main()

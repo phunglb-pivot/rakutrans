@@ -78,6 +78,37 @@ class TestTranslationCache(unittest.TestCase):
         self.cache.clear()
         self.assertEqual(self.cache.count(), 0)
 
+    def test_language_normalization_and_mode_model_isolation(self):
+        opts = TranslationOptions()
+        self.cache.save_batch(
+            ["Hello"], ["Xin chào"], target_lang="vi", options=opts, source_lang="en", mode="batch", model_id="Gemini:m1"
+        )
+        # Alias target_lang/source_lang hits same entry
+        hit, _ = self.cache.get_batch(
+            ["Hello"], target_lang="Tiếng Việt (Vietnamese)", options=opts, source_lang="English", mode="batch", model_id="Gemini:m1"
+        )
+        self.assertEqual(hit, {0: "Xin chào"})
+
+        # Different mode or model misses cleanly
+        miss_mode, _ = self.cache.get_batch(
+            ["Hello"], target_lang="Vietnamese", options=opts, source_lang="English", mode="markdown", model_id="Gemini:m1"
+        )
+        self.assertEqual(miss_mode, {})
+
+        miss_model, _ = self.cache.get_batch(
+            ["Hello"], target_lang="Vietnamese", options=opts, source_lang="English", mode="batch", model_id="OpenAI:gpt-4o"
+        )
+        self.assertEqual(miss_model, {})
+
+    def test_large_batch_chunked_lookup(self):
+        opts = TranslationOptions()
+        src = [f"term_{i}" for i in range(950)]
+        tgt = [f"dich_{i}" for i in range(950)]
+        self.cache.save_batch(src, tgt, target_lang="Vietnamese", options=opts)
+        hit, miss = self.cache.get_batch(src + ["term_new"], target_lang="vi", options=opts)
+        self.assertEqual(len(hit), 950)
+        self.assertEqual(miss, [(950, "term_new")])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3,48 +3,33 @@ Parsers for CSV/TSV, JSON, and Plain Text files in RakuTrans AI.
 Provides:
 - CsvTranslator: Handles .csv and .tsv spreadsheets with dialect and encoding support.
 - JsonTranslator: Handles .json localization and config files preserving keys & variables.
-- TextTranslator: Handles .txt plain text documents with chunked translation.
+- TextTranslator: Handles .txt plain text documents with chunked concurrent translation.
 """
 
 import csv
 import json
-from pathlib import Path
-from typing import List, Dict, Set, Callable, Optional, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import List, Dict, Set, Callable, Optional, Any, Tuple
 
-from base_translator import BaseTranslator, safe_save_file
+from base_translator import (
+    BaseTranslator,
+    count_words_multilingual,
+    detect_text_encoding,
+    safe_save_file,
+    should_translate_text,
+)
 from config import TranslationOptions, get_smart_output_path
 
 
 def _should_translate_cell(val: Any) -> bool:
     """Checks if a cell or string value should be translated."""
-    if val is None:
-        return False
-    if not isinstance(val, str):
-        return False
-    trimmed = val.strip()
-    if not trimmed:
-        return False
-    if trimmed.startswith("="):
-        return False
-    try:
-        float(trimmed.replace(",", ""))
-        return False
-    except ValueError:
-        pass
-    return any(c.isalnum() for c in trimmed)
+    return should_translate_text(val, ignore_formulas=True)
 
 
 def _detect_encoding(file_path: Path) -> str:
-    """Detects encoding with priority for UTF-8-SIG, UTF-8, Shift-JIS, and Latin-1."""
-    for enc in ["utf-8-sig", "utf-8", "shift_jis", "cp1252", "latin-1"]:
-        try:
-            with open(file_path, "r", encoding=enc) as f:
-                f.read(8192)
-            return enc
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return "utf-8"
+    """Detects encoding deterministically using BOM, strict UTF-8, and charset detection."""
+    return detect_text_encoding(file_path)
 
 
 class CsvTranslator(BaseTranslator):
@@ -56,16 +41,20 @@ class CsvTranslator(BaseTranslator):
 
     @classmethod
     def _detect_delimiter(cls, file_path: Path, encoding: str) -> str:
-        """Determines whether file uses comma, tab, or semicolon."""
+        """Determines whether file uses comma, tab, semicolon, or pipe deterministically."""
         if file_path.suffix.lower() == ".tsv":
             return "\t"
         try:
             with open(file_path, "r", encoding=encoding, errors="replace") as f:
-                sample = f.read(4096)
-                dialect = csv.Sniffer().sniff(sample, delimiters=[",", "\t", ";", "|"])
-                return dialect.delimiter
+                sample = f.read(8192)
+            lines = [ln for ln in sample.splitlines() if ln.strip()][:20]
+            if len(lines) >= 2:
+                dialect = csv.Sniffer().sniff("\n".join(lines), delimiters=[",", "\t", ";", "|"])
+                if dialect.delimiter in (",", "\t", ";", "|"):
+                    return dialect.delimiter
         except Exception:
-            return ","
+            pass
+        return ","
 
     @classmethod
     def inspect_file(cls, file_path: str) -> Dict[str, Any]:
@@ -100,7 +89,7 @@ class CsvTranslator(BaseTranslator):
                 "columns": max_cols,
                 "translatable_cells": translatable_cells,
                 "unique_texts": len(unique_texts),
-                "delimiter": delimiter
+                "delimiter": delimiter,
             }
         except Exception as e:
             return {"type": "csv", "error": str(e)}
@@ -114,15 +103,17 @@ class CsvTranslator(BaseTranslator):
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         custom_output_path: Optional[str] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> str:
         """Translates CSV/TSV table rows."""
+        self._is_cancelled = False
         src = Path(file_path)
         if not src.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        target_lang = target_lang or kwargs.get("target_lang") or self.config.target_language
-        options = options or self.config.translation_options
+        target_lang, source_lang, options = self._resolve_params(
+            target_lang, source_lang, options, kwargs
+        )
 
         if progress_callback:
             progress_callback(5, 100, "Reading CSV table...")
@@ -136,83 +127,34 @@ class CsvTranslator(BaseTranslator):
             for row in reader:
                 rows.append(row)
 
-        unique_texts = list({cell.strip() for row in rows for cell in row if _should_translate_cell(cell)})
+        unique_texts = list(
+            dict.fromkeys(
+                cell.strip() for row in rows for cell in row if _should_translate_cell(cell)
+            )
+        )
         total_unique = len(unique_texts)
 
         if not unique_texts:
-            out_path = get_smart_output_path(src, target_lang=target_lang, custom_output_path=custom_output_path)
-            safe_save_file(lambda p: self._write_csv(p, rows, delimiter), out_path)
+            out_path = get_smart_output_path(
+                src, target_lang=target_lang, custom_output_path=custom_output_path
+            )
+            saved_path = safe_save_file(lambda p: self._write_csv(p, rows, delimiter), out_path)
             if progress_callback:
                 progress_callback(100, 100, "File contains no translatable text.")
-            return str(out_path)
+            return str(saved_path)
 
         if progress_callback:
             progress_callback(10, 100, f"Found {total_unique} unique cells. Checking cache...")
 
-        translation_map: Dict[str, str] = {}
-        uncached_texts: List[str] = []
-
-        for text in unique_texts:
-            cached = self.cache.get(text, target_lang)
-            if cached:
-                translation_map[text] = cached
-            else:
-                uncached_texts.append(text)
-
-        if uncached_texts:
-            max_b_items = max(5, min(getattr(self.config, "batch_size", 25), 25))
-            max_b_chars = 3500
-            batches: List[List[str]] = []
-            curr_b: List[str] = []
-            curr_b_chars = 0
-            for item in uncached_texts:
-                item_chars = len(item)
-                if curr_b and (len(curr_b) >= max_b_items or (curr_b_chars + item_chars > max_b_chars)):
-                    batches.append(curr_b)
-                    curr_b = [item]
-                    curr_b_chars = item_chars
-                else:
-                    curr_b.append(item)
-                    curr_b_chars += item_chars
-            if curr_b:
-                batches.append(curr_b)
-
-            total_batches = len(batches)
-            completed_batches = 0
-
-            def translate_worker(batch: List[str]) -> List[str]:
-                if self.is_cancelled:
-                    raise InterruptedError("Translation cancelled by user.")
-                return self.llm_manager.translate_batch(
-                    texts=batch,
-                    target_lang=target_lang,
-                    source_lang=source_lang,
-                    options=options
-                )
-
-            max_workers = min(3, max(1, total_batches))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(translate_worker, b): b for b in batches}
-                for future in as_completed(futures):
-                    if self.is_cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise InterruptedError("Translation cancelled by user.")
-
-                    orig_batch = futures[future]
-                    try:
-                        translated_batch = future.result()
-                        for orig, trans in zip(orig_batch, translated_batch):
-                            translation_map[orig] = trans
-                            self.cache.set(orig, target_lang, trans)
-                    except Exception as e:
-                        if self.is_cancelled:
-                            raise InterruptedError("Translation cancelled by user.")
-                        raise e
-
-                    completed_batches += 1
-                    pct = 10 + int(completed_batches / total_batches * 75)
-                    if progress_callback:
-                        progress_callback(pct, 100, f"Translating batch {completed_batches}/{total_batches}...")
+        translation_map = self.translate_unique_texts(
+            unique_texts=unique_texts,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            options=options,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_span=75,
+        )
 
         if self.is_cancelled:
             raise InterruptedError("Translation cancelled by user.")
@@ -220,16 +162,14 @@ class CsvTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(90, 100, "Applying translations to CSV...")
 
-        # Apply translations
         translated_rows: List[List[str]] = []
         for row in rows:
             new_row = []
             for cell in row:
                 trimmed = cell.strip()
                 if _should_translate_cell(cell) and trimmed in translation_map:
-                    # Preserve original leading/trailing whitespace if any
-                    prefix = cell[:len(cell) - len(cell.lstrip())]
-                    suffix = cell[len(cell.rstrip()):]
+                    prefix = cell[: len(cell) - len(cell.lstrip())]
+                    suffix = cell[len(cell.rstrip()) :]
                     new_row.append(f"{prefix}{translation_map[trimmed]}{suffix}")
                 else:
                     new_row.append(cell)
@@ -239,7 +179,7 @@ class CsvTranslator(BaseTranslator):
             source_path=src,
             target_lang=target_lang,
             target_format=src.suffix,
-            custom_output_path=custom_output_path
+            custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: self._write_csv(p, translated_rows, delimiter), out_path)
 
@@ -267,7 +207,7 @@ class JsonTranslator(BaseTranslator):
     def _traverse_json(cls, data: Any, on_string: Callable[[str], None]):
         """Recursively traverses JSON data and calls on_string for string values."""
         if isinstance(data, dict):
-            for k, v in data.items():
+            for v in data.values():
                 cls._traverse_json(v, on_string)
         elif isinstance(data, list):
             for item in data:
@@ -284,7 +224,8 @@ class JsonTranslator(BaseTranslator):
             return {"type": "json", "error": "File not found"}
 
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            enc = _detect_encoding(path)
+            with open(path, "r", encoding=enc, errors="replace") as f:
                 data = json.load(f)
 
             key_count = 0
@@ -310,7 +251,7 @@ class JsonTranslator(BaseTranslator):
                 "type": "json",
                 "total_keys": key_count,
                 "translatable_strings": string_count,
-                "unique_texts": len(unique_texts)
+                "unique_texts": len(unique_texts),
             }
         except Exception as e:
             return {"type": "json", "error": str(e)}
@@ -324,102 +265,51 @@ class JsonTranslator(BaseTranslator):
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         custom_output_path: Optional[str] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> str:
         """Translates string values in JSON."""
+        self._is_cancelled = False
         src = Path(file_path)
         if not src.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        target_lang = target_lang or kwargs.get("target_lang") or self.config.target_language
-        options = options or self.config.translation_options
+        target_lang, source_lang, options = self._resolve_params(
+            target_lang, source_lang, options, kwargs
+        )
 
         if progress_callback:
             progress_callback(5, 100, "Reading JSON document...")
 
-        with open(src, "r", encoding="utf-8", errors="replace") as f:
+        enc = _detect_encoding(src)
+        with open(src, "r", encoding=enc, errors="replace") as f:
             data = json.load(f)
 
-        unique_texts: Set[str] = set()
-        self._traverse_json(data, lambda s: unique_texts.add(s.strip()))
-
-        unique_list = list(unique_texts)
+        ordered_unique: Dict[str, None] = {}
+        self._traverse_json(data, lambda s: ordered_unique.setdefault(s.strip(), None))
+        unique_list = list(ordered_unique.keys())
         total_unique = len(unique_list)
 
         if not unique_list:
-            out_path = get_smart_output_path(src, target_lang=target_lang, custom_output_path=custom_output_path)
-            safe_save_file(lambda p: self._save_json(p, data), out_path)
+            out_path = get_smart_output_path(
+                src, target_lang=target_lang, custom_output_path=custom_output_path
+            )
+            saved_path = safe_save_file(lambda p: self._save_json(p, data), out_path)
             if progress_callback:
                 progress_callback(100, 100, "File contains no translatable text.")
-            return str(out_path)
+            return str(saved_path)
 
         if progress_callback:
             progress_callback(10, 100, f"Found {total_unique} translatable phrases. Checking cache...")
 
-        translation_map: Dict[str, str] = {}
-        uncached_texts: List[str] = []
-
-        for text in unique_list:
-            cached = self.cache.get(text, target_lang)
-            if cached:
-                translation_map[text] = cached
-            else:
-                uncached_texts.append(text)
-
-        if uncached_texts:
-            max_b_items = max(5, min(getattr(self.config, "batch_size", 25), 25))
-            max_b_chars = 3500
-            batches: List[List[str]] = []
-            curr_b: List[str] = []
-            curr_b_chars = 0
-            for item in uncached_texts:
-                item_chars = len(item)
-                if curr_b and (len(curr_b) >= max_b_items or (curr_b_chars + item_chars > max_b_chars)):
-                    batches.append(curr_b)
-                    curr_b = [item]
-                    curr_b_chars = item_chars
-                else:
-                    curr_b.append(item)
-                    curr_b_chars += item_chars
-            if curr_b:
-                batches.append(curr_b)
-
-            total_batches = len(batches)
-            completed_batches = 0
-
-            def translate_worker(batch: List[str]) -> List[str]:
-                if self.is_cancelled:
-                    raise InterruptedError("Translation cancelled by user.")
-                return self.llm_manager.translate_batch(
-                    texts=batch,
-                    target_lang=target_lang,
-                    source_lang=source_lang,
-                    options=options
-                )
-
-            max_workers = min(3, max(1, total_batches))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(translate_worker, b): b for b in batches}
-                for future in as_completed(futures):
-                    if self.is_cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise InterruptedError("Translation cancelled by user.")
-
-                    orig_batch = futures[future]
-                    try:
-                        translated_batch = future.result()
-                        for orig, trans in zip(orig_batch, translated_batch):
-                            translation_map[orig] = trans
-                            self.cache.set(orig, target_lang, trans)
-                    except Exception as e:
-                        if self.is_cancelled:
-                            raise InterruptedError("Translation cancelled by user.")
-                        raise e
-
-                    completed_batches += 1
-                    pct = 10 + int(completed_batches / total_batches * 75)
-                    if progress_callback:
-                        progress_callback(pct, 100, f"Translating batch {completed_batches}/{total_batches}...")
+        translation_map = self.translate_unique_texts(
+            unique_texts=unique_list,
+            target_lang=target_lang,
+            source_lang=source_lang,
+            options=options,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_span=75,
+        )
 
         if self.is_cancelled:
             raise InterruptedError("Translation cancelled by user.")
@@ -435,8 +325,8 @@ class JsonTranslator(BaseTranslator):
             elif isinstance(node, str):
                 trimmed = node.strip()
                 if _should_translate_cell(node) and trimmed in translation_map:
-                    prefix = node[:len(node) - len(node.lstrip())]
-                    suffix = node[len(node.rstrip()):]
+                    prefix = node[: len(node) - len(node.lstrip())]
+                    suffix = node[len(node.rstrip()) :]
                     return f"{prefix}{translation_map[trimmed]}{suffix}"
                 return node
             return node
@@ -447,7 +337,7 @@ class JsonTranslator(BaseTranslator):
             source_path=src,
             target_lang=target_lang,
             target_format=".json",
-            custom_output_path=custom_output_path
+            custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: self._save_json(p, translated_data), out_path)
 
@@ -466,8 +356,57 @@ class JsonTranslator(BaseTranslator):
 class TextTranslator(BaseTranslator):
     """
     Handles translation of plain text (.txt) files.
-    Chunks text into readable sections, translates with LLM, and preserves blank lines.
+    Chunks text along paragraph/line boundaries, translates concurrently with LLM,
+    and preserves blank lines and original structure.
     """
+
+    @staticmethod
+    def _split_text_chunks(content: str, max_chars: int = 3000) -> List[Tuple[str, str]]:
+        """
+        Splits text into (chunk_text, join_sep_after_chunk) tuples preserving exact paragraph/line boundaries.
+        """
+        if len(content) <= max_chars:
+            return [(content, "")]
+
+        paragraphs = content.split("\n\n")
+        atomic_units: List[Tuple[str, str]] = []
+
+        for p_idx, para in enumerate(paragraphs):
+            sep_after = "\n\n" if p_idx < len(paragraphs) - 1 else ""
+            if len(para) <= max_chars:
+                atomic_units.append((para, sep_after))
+            else:
+                lines = para.split("\n")
+                for l_idx, ln in enumerate(lines):
+                    l_sep = "\n" if l_idx < len(lines) - 1 else sep_after
+                    atomic_units.append((ln, l_sep))
+
+        chunks: List[Tuple[str, str]] = []
+        buf_parts: List[str] = []
+        buf_len = 0
+
+        for idx, (unit, sep_after) in enumerate(atomic_units):
+            unit_len = len(unit)
+            if buf_parts and (buf_len + unit_len > max_chars):
+                # Flush previous accumulated chunk without trailing sep; sep belongs between chunks
+                prev_text = "".join(buf_parts[:-1]) if len(buf_parts) > 1 else buf_parts[0]
+                prev_sep = buf_parts[-1] if len(buf_parts) > 1 else ""
+                chunks.append((prev_text, prev_sep))
+                buf_parts = [unit]
+                if sep_after and idx < len(atomic_units) - 1:
+                    buf_parts.append(sep_after)
+                buf_len = unit_len + len(sep_after)
+            else:
+                buf_parts.append(unit)
+                buf_len += unit_len
+                if sep_after and idx < len(atomic_units) - 1:
+                    buf_parts.append(sep_after)
+                    buf_len += len(sep_after)
+
+        if buf_parts:
+            chunks.append(("".join(buf_parts), ""))
+
+        return chunks
 
     @classmethod
     def inspect_file(cls, file_path: str) -> Dict[str, Any]:
@@ -477,16 +416,17 @@ class TextTranslator(BaseTranslator):
             return {"type": "txt", "error": "File not found"}
 
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
+            enc = _detect_encoding(path)
+            with open(path, "r", encoding=enc, errors="replace") as f:
                 content = f.read()
 
             lines = content.splitlines()
-            words = len(content.split())
+            words = count_words_multilingual(content)
             return {
                 "type": "txt",
                 "char_count": len(content),
                 "word_count": words,
-                "line_count": len(lines)
+                "line_count": len(lines),
             }
         except Exception as e:
             return {"type": "txt", "error": str(e)}
@@ -500,80 +440,116 @@ class TextTranslator(BaseTranslator):
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         custom_output_path: Optional[str] = None,
         *args,
-        **kwargs
+        **kwargs,
     ) -> str:
-        """Translates plain text document."""
+        """Translates plain text document concurrently with option-aware caching."""
+        self._is_cancelled = False
         src = Path(file_path)
         if not src.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        target_lang = target_lang or kwargs.get("target_lang") or self.config.target_language
-        options = options or self.config.translation_options
+        target_lang, source_lang, options = self._resolve_params(
+            target_lang, source_lang, options, kwargs
+        )
 
         if progress_callback:
             progress_callback(5, 100, "Reading text file...")
 
-        with open(src, "r", encoding="utf-8", errors="replace") as f:
+        enc = _detect_encoding(src)
+        with open(src, "r", encoding=enc, errors="replace") as f:
             content = f.read()
 
         if not content.strip():
-            out_path = get_smart_output_path(src, target_lang=target_lang, custom_output_path=custom_output_path)
-            safe_save_file(lambda p: p.write_text(content, encoding="utf-8"), out_path)
-            return str(out_path)
+            out_path = get_smart_output_path(
+                src, target_lang=target_lang, custom_output_path=custom_output_path
+            )
+            saved_path = safe_save_file(lambda p: p.write_text(content, encoding="utf-8"), out_path)
+            if progress_callback:
+                progress_callback(100, 100, "File contains no translatable text.")
+            return str(saved_path)
 
-        # Chunk into double-newline sections
-        sections = content.split("\n\n")
-        chunks: List[str] = []
-        curr_chunk: List[str] = []
-        curr_len = 0
+        chunk_specs = self._split_text_chunks(content)
+        total_chunks = len(chunk_specs)
+        translated_texts: List[Optional[str]] = [None] * total_chunks
 
-        for sec in sections:
-            sec_len = len(sec)
-            if curr_len + sec_len > 1500 and curr_chunk:
-                chunks.append("\n\n".join(curr_chunk))
-                curr_chunk = [sec]
-                curr_len = sec_len
+        translatable_indices: List[int] = []
+        translatable_inputs: List[str] = []
+        for idx, (chunk_text, _) in enumerate(chunk_specs):
+            if not chunk_text.strip():
+                translated_texts[idx] = chunk_text
             else:
-                curr_chunk.append(sec)
-                curr_len += sec_len
+                translatable_indices.append(idx)
+                translatable_inputs.append(chunk_text)
 
-        if curr_chunk:
-            chunks.append("\n\n".join(curr_chunk))
+        model_id = self._get_cache_model_id()
+        cached_map, uncached_items = self.cache.get_batch(
+            texts=translatable_inputs,
+            target_lang=target_lang,
+            options=options,
+            source_lang=source_lang,
+            mode="text",
+            model_id=model_id,
+        )
 
-        translated_chunks: List[str] = []
-        total_chunks = len(chunks)
+        for local_idx, trans_val in cached_map.items():
+            translated_texts[translatable_indices[local_idx]] = trans_val
 
-        for idx, chunk in enumerate(chunks):
-            if self.is_cancelled:
-                raise InterruptedError("Translation cancelled by user.")
+        completed_count = len(cached_map)
+        total_translatable = len(translatable_inputs)
 
-            if not chunk.strip():
-                translated_chunks.append(chunk)
-                continue
-
-            cached = self.cache.get(chunk, target_lang)
-            if cached:
-                translated_chunks.append(cached)
-            else:
-                translated = self.llm_manager.translate_markdown_text(
-                    markdown_text=chunk,
+        if uncached_items:
+            def translate_chunk(item: Tuple[int, str]) -> Tuple[int, str]:
+                local_idx, chunk_text = item
+                if self.is_cancelled:
+                    raise InterruptedError("Translation cancelled by user.")
+                trans = self.llm_manager.translate_markdown_text(
+                    markdown_text=chunk_text,
                     target_lang=target_lang,
                     options=options,
-                    source_lang=source_lang
+                    source_lang=source_lang,
+                    cancel_check=lambda: self.is_cancelled,
+                    plain_text=True,
                 )
-                self.cache.set(chunk, target_lang, translated)
-                translated_chunks.append(translated)
+                self.cache.save_batch(
+                    source_texts=[chunk_text],
+                    translated_texts=[trans],
+                    target_lang=target_lang,
+                    options=options,
+                    source_lang=source_lang,
+                    mode="text",
+                    model_id=model_id,
+                )
+                return local_idx, trans
 
-            pct = 10 + int((idx + 1) / total_chunks * 80)
-            if progress_callback:
-                progress_callback(pct, 100, f"Translated section {idx + 1}/{total_chunks}...")
+            max_workers = self.get_max_workers(len(uncached_items))
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(translate_chunk, item): item[0] for item in uncached_items}
+                for future in as_completed(futures):
+                    if self.is_cancelled:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        raise InterruptedError("Translation cancelled by user.")
+                    local_idx, trans = future.result()
+                    translated_texts[translatable_indices[local_idx]] = trans
+                    completed_count += 1
+                    pct = 10 + int((completed_count / max(1, total_translatable)) * 80)
+                    if progress_callback:
+                        progress_callback(
+                            pct, 100, f"Translated section {completed_count}/{total_translatable}..."
+                        )
 
-        final_content = "\n\n".join(translated_chunks)
+        parts: List[str] = []
+        for idx, (chunk_text, sep_after) in enumerate(chunk_specs):
+            t_val = translated_texts[idx]
+            parts.append(chunk_text if t_val is None else t_val)
+            if sep_after:
+                parts.append(sep_after)
+        final_content = "".join(parts)
+
         out_path = get_smart_output_path(
             source_path=src,
             target_lang=target_lang,
             target_format=".txt",
-            custom_output_path=custom_output_path
+            custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: p.write_text(final_content, encoding="utf-8"), out_path)
 

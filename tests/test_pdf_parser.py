@@ -100,7 +100,8 @@ class TestPdfParser(unittest.TestCase):
 
     def test_pipeline_pdf_to_docx_translate_to_pdf(self):
         """Verifies full pipeline: PDF -> DOCX -> Translate -> PDF."""
-        translator = PdfTranslator(self.config, self.mock_llm)
+        from translation_cache import TranslationCache
+        translator = PdfTranslator(self.config, self.mock_llm, cache=TranslationCache(db_path=self.tmp_path / "pdf_cache.db"))
         progress_calls = []
 
         def callback(cur, total, msg):
@@ -135,6 +136,46 @@ class TestPdfParser(unittest.TestCase):
                 file_path=str(self.sample_pdf),
                 target_lang="Tiếng Việt",
             )
+
+    def test_scanned_image_only_pdf_raises_clear_error(self):
+        """PDF with images and zero selectable text should fail fast with an OCR message."""
+        from PIL import Image
+        from reportlab.pdfgen import canvas as rl_canvas
+
+        img_path = self.tmp_path / "scan.png"
+        Image.new("RGB", (100, 100), color="white").save(img_path)
+        scanned_pdf = self.tmp_path / "scanned.pdf"
+        c = rl_canvas.Canvas(str(scanned_pdf))
+        c.drawImage(str(img_path), 50, 500, width=100, height=100)
+        c.save()
+
+        translator = PdfTranslator(self.config, self.mock_llm)
+        with self.assertRaises(ValueError) as ctx:
+            translator.process_file(file_path=str(scanned_pdf), target_lang="Vietnamese")
+        self.assertIn("OCR", str(ctx.exception))
+
+    def test_cjk_word_count_and_soft_break_cleanup(self):
+        from docx import Document
+        from base_translator import count_words_multilingual
+        from pdf_parser import _clean_pdf2docx_soft_breaks
+
+        self.assertGreaterEqual(count_words_multilingual("AIが直して人が判断"), 8)
+        self.assertEqual(count_words_multilingual("Hello world test"), 3)
+
+        docx_path = self.tmp_path / "soft_br.docx"
+        doc = Document()
+        p_ja = doc.add_paragraph()
+        p_ja.add_run("AIが判").add_break()
+        p_ja.add_run("断する")
+        p_en = doc.add_paragraph()
+        p_en.add_run("Hello").add_break()
+        p_en.add_run("world")
+        doc.save(str(docx_path))
+
+        _clean_pdf2docx_soft_breaks(docx_path)
+        cleaned = Document(str(docx_path))
+        self.assertEqual(cleaned.paragraphs[0].text, "AIが判断する")
+        self.assertEqual(cleaned.paragraphs[1].text, "Hello world")
 
 
 if __name__ == "__main__":

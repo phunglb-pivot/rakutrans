@@ -4,11 +4,21 @@ Launches the CustomTkinter desktop user interface or provides a CLI fallback.
 """
 
 import sys
+
+if sys.version_info < (3, 10):
+    print(
+        f"[RakuTrans AI] Python 3.10 or higher is required "
+        f"(detected {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}).\n"
+        "Run ./run.sh (macOS/Linux) or run_windows.bat (Windows) to auto-detect a compatible Python."
+    )
+    sys.exit(1)
+
 import argparse
 from pathlib import Path
 from typing import Optional
 
-from config import AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
+from config import AI_PROVIDERS, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
+from model_fetcher import resolve_provider_for_model
 
 
 def run_cli_translation(
@@ -17,9 +27,11 @@ def run_cli_translation(
     src_lang: Optional[str] = None,
     keep_it: bool = True,
     append_source: bool = False,
+    bilingual: bool = False,
     custom_context: str = "",
     model: Optional[str] = None,
-    provider: Optional[str] = None
+    provider: Optional[str] = None,
+    output_path: Optional[str] = None,
 ):
     """Headless CLI translation runner."""
     from llm_manager import LLMManager
@@ -30,14 +42,14 @@ def run_cli_translation(
     if provider:
         config.active_provider = provider
     elif model:
-        # Auto-detect provider from model name
-        m_lower = model.lower()
-        if "gemini" in m_lower:
-            config.active_provider = "Gemini"
-        elif any(k in m_lower for k in ["gpt", "o1", "o3", "chatgpt"]):
-            config.active_provider = "OpenAI"
-        elif "claude" in m_lower:
-            config.active_provider = "Claude"
+        api_keys = {prov: config.get_effective_api_key(prov) for prov in AI_PROVIDERS}
+        resolved_provider = resolve_provider_for_model(
+            model,
+            api_keys=api_keys,
+            fallback=config.active_provider,
+        )
+        if resolved_provider in AI_PROVIDERS:
+            config.active_provider = resolved_provider
 
     if model:
         config.selected_models[config.active_provider] = model
@@ -45,7 +57,8 @@ def run_cli_translation(
     options = TranslationOptions(
         keep_it_terms=keep_it,
         append_original_words=append_source,
-        custom_context=custom_context
+        custom_context=custom_context,
+        bilingual_mode=bilingual,
     )
 
     path = Path(file_path)
@@ -58,11 +71,12 @@ def run_cli_translation(
         print(f"Error: Unsupported file format '{path.suffix}'. Supported formats: {supported}")
         sys.exit(1)
 
-    suffix = path.suffix.lower()
-    print(f"=== RakuTrans AI CLI ===")
+    src_label = src_lang if src_lang else "Auto-detect mixed"
+    active_model_label = config.get_active_model() or "auto (live API)"
+    print("=== RakuTrans AI CLI ===")
     print(f"File: {file_path}")
-    print(f"Provider: {config.active_provider} ({config.get_active_model()})")
-    print(f"Target Language: {tgt_lang} (Auto-detect mixed source)")
+    print(f"Provider: {config.active_provider} ({active_model_label})")
+    print(f"Target Language: {tgt_lang} (Source: {src_label})")
 
     def on_progress(current: int, total: int, msg: str):
         print(f"[{current:3d}%] {msg}")
@@ -72,9 +86,10 @@ def run_cli_translation(
         out_file = translator.process_file(
             file_path=file_path,
             target_lang=tgt_lang,
-            source_lang=src_lang,
+            source_lang=src_lang or "auto",
             options=options,
-            progress_callback=on_progress
+            progress_callback=on_progress,
+            custom_output_path=output_path,
         )
 
         print(f"\nSuccess! Output saved to: {out_file}")
@@ -87,21 +102,24 @@ def launch_gui():
     """Bootstraps and launches the CustomTkinter GUI."""
     try:
         import tkinter
-    except ImportError as e:
+    except ImportError:
+        py_mm = f"{sys.version_info.major}.{sys.version_info.minor}"
+        py_ver = f"{py_mm}.{sys.version_info.micro}"
         print("\n" + "=" * 70)
-        print(" [RakuTrans AI] Tkinter is not found in your current Python installation.")
+        print(f" [RakuTrans AI] Tkinter is not found in your current Python ({py_ver}).")
         print("=" * 70)
         print("Why this happens:")
         print("  On macOS with asdf / pyenv, Python was compiled without tcl-tk.")
         print("\nQuick Solutions on macOS:")
-        print("  1. Run with Homebrew Python:")
-        print("       brew install python-tk@3.12")
-        print("       python3.12 main.py")
-        print("  2. Or reinstall your active python with Tkinter flags:")
+        print("  1. Use ./run.sh (it automatically finds a Python 3.10+ with Tkinter if installed)")
+        print("  2. Or install Tkinter for Homebrew Python:")
+        print(f"       brew install python-tk@{py_mm}")
+        print(f"       python{py_mm} main.py")
+        print("  3. Or reinstall your active python with Tkinter flags:")
         print("       brew install tcl-tk")
         print("       export PYTHON_CONFIGURE_OPTS=\"--with-tcltk-includes='-I$(brew --prefix tcl-tk)/include' --with-tcltk-libs='-L$(brew --prefix tcl-tk)/lib -ltcl8.6 -ltk8.6'\"")
-        print("       asdf install python 3.12.9")
-        print("  3. Or use RakuTrans in CLI mode right now:")
+        print(f"       asdf install python {py_ver}")
+        print("  4. Or use RakuTrans in CLI mode right now:")
         print("       python3 main.py --cli --file document.xlsx --tgt Vietnamese")
         print("=" * 70 + "\n")
         sys.exit(1)
@@ -115,28 +133,34 @@ def launch_gui():
     app.mainloop()
 
 
-def main():
+def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="RakuTrans AI - Professional Document & Data AI Translator"
     )
     parser.add_argument("--cli", action="store_true", help="Run translation in headless CLI mode")
-    parser.add_argument("--file", "-f", type=str, help="Path to document file to translate (.xlsx, .docx, .pptx, .pdf, .csv, .md, .json, .txt)")
+    parser.add_argument("--file", "-f", type=str, help="Path to document file (.xlsx, .docx, .pptx, .pdf, .csv, .tsv, .md, .json, .txt)")
     parser.add_argument("--tgt", "-t", type=str, default=None, help=f"Target language (default: saved config or {DEFAULT_TARGET_LANGUAGE})")
     parser.add_argument("--src", "-s", type=str, default=None, help="Optional source language filter (default: auto-detect mixed)")
-    parser.add_argument("--keep-terms", "--keep-it", dest="keep_it", action="store_true", default=True, help="Keep specialized/domain terms untranslated")
+    parser.add_argument("--keep-terms", "--keep-it", dest="keep_it", action=argparse.BooleanOptionalAction, default=True, help="Keep specialized/domain terms untranslated (use --no-keep-terms to disable)")
     parser.add_argument("--append-source", action="store_true", default=False, help="Append original words in parentheses for quoted terms")
+    parser.add_argument("--bilingual", action="store_true", default=False, help="Keep original sheets alongside translations (Excel)")
     parser.add_argument("--context", "-c", type=str, default="", help="Custom context or glossary rules")
-    parser.add_argument("--convert", "--convert-to", dest="convert_fmt", type=str, default=None, help="Directly convert document to target format without translation (e.g. docx, md, xlsx, csv, txt)")
-    parser.add_argument("--model", "-m", type=str, default=None, help="AI model name (e.g. gemini-3.6-flash, gpt-4o)")
-    parser.add_argument("--provider", "-p", type=str, default=None, choices=["Gemini", "OpenAI", "Claude"], help="AI provider")
+    parser.add_argument("--convert", "--convert-to", dest="convert_fmt", type=str, default=None, help="Directly convert document to target format without translation (e.g. docx, pdf, md, xlsx, csv, txt)")
+    parser.add_argument("--output", "-o", dest="output_path", type=str, default=None, help="Optional custom output file path")
+    parser.add_argument("--model", "-m", type=str, default=None, help="AI model name")
+    parser.add_argument("--provider", "-p", type=str, default=None, choices=list(AI_PROVIDERS.keys()), help="AI provider")
+    return parser
 
+
+def main():
+    parser = build_cli_parser()
     args = parser.parse_args()
 
     if args.file and args.convert_fmt:
         from format_converter import convert_file_direct
         try:
             print(f"[RakuTrans Converter] Converting {args.file} -> {args.convert_fmt.upper()}...")
-            out = convert_file_direct(args.file, args.convert_fmt)
+            out = convert_file_direct(args.file, args.convert_fmt, output_path=args.output_path)
             print(f"[RakuTrans Converter] Conversion completed successfully! Output: {out}")
             sys.exit(0)
         except Exception as e:
@@ -154,9 +178,11 @@ def main():
             src_lang=args.src,
             keep_it=args.keep_it,
             append_source=args.append_source,
+            bilingual=args.bilingual,
             custom_context=args.context,
             model=args.model,
-            provider=args.provider
+            provider=args.provider,
+            output_path=args.output_path,
         )
     else:
         launch_gui()

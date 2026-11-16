@@ -5,13 +5,46 @@ all formulas, formatting, styles, dimensions, and structural properties.
 """
 
 from pathlib import Path
-from typing import List, Tuple, Dict, Callable, Optional, Set
+from typing import List, Tuple, Dict, Callable, Optional, Set, Any
 import openpyxl
+from openpyxl.comments import Comment
+try:
+    from openpyxl.cell.rich_text import CellRichText
+except ImportError:
+    CellRichText = None
+try:
+    from openpyxl.worksheet.formula import ArrayFormula
+except ImportError:
+    ArrayFormula = None
 
 from base_translator import BaseTranslator, safe_save_file, should_translate_text
 from config import AppConfig, TranslationOptions, get_smart_output_path
 from llm_manager import LLMManager
 from translation_cache import TranslationCache
+
+
+def _is_excel_formula(val: Any) -> bool:
+    if val is None:
+        return False
+    if ArrayFormula is not None and isinstance(val, ArrayFormula):
+        return True
+    return isinstance(val, str) and val.strip().startswith("=")
+
+
+def _extract_cell_str(val: Any) -> Any:
+    if CellRichText is not None and isinstance(val, CellRichText):
+        return str(val)
+    return val
+
+
+def load_workbook_safe(file_path: str, data_only: bool = False, read_only: bool = True) -> openpyxl.Workbook:
+    """Loads an Excel workbook, falling back to read_only=False when openpyxl hits Chartsheet read_only bugs."""
+    try:
+        return openpyxl.load_workbook(filename=file_path, data_only=data_only, read_only=read_only)
+    except AttributeError:
+        if read_only:
+            return openpyxl.load_workbook(filename=file_path, data_only=data_only, read_only=False)
+        raise
 
 
 def safe_save_workbook(workbook: openpyxl.Workbook, target_path: Path) -> Path:
@@ -54,12 +87,15 @@ class ExcelTranslator(BaseTranslator):
         super().__init__(config, llm_manager, cache)
 
     @staticmethod
-    def should_translate_cell(value: any) -> bool:
+    def should_translate_cell(value: Any) -> bool:
         """
         Determines whether a cell value should be translated.
         Strictly ignores numbers, booleans, empty cells, punctuation-only strings, and formulas.
+        Supports openpyxl CellRichText values.
         """
-        return should_translate_text(value, ignore_formulas=True)
+        if _is_excel_formula(value):
+            return False
+        return should_translate_text(_extract_cell_str(value), ignore_formulas=True)
 
     @classmethod
     def inspect_file(cls, file_path: str) -> dict:
@@ -72,23 +108,26 @@ class ExcelTranslator(BaseTranslator):
             return {"error": "File not found"}
 
         try:
-            wb = openpyxl.load_workbook(filename=file_path, data_only=False, read_only=False)
+            wb = load_workbook_safe(file_path, data_only=False, read_only=True)
             try:
-                sheet_names = wb.sheetnames
+                worksheets = list(wb.worksheets)
+                sheet_names = [ws.title for ws in worksheets]
                 translatable_cells = 0
                 formula_count = 0
                 unique_set = set()
 
-                for name in sheet_names:
-                    ws = wb[name]
-                    for row in ws.iter_rows():
-                        for cell in row:
-                            val = cell.value
-                            if val is not None and isinstance(val, str) and val.strip().startswith("="):
+                for ws in worksheets:
+                    for row in ws.iter_rows(values_only=True):
+                        for val in row:
+                            if val is None:
+                                continue
+                            if _is_excel_formula(val):
                                 formula_count += 1
-                            elif cls.should_translate_cell(val):
-                                translatable_cells += 1
-                                unique_set.add(val.strip())
+                            else:
+                                text_val = _extract_cell_str(val)
+                                if should_translate_text(text_val, ignore_formulas=True):
+                                    translatable_cells += 1
+                                    unique_set.add(text_val.strip())
 
                 return {
                     "type": "excel",
@@ -138,16 +177,19 @@ class ExcelTranslator(BaseTranslator):
         # Strict requirement: data_only=False preserves formulas (=SUM, etc.)
         workbook = openpyxl.load_workbook(filename=file_path, data_only=False)
         try:
-            translatable_cells: List[Tuple[str, str, str]] = []
+            translatable_cells: List[Tuple[Any, str]] = []
+            translatable_comments: List[Tuple[Any, str]] = []
 
-            for sheet_name in workbook.sheetnames:
-                ws = workbook[sheet_name]
+            for ws in workbook.worksheets:
                 for row in ws.iter_rows():
                     for cell in row:
-                        if self.should_translate_cell(cell.value):
-                            translatable_cells.append((sheet_name, cell.coordinate, cell.value))
+                        val = cell.value
+                        if val is not None and self.should_translate_cell(val):
+                            translatable_cells.append((cell, str(_extract_cell_str(val))))
+                        if cell.comment and should_translate_text(cell.comment.text, ignore_formulas=False):
+                            translatable_comments.append((cell, str(cell.comment.text)))
 
-            total_cells = len(translatable_cells)
+            total_cells = len(translatable_cells) + len(translatable_comments)
             if total_cells == 0:
                 target_path = (
                     Path(custom_output_path)
@@ -164,7 +206,10 @@ class ExcelTranslator(BaseTranslator):
                 return str(out_file)
 
             unique_texts: List[str] = list(
-                dict.fromkeys(item[2].strip() for item in translatable_cells)
+                dict.fromkeys(
+                    [orig_val.strip() for _, orig_val in translatable_cells]
+                    + [orig_c.strip() for _, orig_c in translatable_comments]
+                )
             )
             unique_count = len(unique_texts)
             duplicate_saved = total_cells - unique_count
@@ -193,24 +238,36 @@ class ExcelTranslator(BaseTranslator):
             if is_bilingual:
                 if progress_callback:
                     progress_callback(90, 100, "Bilingual mode: Archiving original worksheets...")
-                orig_sheetnames = list(workbook.sheetnames)
-                existing_names = set(orig_sheetnames)
-                for s_name in orig_sheetnames:
-                    orig_ws = workbook[s_name]
+                orig_worksheets = list(workbook.worksheets)
+                existing_names = set(workbook.sheetnames)
+                for orig_ws in orig_worksheets:
                     copy_ws = workbook.copy_worksheet(orig_ws)
-                    new_title = _unique_orig_sheet_title(s_name, existing_names)
+                    new_title = _unique_orig_sheet_title(orig_ws.title, existing_names)
                     copy_ws.title = new_title
                     existing_names.add(new_title)
 
             if progress_callback:
                 progress_callback(92, 100, f"Re-injecting {total_cells} cells into workbook...")
 
-            for sheet_name, coord, orig_val in translatable_cells:
+            for cell, orig_val in translatable_cells:
                 trimmed = orig_val.strip()
                 if trimmed in unique_translations:
                     prefix = orig_val[: len(orig_val) - len(orig_val.lstrip())]
                     suffix = orig_val[len(orig_val.rstrip()) :]
-                    workbook[sheet_name][coord].value = f"{prefix}{unique_translations[trimmed]}{suffix}"
+                    cell.value = f"{prefix}{unique_translations[trimmed]}{suffix}"
+
+            for cell, orig_c in translatable_comments:
+                trimmed = orig_c.strip()
+                if trimmed in unique_translations and cell.comment is not None:
+                    prefix = orig_c[: len(orig_c) - len(orig_c.lstrip())]
+                    suffix = orig_c[len(orig_c.rstrip()) :]
+                    new_comment = Comment(
+                        f"{prefix}{unique_translations[trimmed]}{suffix}",
+                        cell.comment.author,
+                    )
+                    new_comment.width = cell.comment.width
+                    new_comment.height = cell.comment.height
+                    cell.comment = new_comment
 
             if progress_callback:
                 progress_callback(96, 100, "Saving translated workbook...")

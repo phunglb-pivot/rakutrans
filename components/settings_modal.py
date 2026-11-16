@@ -44,6 +44,13 @@ class SettingsView(ctk.CTkFrame):
         self._show_key = False
         self.key_var: Optional[ctk.StringVar] = None
         self.model_var: Optional[ctk.StringVar] = None
+        self._suppress_key_trace = False
+        self._key_save_pending = False
+        self._key_save_after_id = None
+        self._fetch_after_id = None
+        self._fetch_request_id = 0
+        self._test_conn_request_id = 0
+        self._has_auto_fetched_on_open = False
 
         self._setup_ui()
 
@@ -357,8 +364,25 @@ class SettingsView(ctk.CTkFrame):
         )
         self.theme_dropdown.grid(row=1, column=1, sticky="ew", padx=(8, 0))
 
-        # Auto-fetch latest models in background if key is present
-        self.after(250, lambda: self._fetch_live_models(is_manual=False))
+    def _schedule_model_autofetch(self, delay_ms: int = 150) -> None:
+        if getattr(self, "_fetch_after_id", None):
+            try:
+                self.after_cancel(self._fetch_after_id)
+            except Exception:
+                pass
+            self._fetch_after_id = None
+        try:
+            self._fetch_after_id = self.after(delay_ms, self._run_scheduled_autofetch)
+        except Exception:
+            self._fetch_after_id = None
+
+    def _run_scheduled_autofetch(self) -> None:
+        self._fetch_after_id = None
+        try:
+            if self.winfo_exists():
+                self._fetch_live_models(is_manual=False)
+        except Exception:
+            pass
 
     def _apply_provider_icons(self) -> None:
         """Attaches crisp provider logo icons alongside provider names in the selector."""
@@ -388,6 +412,25 @@ class SettingsView(ctk.CTkFrame):
         self.model_combo.configure(values=display_values, state=state)
         self.model_var.set(clean_selected)
 
+    def _set_key_var_silently(self, value: str) -> None:
+        self._suppress_key_trace = True
+        try:
+            if self.key_var is not None:
+                self.key_var.set(value)
+        finally:
+            self._suppress_key_trace = False
+
+    def _flush_key_save(self) -> None:
+        if getattr(self, "_key_save_after_id", None):
+            try:
+                self.after_cancel(self._key_save_after_id)
+            except Exception:
+                pass
+            self._key_save_after_id = None
+        if self._key_save_pending:
+            self._key_save_pending = False
+            self.config.save()
+
     def refresh_values(self):
         """Synchronizes UI fields with latest config when switching into settings view."""
         current_prov = self.config.active_provider
@@ -395,26 +438,28 @@ class SettingsView(ctk.CTkFrame):
         for i in range(len(list(AI_PROVIDERS.keys()))):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
         self._apply_provider_icons()
-        self._apply_provider_icons()
         models = self.config.get_available_models(current_prov)
         self._apply_model_options(models, self.config.get_active_model())
-        self.key_var.set(self.config.api_keys.get(current_prov, ""))
+        self._set_key_var_silently(self.config.api_keys.get(current_prov, ""))
         self.guide_text_label.configure(text=self._get_guide_text(current_prov))
         self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
         self.theme_var.set(self._get_current_theme_display())
+        if not self._has_auto_fetched_on_open:
+            self._has_auto_fetched_on_open = True
+            self._schedule_model_autofetch(150)
 
     def refresh_i18n(self, get_translation: Callable[[str], str]):
         """Refreshes localized labels inside SettingsView."""
         self.t = get_translation
         self.title_label.configure(text="  " + self.t("settings_title"))
-        self.back_header_btn.configure(text=self.t("back"))
+        self.back_header_btn.set_text(self.t("back"))
         self.active_prov_label.configure(text=self.t("active_provider"))
         self.model_label_elem.configure(text=self.t("model_label"))
-        self.fetch_btn.configure(text=self.t("fetch_models"))
+        self.fetch_btn.set_text(self.t("fetch_models"))
         self.model_hint_label.configure(text=self.t("model_hint"))
         self.api_key_label_elem.configure(text=self.t("api_key_label"))
         self.key_entry.configure(placeholder_text=self.t("api_key_placeholder"))
-        self.test_conn_btn.configure(text=self.t("test_connection"))
+        self.test_conn_btn.set_text(self.t("test_connection"))
         self.guide_link_btn.configure(text=self.t("open_api_guide"))
         self.guide_text_label.configure(text=self._get_guide_text(self.provider_var.get()))
         self.pref_label_elem.configure(text=self.t("preferences_title"))
@@ -450,6 +495,9 @@ class SettingsView(ctk.CTkFrame):
                 text_color="#3B8ED0"
             )
 
+        self._fetch_request_id += 1
+        req_id = self._fetch_request_id
+
         def on_done(models, error_msg):
             def update_ui():
                 try:
@@ -458,11 +506,11 @@ class SettingsView(ctk.CTkFrame):
                 except Exception:
                     return
 
+                if req_id != self._fetch_request_id or self.provider_var.get() != provider:
+                    return
+
                 if is_manual:
                     self.fetch_btn.stop_loading(self.t("fetch_models"))
-
-                if self.provider_var.get() != provider:
-                    return
 
                 if error_msg:
                     if models:
@@ -504,6 +552,7 @@ class SettingsView(ctk.CTkFrame):
         fetch_models_async(provider, key, on_done)
 
     def _on_key_focus_out(self, _event=None):
+        self._flush_key_save()
         self.on_save(self.config)
         provider = self.provider_var.get()
         key = self.key_var.get().strip() if self.key_var else ""
@@ -513,6 +562,13 @@ class SettingsView(ctk.CTkFrame):
     def _on_provider_changed(self, new_provider: str):
         if self.key_var is None or self.model_var is None:
             return
+        self._flush_key_save()
+        self._fetch_request_id += 1
+        self._test_conn_request_id += 1
+        self.fetch_btn.stop_loading(self.t("fetch_models"))
+        self.test_conn_btn.stop_loading(self.t("test_connection"))
+        self.test_conn_status.configure(text="")
+
         old_prov = self.config.active_provider
         self.config.api_keys[old_prov] = self.key_var.get().strip()
         self.config.selected_models[old_prov] = self.model_var.get().strip()
@@ -527,7 +583,7 @@ class SettingsView(ctk.CTkFrame):
         self._apply_model_options(available_models, saved_model)
         self.config.selected_models[new_provider] = saved_model
 
-        self.key_var.set(self.config.api_keys.get(new_provider, ""))
+        self._set_key_var_silently(self.config.api_keys.get(new_provider, ""))
         self.guide_text_label.configure(text=self._get_guide_text(new_provider))
         self.model_hint_label.configure(text=self.t("model_hint"), text_color="gray")
 
@@ -535,7 +591,7 @@ class SettingsView(ctk.CTkFrame):
         self.config.save()
         self.on_save(self.config)
 
-        self.after(150, lambda: self._fetch_live_models(is_manual=False))
+        self._schedule_model_autofetch(150)
 
     def _on_model_changed(self, new_model: str):
         provider = self.provider_var.get()
@@ -544,12 +600,21 @@ class SettingsView(ctk.CTkFrame):
         self.on_save(self.config)
 
     def _on_key_changed(self, *args):
-        if self.key_var is None:
+        if self._suppress_key_trace or self.key_var is None:
             return
         provider = self.provider_var.get()
         new_key = self.key_var.get().strip()
         self.config.api_keys[provider] = new_key
-        self.config.save()
+        self._key_save_pending = True
+        if getattr(self, "_key_save_after_id", None):
+            try:
+                self.after_cancel(self._key_save_after_id)
+            except Exception:
+                pass
+        try:
+            self._key_save_after_id = self.after(300, self._flush_key_save)
+        except Exception:
+            self._key_save_after_id = None
 
     def _open_provider_guide(self):
         provider = self.provider_var.get()
@@ -593,6 +658,8 @@ class SettingsView(ctk.CTkFrame):
             text=self.t("testing_connection"),
             text_color="#3B8ED0"
         )
+        self._test_conn_request_id += 1
+        req_id = self._test_conn_request_id
 
         def worker():
             t0 = time.time()
@@ -628,8 +695,10 @@ class SettingsView(ctk.CTkFrame):
                         return
                 except Exception:
                     return
+                if req_id != self._test_conn_request_id or self.provider_var.get() != provider:
+                    return
                 self.test_conn_btn.stop_loading(self.t("test_connection"))
-                if fetched_models and self.provider_var.get() == provider:
+                if fetched_models:
                     self._apply_model_options(fetched_models, tested_model)
                     self.config.selected_models[provider] = tested_model
                     self.config.save()
@@ -644,3 +713,18 @@ class SettingsView(ctk.CTkFrame):
             self.after(0, update_ui)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def destroy(self):
+        self._fetch_request_id += 1
+        self._test_conn_request_id += 1
+        for attr in ("_fetch_after_id", "_key_save_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+                if attr != "_key_save_after_id":
+                    setattr(self, attr, None)
+        self._flush_key_save()
+        super().destroy()

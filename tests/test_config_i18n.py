@@ -198,6 +198,98 @@ class TestConfigAndI18n(unittest.TestCase):
         self.assertTrue(args.bilingual)
         self.assertEqual(args.output_path, "custom_out.xlsx")
 
+    def test_env_api_keys_not_frozen_and_atomic_resilient_load(self):
+        import json
+        import os
+        import tempfile
+        import threading
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        from config import get_smart_output_path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_dir = Path(tmpdir)
+            cfg_file = cfg_dir / "config.json"
+            with patch.object(config_mod, "CONFIG_DIR", cfg_dir), patch.object(config_mod, "CONFIG_FILE", cfg_file):
+                with patch.dict(os.environ, {"GEMINI_API_KEY": "env-secret-1"}):
+                    loaded = AppConfig.load()
+                    self.assertEqual(loaded.get_effective_api_key("Gemini"), "env-secret-1")
+                    raw_saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+                    self.assertEqual(raw_saved["api_keys"]["Gemini"], "")
+
+                # Unsetting env var takes effect immediately because key was not frozen
+                with patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop("GEMINI_API_KEY", None)
+                    self.assertEqual(loaded.get_effective_api_key("Gemini"), "")
+
+                # Malformed types in config.json must not crash load() or drop valid fields
+                cfg_file.write_text(
+                    json.dumps({
+                        "ui_language": "invalid",
+                        "theme_mode": "neon",
+                        "active_provider": "OpenAI",
+                        "api_keys": {"OpenAI": None, "Gemini": "k1"},
+                        "batch_size": "not-an-int",
+                        "max_concurrent_requests": "bad",
+                        "translation_options": "bad-type",
+                    }),
+                    encoding="utf-8",
+                )
+                recovered = AppConfig.load()
+                self.assertEqual(recovered.active_provider, "OpenAI")
+                self.assertEqual(recovered.ui_language, "en")
+                self.assertEqual(recovered.theme_mode, "dark")
+                self.assertEqual(recovered.batch_size, 60)
+                self.assertEqual(recovered.max_concurrent_requests, 2)
+                self.assertEqual(recovered.get_effective_api_key("Gemini"), "k1")
+                self.assertEqual(recovered.get_effective_api_key("OpenAI"), "")
+
+                # Concurrent saves + loads never produce truncated JSON
+                errors = []
+
+                def _writer(idx: int):
+                    try:
+                        c = AppConfig(batch_size=10 + idx)
+                        for _ in range(10):
+                            c.save()
+                            AppConfig.load()
+                    except Exception as exc:
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=_writer, args=(i,)) for i in range(4)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+                self.assertEqual(errors, [])
+
+        self.assertEqual(normalize_language_name("繁體中文 (Chinese (Traditional))"), "繁體中文 (Chinese (Traditional))")
+        out_extless = get_smart_output_path("README", target_lang="Vietnamese")
+        self.assertEqual(out_extless.name, "README_vi")
+
+    def test_cli_convert_requires_file_and_i18n_tsv(self):
+        import io
+        import sys
+        from unittest.mock import patch
+        import main as main_mod
+
+        for lang in ("en", "ja", "vi"):
+            self.assertIn(".tsv", TRANSLATIONS[lang]["drag_drop_title"])
+            self.assertIn("*.tsv", TRANSLATIONS[lang]["filetype_supported"])
+
+        self.assertNotIn("英語", TRANSLATIONS["ja"]["opt_keep_terms"])
+
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["main.py", "--convert", "docx"]), \
+             patch("sys.stdout", buf), \
+             patch.object(main_mod, "launch_gui") as mock_gui:
+            with self.assertRaises(SystemExit) as cm:
+                main_mod.main()
+            self.assertEqual(cm.exception.code, 1)
+            mock_gui.assert_not_called()
+            self.assertIn("--convert requires --file", buf.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -60,10 +60,15 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         self.recent_languages: List[str] = seen_recents[:3]
 
         self.is_open = False
+        self._enabled = True
         self._panel_width = width
         self._panel_height = 240
         self._buttons: List[ctk.CTkButton] = []
         self._just_toggled_time: float = 0.0
+        self._suppress_search_trace: bool = False
+        self._chevron_after_id = None
+        self._focus_after_id = None
+        self._global_bindings: List[tuple[str, str, bool]] = []
 
         self.grid_columnconfigure(0, weight=1)
 
@@ -86,7 +91,7 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         )
         self.trigger_btn.pack(fill="x")
         self.trigger_btn.bind("<Configure>", lambda e: self._update_chevron(), add="+")
-        self.after(20, self._update_chevron)
+        self._chevron_after_id = self.after(20, self._update_chevron)
 
         # Collapsible Floating Dropdown Panel
         # Attached to the toplevel window so it floats as an overlay without pushing layout
@@ -141,13 +146,34 @@ class SearchableLanguageSelect(ctk.CTkFrame):
     def _setup_event_listeners(self):
         """Binds window-level click, scroll, and resize handlers for seamless auto-dismiss."""
         try:
-            self._top_root.bind_all("<ButtonPress-1>", self._on_window_click, add="+")
-            self._top_root.bind("<Configure>", self._on_window_configure, add="+")
-            self._top_root.bind_all("<MouseWheel>", self._on_window_scroll, add="+")
-            self._top_root.bind_all("<Button-4>", self._on_window_scroll, add="+")
-            self._top_root.bind_all("<Button-5>", self._on_window_scroll, add="+")
+            self._global_bindings = [
+                ("<ButtonPress-1>", self._top_root.bind_all("<ButtonPress-1>", self._on_window_click, add="+"), True),
+                ("<Configure>", self._top_root.bind("<Configure>", self._on_window_configure, add="+"), False),
+                ("<MouseWheel>", self._top_root.bind_all("<MouseWheel>", self._on_window_scroll, add="+"), True),
+                ("<Button-4>", self._top_root.bind_all("<Button-4>", self._on_window_scroll, add="+"), True),
+                ("<Button-5>", self._top_root.bind_all("<Button-5>", self._on_window_scroll, add="+"), True),
+            ]
         except Exception:
             pass
+
+    def _cleanup_event_listeners(self):
+        """Unbinds only this instance's window-level handlers so sibling selects stay intact."""
+        if not getattr(self, "_top_root", None):
+            return
+        for seq, funcid, is_all in getattr(self, "_global_bindings", []):
+            if not funcid:
+                continue
+            try:
+                if is_all:
+                    existing = self._top_root.bind_all(seq) or ""
+                    kept = [line for line in existing.splitlines() if funcid not in line]
+                    self._top_root.bind_all(seq, "\n".join(kept))
+                else:
+                    self._top_root.unbind(seq, funcid)
+                self._top_root.deletecommand(funcid)
+            except Exception:
+                pass
+        self._global_bindings.clear()
 
     def _is_descendant(self, widget, target) -> bool:
         """Checks whether widget is target or a subwidget belonging to target."""
@@ -186,7 +212,8 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         if is_on_panel:
             return  # Clicking inside search input, list, scrollbar keeps it open
         if is_on_trigger:
-            self.toggle()
+            if self._enabled:
+                self.toggle()
         elif self.is_open:
             self.close()
 
@@ -223,7 +250,8 @@ class SearchableLanguageSelect(ctk.CTkFrame):
 
     def _update_chevron(self):
         """Draws or updates a clean vector chevron directly on the button canvas with zero background."""
-        if not hasattr(self, "trigger_btn") or not self.trigger_btn.winfo_exists():
+        self._chevron_after_id = None
+        if not self.winfo_exists() or not hasattr(self, "trigger_btn") or not self.trigger_btn.winfo_exists():
             return
         try:
             canvas = self.trigger_btn._canvas
@@ -269,7 +297,7 @@ class SearchableLanguageSelect(ctk.CTkFrame):
 
     def open(self):
         """Expands the dropdown list as a floating overlay above other content."""
-        if self.is_open:
+        if self.is_open or not self._enabled:
             return
 
         # Expand inline (inside layout) instead of floating: native child widgets of
@@ -289,10 +317,21 @@ class SearchableLanguageSelect(ctk.CTkFrame):
 
         self.is_open = True
         self._update_chevron()
-        self.search_var.set("")
+        self._suppress_search_trace = True
+        try:
+            self.search_var.set("")
+        finally:
+            self._suppress_search_trace = False
         self._render_items()
         self._scroll_to_top()
-        self.after(50, lambda: self.search_entry.focus_set() if self.winfo_exists() else None)
+        if getattr(self, "_focus_after_id", None):
+            try:
+                self.after_cancel(self._focus_after_id)
+            except Exception:
+                pass
+        self._focus_after_id = self.after(
+            50, lambda: self.search_entry.focus_set() if self.winfo_exists() else None
+        )
 
     def close(self):
         """Collapses and hides the floating dropdown panel."""
@@ -324,6 +363,42 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         if self.is_open:
             self._render_items()
 
+    def _create_option_button(self, display_name: str) -> ctk.CTkButton:
+        is_selected = (display_name == self.selected_display)
+        prefix = "✓  " if is_selected else "    "
+        btn = ctk.CTkButton(
+            self.scroll_list,
+            text=f"{prefix}{display_name}",
+            anchor="w",
+            height=28,
+            corner_radius=6,
+            fg_color=("#F4F4F5", "#27272A") if is_selected else "transparent",
+            text_color=("#18181B", "#FAFAFA"),
+            hover_color=("#E4E4E7", "#3F3F46") if is_selected else ("#F4F4F5", "#27272A"),
+            font=ctk.CTkFont(size=12, weight="bold" if is_selected else "normal"),
+            cursor="hand2",
+            command=lambda d=display_name: self._choose(d),
+        )
+        btn.bind("<Return>", lambda e, d=display_name: (self._choose(d), "break")[1])
+        btn.bind("<Escape>", lambda e: (self.close(), "break")[1])
+        btn.bind("<Down>", lambda e, b=btn: self._move_result_focus(b, 1))
+        btn.bind("<Up>", lambda e, b=btn: self._move_result_focus(b, -1))
+        btn.pack(fill="x", pady=1)
+        self._buttons.append(btn)
+        return btn
+
+    def _move_result_focus(self, current_btn: ctk.CTkButton, step: int):
+        if current_btn not in self._buttons:
+            return "break"
+        idx = self._buttons.index(current_btn)
+        new_idx = idx + step
+        if new_idx < 0:
+            self.search_entry.focus_set()
+            return "break"
+        if new_idx < len(self._buttons):
+            self._buttons[new_idx].focus_set()
+        return "break"
+
     def _render_items(self):
         """Populates scrollable list with matching languages."""
         for widget in self.scroll_list.winfo_children():
@@ -347,24 +422,7 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             recent_lbl.pack(fill="x", padx=8, pady=(4, 2))
 
             for r_lang in self.recent_languages:
-                is_selected = (r_lang == self.selected_display)
-                prefix = "✓  " if is_selected else "    "
-
-                btn = ctk.CTkButton(
-                    self.scroll_list,
-                    text=f"{prefix}{r_lang}",
-                    anchor="w",
-                    height=28,
-                    corner_radius=6,
-                    fg_color=("#F4F4F5", "#27272A") if is_selected else "transparent",
-                    text_color=("#18181B", "#FAFAFA"),
-                    hover_color=("#E4E4E7", "#3F3F46") if is_selected else ("#F4F4F5", "#27272A"),
-                    font=ctk.CTkFont(size=12, weight="bold" if is_selected else "normal"),
-                    cursor="hand2",
-                    command=lambda d=r_lang: self._choose(d)
-                )
-                btn.pack(fill="x", pady=1)
-                self._buttons.append(btn)
+                self._create_option_button(r_lang)
                 matching_count += 1
 
             all_lbl = ctk.CTkLabel(
@@ -382,24 +440,7 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             raw_search_string = f"{lang.name} {lang.native_name} {lang.code} {lang.display_name}".lower()
             if not query or query in _strip_accents(raw_search_string):
                 matching_count += 1
-                is_selected = (lang.display_name == self.selected_display)
-                prefix = "✓  " if is_selected else "    "
-
-                btn = ctk.CTkButton(
-                    self.scroll_list,
-                    text=f"{prefix}{lang.display_name}",
-                    anchor="w",
-                    height=28,
-                    corner_radius=6,
-                    fg_color=("#F4F4F5", "#27272A") if is_selected else "transparent",
-                    text_color=("#18181B", "#FAFAFA"),
-                    hover_color=("#E4E4E7", "#3F3F46") if is_selected else ("#F4F4F5", "#27272A"),
-                    font=ctk.CTkFont(size=12, weight="bold" if is_selected else "normal"),
-                    cursor="hand2",
-                    command=lambda d=lang.display_name: self._choose(d)
-                )
-                btn.pack(fill="x", pady=1)
-                self._buttons.append(btn)
+                self._create_option_button(lang.display_name)
 
         if matching_count == 0:
             no_result = ctk.CTkLabel(
@@ -411,6 +452,8 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             no_result.pack(pady=15)
 
     def _on_search(self, *args):
+        if self._suppress_search_trace:
+            return
         self._render_items()
         self._scroll_to_top()
 
@@ -460,8 +503,24 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         if self.is_open:
             self._render_items()
 
+    def set_enabled(self, enabled: bool):
+        """Enables or disables user interaction with the language selector."""
+        self._enabled = enabled
+        if not enabled:
+            self.close()
+        self.trigger_btn.configure(state="normal" if enabled else "disabled")
+
     def destroy(self):
-        """Cleanly destroys the floating panel and the trigger widget."""
+        """Cleanly cancels pending callbacks, unbinds global handlers, and destroys widget."""
+        for attr in ("_chevron_after_id", "_focus_after_id"):
+            after_id = getattr(self, attr, None)
+            if after_id:
+                try:
+                    self.after_cancel(after_id)
+                except Exception:
+                    pass
+                setattr(self, attr, None)
+        self._cleanup_event_listeners()
         if hasattr(self, "panel") and self.panel.winfo_exists():
             try:
                 self.panel.destroy()

@@ -77,6 +77,28 @@ class TestErrorHandler(unittest.TestCase):
         self.assertIn("402", billing_diag.message)
         self.assertNotIn("429", billing_diag.title)
 
+    def test_traceback_preserved_outside_except_and_cancelled_not_overmatched(self):
+        from llm_manager import LLMError
+
+        captured = None
+        try:
+            raise RuntimeError("boom inside worker")
+        except RuntimeError as exc:
+            captured = exc
+
+        # Called outside active except block (simulating UI self.after(0, ...))
+        diag = diagnose_error(captured, self.i18n)
+        self.assertIn("test_traceback_preserved_outside_except", diag.technical_details)
+        self.assertIn("RuntimeError: boom inside worker", diag.technical_details)
+
+        # Server 500 error mentioning "cancelled" must not become user cancellation
+        srv_err = LLMError("Request cancelled by upstream gateway", status_code=500)
+        self.assertEqual(diagnose_error(srv_err, self.i18n).category, "general")
+
+        # Structured 400 error mentioning "json" must not be misclassified as format error
+        bad_req = LLMError("Invalid json parameter in body", status_code=400)
+        self.assertEqual(diagnose_error(bad_req, self.i18n).category, "general")
+
 
 if __name__ == "__main__":
     unittest.main()

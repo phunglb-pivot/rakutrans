@@ -153,6 +153,48 @@ class TestPptxTranslator(unittest.TestCase):
         self.assertEqual(str(res_p.runs[0].font.color.rgb), "CC0000")
         self.assertTrue(bool(res_p.runs[1].font.bold))
 
+    def test_pptx_line_breaks_no_x000b_and_merged_table_dedup(self):
+        pptx_path = Path(self.temp_dir.name) / "breaks_merged.pptx"
+        prs = Presentation()
+        slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+        # Paragraph with <a:br> line break
+        tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(4), Inches(1))
+        p = tb.text_frame.paragraphs[0]
+        p.text = "First line\nSecond line"
+
+        # Table with horizontally merged cells
+        tbl_shape = slide.shapes.add_table(2, 2, Inches(1), Inches(2.5), Inches(4), Inches(1.5))
+        tbl = tbl_shape.table
+        tbl.cell(0, 0).text = "Merged Header"
+        tbl.cell(0, 0).merge(tbl.cell(0, 1))
+        tbl.cell(1, 0).text = "Cell A"
+        tbl.cell(1, 1).text = "Cell B"
+        prs.save(str(pptx_path))
+
+        seen_texts = []
+
+        class _SpyLLM:
+            def translate_batch(self, texts, *args, **kwargs):
+                seen_texts.extend(texts)
+                return [f"TR:{t}" for t in texts]
+
+        info = PptxTranslator.inspect_file(str(pptx_path))
+        self.assertEqual(info["translatable_segments"], 4)
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "pptx_br_cache.db")
+        translator = PptxTranslator(AppConfig(), _SpyLLM(), cache=cache)
+        out = translator.process_file(file_path=str(pptx_path), target_lang="Vietnamese")
+
+        # Merged header must be sent once, not duplicated
+        self.assertEqual(seen_texts.count("Merged Header"), 1)
+
+        out_prs = Presentation(out)
+        out_p = out_prs.slides[0].shapes[0].text_frame.paragraphs[0]
+        self.assertNotIn("_x000B_", out_p.text)
+        self.assertEqual(out_p.text, "TR:First line\x0bSecond line")
+        self.assertEqual(out_prs.slides[0].shapes[1].table.cell(0, 0).text, "TR:Merged Header")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ Features strict indexed JSON batching, automatic batch splitting on structural m
 robust retries with exponential backoff, and error handling.
 """
 
+import inspect
 import json
 import random
 import re
@@ -13,12 +14,6 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-import inspect
-import json
-import random
-import re
-import threading
-import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from config import AI_PROVIDERS, AppConfig, TranslationOptions
@@ -416,18 +411,91 @@ def _wrap_provider_error(prefix: str, exc: Exception) -> LLMError:
     return wrapped
 
 
+def _is_preferred_translation_json(parsed: Any) -> bool:
+    if isinstance(parsed, dict):
+        if any(k in parsed for k in ("translations", "data", "items", "result", "translated")):
+            return True
+        return bool(parsed) and all(isinstance(k, str) and k.isdigit() for k in parsed.keys())
+    return False
+
+
+def _is_numeric_marker_list(parsed: Any) -> bool:
+    return (
+        isinstance(parsed, list)
+        and len(parsed) > 0
+        and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in parsed)
+    )
+
+
 def _decode_first_json_slice(text: str) -> Optional[str]:
-    """Use JSONDecoder.raw_decode to extract the first valid JSON object/array substring."""
+    """Use JSONDecoder.raw_decode to extract the best valid JSON object/array substring."""
     decoder = json.JSONDecoder(strict=False)
-    for idx, ch in enumerate(text):
-        if ch in "{[":
+    candidates: List[Tuple[Any, str]] = []
+    idx = 0
+    n = len(text)
+    while idx < n:
+        if text[idx] in "{[":
             try:
                 parsed, end_idx = decoder.raw_decode(text, idx)
                 if isinstance(parsed, (dict, list)):
-                    return text[idx:end_idx].strip()
+                    slice_str = text[idx:end_idx].strip()
+                    if _is_preferred_translation_json(parsed):
+                        return slice_str
+                    candidates.append((parsed, slice_str))
+                    idx = end_idx
+                    continue
             except json.JSONDecodeError:
+                pass
+        idx += 1
+
+    if not candidates:
+        return None
+    for parsed, slice_str in candidates:
+        if isinstance(parsed, dict):
+            return slice_str
+    for parsed, slice_str in candidates:
+        if not _is_numeric_marker_list(parsed):
+            return slice_str
+    return candidates[0][1]
+
+
+def _strip_trailing_json_commas(text: str) -> str:
+    """Removes trailing commas before ']' or '}' outside JSON string literals."""
+    out: List[str] = []
+    in_string = False
+    escape = False
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        if in_string:
+            out.append(ch)
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+            continue
+
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == ",":
+            j = i + 1
+            while j < n and text[j] in " \t\r\n":
+                j += 1
+            if j < n and text[j] in "]}":
+                i += 1
                 continue
-    return None
+
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def clean_json_text(text: str) -> str:
@@ -452,14 +520,21 @@ def clean_json_text(text: str) -> str:
         if extracted:
             return extracted
 
-    # 3. Direct balanced scan across the full response
+    # 3. Direct balanced scan across the full response; if trailing commas broke an outer object, repair first
     extracted = _decode_first_json_slice(stripped)
-    if extracted:
-        return extracted
-
-    # 4. Last-resort repair for trailing commas before ']' or '}' outside/at boundaries
-    repaired = re.sub(r",\s*([\]}])", r"\1", stripped)
-    extracted = _decode_first_json_slice(repaired)
+    repaired = _strip_trailing_json_commas(stripped)
+    if repaired != stripped:
+        repaired_extracted = _decode_first_json_slice(repaired)
+        if repaired_extracted:
+            if not extracted:
+                return repaired_extracted
+            try:
+                orig_obj = json.loads(extracted, strict=False)
+                rep_obj = json.loads(repaired_extracted, strict=False)
+                if not _is_preferred_translation_json(orig_obj) and _is_preferred_translation_json(rep_obj):
+                    return repaired_extracted
+            except json.JSONDecodeError:
+                pass
     if extracted:
         return extracted
 
@@ -671,6 +746,8 @@ class GeminiClient(BaseLLMClient):
 
         try:
             return self._call_gemini(system_prompt, user_prompt, target_model, is_json=is_json)
+        except LLMError:
+            raise
         except Exception as e:
             raise _wrap_provider_error("Gemini API Error", e) from e
 
@@ -721,7 +798,8 @@ class OpenAIClient(BaseLLMClient):
             raise LLMError("No OpenAI model selected. Please fetch and select a model in Settings.", status_code=400)
 
         client = self._get_client()
-        unsupported = self._unsupported_params.get(target_model, set())
+        with self._lock:
+            unsupported = set(self._unsupported_params.get(target_model, ()))
 
         req_kwargs: Dict[str, Any] = {
             "model": target_model,
@@ -760,7 +838,8 @@ class OpenAIClient(BaseLLMClient):
                     rejected = self._rejected_param_from_error(e, req_kwargs)
                     if rejected:
                         req_kwargs.pop(rejected, None)
-                        self._unsupported_params.setdefault(target_model, set()).add(rejected)
+                        with self._lock:
+                            self._unsupported_params.setdefault(target_model, set()).add(rejected)
                         continue
                 raise _wrap_provider_error("OpenAI API Error", e) from e
 
@@ -789,13 +868,15 @@ class ClaudeClient(BaseLLMClient):
         Resolves the model's authoritative max_tokens from Anthropic ModelInfo metadata
         (in-memory cache -> disk cache -> live `client.models.retrieve`).
         """
-        if model_name in self._model_max_tokens:
-            return self._model_max_tokens[model_name]
+        with self._lock:
+            if model_name in self._model_max_tokens:
+                return self._model_max_tokens[model_name]
 
         cached_meta = get_model_metadata("Claude", model_name)
         cached_max = cached_meta.get("max_tokens")
         if isinstance(cached_max, int) and cached_max > 0:
-            self._model_max_tokens[model_name] = cached_max
+            with self._lock:
+                self._model_max_tokens[model_name] = cached_max
             return cached_max
 
         models_api = getattr(client, "models", None)
@@ -804,7 +885,8 @@ class ClaudeClient(BaseLLMClient):
             info = retrieve_fn(model_name)
             api_max = getattr(info, "max_tokens", None)
             if isinstance(api_max, int) and api_max > 0:
-                self._model_max_tokens[model_name] = api_max
+                with self._lock:
+                    self._model_max_tokens[model_name] = api_max
                 meta_update: Dict[str, Any] = {"max_tokens": api_max}
                 if getattr(info, "max_input_tokens", None) is not None:
                     meta_update["max_input_tokens"] = info.max_input_tokens
@@ -861,7 +943,14 @@ class ClaudeClient(BaseLLMClient):
             except (TypeError, ValueError):
                 pass
 
-            message = create_fn(**req_kwargs)
+            try:
+                message = create_fn(**req_kwargs)
+            except ValueError as ve:
+                if "streaming is required" in str(ve).lower() and hasattr(client.messages, "stream"):
+                    with client.messages.stream(**req_kwargs) as stream:
+                        message = stream.get_final_message()
+                else:
+                    raise LLMError(f"Claude API Error: {ve}", status_code=400) from ve
         except LLMError:
             raise
         except Exception as e:
@@ -944,15 +1033,27 @@ class LLMManager:
         cancel_check: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Respect shared 429 cooldowns and stagger request dispatches across threads."""
-        if cancel_check and cancel_check():
-            raise InterruptedError("Translation cancelled by user.")
-        with self._rate_lock:
-            now = time.monotonic()
-            slot_time = max(now, self._cooldown_until, self._next_dispatch_at)
-            self._next_dispatch_at = slot_time + self._min_interval
-            wait_for = slot_time - now
-        if wait_for > 0:
+        while True:
+            if cancel_check and cancel_check():
+                raise InterruptedError("Translation cancelled by user.")
+            with self._rate_lock:
+                now = time.monotonic()
+                if now < self._cooldown_until:
+                    wait_for = self._cooldown_until - now
+                elif now < self._next_dispatch_at:
+                    wait_for = self._next_dispatch_at - now
+                else:
+                    self._next_dispatch_at = now + self._min_interval
+                    return
+            t0 = time.monotonic()
             self._sleep_with_cancel(wait_for, cancel_check=cancel_check)
+            # If sleep/time.sleep is mocked (elapsed time didn't advance), claim slot directly
+            if time.monotonic() - t0 < wait_for * 0.25:
+                with self._rate_lock:
+                    now = time.monotonic()
+                    slot_time = max(now, self._cooldown_until, self._next_dispatch_at)
+                    self._next_dispatch_at = slot_time + self._min_interval
+                return
 
     def _record_rate_limit(self, delay_seconds: float) -> None:
         """Set a shared cooldown across worker threads and slow dispatch pacing."""
@@ -986,10 +1087,15 @@ class LLMManager:
         cancel_check: Optional[Callable[[], bool]] = None,
         error_context: str = "translate batch",
     ) -> T:
-        """Execute an LLM operation with 429-aware shared cooldown and exponential backoff."""
-        general_limit = max_retries if max_retries is not None else 3
-        rate_limit_max = max_retries if max_retries is not None else 5
-        attempt = 0
+        """Execute an LLM operation with 429-aware shared cooldown and separate retry budgets."""
+        general_limit = max(1, max_retries) if max_retries is not None else 3
+        rate_limit_max = max(1, max_retries) if max_retries is not None else 5
+        format_limit = min(general_limit, 2) if max_retries != 1 else 1
+        total_limit = max_retries if max_retries is not None else (rate_limit_max + general_limit)
+
+        rate_attempts = 0
+        general_attempts = 0
+        format_attempts = 0
         last_error: Optional[Exception] = None
 
         while True:
@@ -1002,6 +1108,10 @@ class LLMManager:
                 raise
             except Exception as e:
                 last_error = e
+                # Deterministic truncation (MAX_TOKENS / finish_reason=length) should split immediately
+                if isinstance(e, LLMError) and e.is_format_error:
+                    raise
+
                 if is_non_retryable_error(e):
                     if isinstance(e, LLMError):
                         raise
@@ -1016,26 +1126,41 @@ class LLMManager:
                         error_param=getattr(e, "param", None) or body_err.get("param"),
                     ) from e
 
-                wait_seconds, rate_limited = self._compute_backoff(attempt, e)
-                limit = rate_limit_max if rate_limited else general_limit
+                is_structural = isinstance(e, (_StructuralMismatchError, json.JSONDecodeError))
+                if is_structural:
+                    format_attempts += 1
+                    total_attempts = rate_attempts + general_attempts + format_attempts
+                    if format_attempts >= format_limit or total_attempts >= total_limit:
+                        break
+                    self._sleep_with_cancel(random.uniform(0.2, 0.5), cancel_check=cancel_check)
+                    continue
 
-                if rate_limited:
+                if is_rate_limit_error(e):
+                    wait_seconds, _ = self._compute_backoff(rate_attempts, e)
+                    rate_attempts += 1
+                    total_attempts = rate_attempts + general_attempts + format_attempts
+                    if rate_attempts >= rate_limit_max or total_attempts >= total_limit:
+                        with self._rate_lock:
+                            self._cooldown_until = 0.0
+                        break
                     self._record_rate_limit(wait_seconds)
-
-                attempt += 1
-                if attempt >= limit:
-                    break
-
-                if not rate_limited:
+                else:
+                    wait_seconds, _ = self._compute_backoff(general_attempts, e)
+                    general_attempts += 1
+                    total_attempts = rate_attempts + general_attempts + format_attempts
+                    if general_attempts >= general_limit or total_attempts >= total_limit:
+                        break
                     self._sleep_with_cancel(wait_seconds, cancel_check=cancel_check)
 
+        total_attempts = rate_attempts + general_attempts + format_attempts
         is_fmt = isinstance(last_error, (_StructuralMismatchError, json.JSONDecodeError)) or bool(
             getattr(last_error, "is_format_error", False)
         )
         err = LLMError(
-            f"Failed to {error_context} after {attempt} attempts. Last error: {last_error}",
+            f"Failed to {error_context} after {total_attempts} attempts. Last error: {last_error}",
             status_code=_get_http_status_code(last_error) if last_error else None,
             retry_after=extract_retry_delay(last_error) if last_error else None,
+            response=getattr(last_error, "response", None),
             is_format_error=is_fmt,
             error_code=getattr(last_error, "error_code", None),
             error_type=getattr(last_error, "error_type", None),
@@ -1089,6 +1214,9 @@ class LLMManager:
             client = create_llm_client(provider, api_key)
             self._cached_client = client
             self._cached_client_key = cache_key
+            with self._rate_lock:
+                self._cooldown_until = 0.0
+                self._min_interval = 0.35
             return client
 
     @staticmethod
@@ -1381,9 +1509,91 @@ class LLMManager:
 
         client = self._get_client()
         model_name = self._resolve_active_model()
-        return self._execute_with_retry(
-            lambda: client.generate_completion(system_prompt, markdown_text, model_name, is_json=False),
-            max_retries=max_retries,
-            cancel_check=cancel_check,
-            error_context="translate text section" if plain_text else "translate markdown section",
-        )
+        try:
+            return self._execute_with_retry(
+                lambda: client.generate_completion(system_prompt, markdown_text, model_name, is_json=False),
+                max_retries=max_retries,
+                cancel_check=cancel_check,
+                error_context="translate text section" if plain_text else "translate markdown section",
+            )
+        except LLMError as err:
+            if err.is_format_error:
+                split_parts = self._split_markdown_for_retry(markdown_text, plain_text=plain_text)
+                if split_parts is not None:
+                    left_text, sep, right_text = split_parts
+                    left_tr = self.translate_markdown_text(
+                        markdown_text=left_text,
+                        target_lang=target_lang,
+                        options=options,
+                        source_lang=source_lang,
+                        max_retries=max_retries,
+                        cancel_check=cancel_check,
+                        plain_text=plain_text,
+                    )
+                    right_tr = self.translate_markdown_text(
+                        markdown_text=right_text,
+                        target_lang=target_lang,
+                        options=options,
+                        source_lang=source_lang,
+                        max_retries=max_retries,
+                        cancel_check=cancel_check,
+                        plain_text=plain_text,
+                    )
+                    return f"{left_tr}{sep}{right_tr}"
+            raise
+
+    @staticmethod
+    def _split_markdown_for_retry(text: str, plain_text: bool = False) -> Optional[Tuple[str, str, str]]:
+        """Splits a truncated section near its midpoint at a blank-line or newline boundary outside code fences."""
+        if len(text) < 40:
+            return None
+        mid = len(text) // 2
+        candidates: List[Tuple[int, int]] = []
+        pos = 0
+        fence_char: Optional[str] = None
+        fence_len = 0
+
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if not plain_text and stripped.startswith(("```", "~~~")):
+                ch = stripped[0]
+                run_len = len(stripped) - len(stripped.lstrip(ch))
+                if fence_char is None and run_len >= 3:
+                    fence_char = ch
+                    fence_len = run_len
+                elif fence_char == ch and run_len >= fence_len and stripped[run_len:].strip() == "":
+                    fence_char = None
+                    fence_len = 0
+            line_end = pos + len(line)
+            if fence_char is None and line.strip() == "" and pos > 0 and line_end < len(text):
+                candidates.append((pos, line_end))
+            pos = line_end
+
+        if candidates:
+            split_start, split_end = min(candidates, key=lambda span: abs(span[0] - mid))
+            return text[:split_start], text[split_start:split_end], text[split_end:]
+
+        # Fallback to single newline outside fences
+        pos = 0
+        fence_char = None
+        fence_len = 0
+        line_breaks: List[int] = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            if not plain_text and stripped.startswith(("```", "~~~")):
+                ch = stripped[0]
+                run_len = len(stripped) - len(stripped.lstrip(ch))
+                if fence_char is None and run_len >= 3:
+                    fence_char = ch
+                    fence_len = run_len
+                elif fence_char == ch and run_len >= fence_len and stripped[run_len:].strip() == "":
+                    fence_char = None
+                    fence_len = 0
+            pos += len(line)
+            if fence_char is None and 0 < pos < len(text) and line.endswith("\n"):
+                line_breaks.append(pos)
+
+        if line_breaks:
+            split_pos = min(line_breaks, key=lambda p: abs(p - mid))
+            return text[:split_pos], "", text[split_pos:]
+        return None

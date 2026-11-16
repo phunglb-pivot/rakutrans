@@ -368,6 +368,68 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._update_button_states("idle_no_file")
         self.app._refresh_status_text()
 
+    def test_mode_switch_preserves_completed_and_error_states(self):
+        self.app.selected_file = "/fake/doc.docx"
+        self.app.last_output_file = "/fake/doc_vi.docx"
+        self.app._on_mode_switched(self.app.tab_translate_label)
+        self.app._update_button_states("completed")
+
+        # Switch to convert -> idle_no_file
+        self.app.selected_convert_file = None
+        self.app._on_mode_switched(self.app.tab_convert_label)
+        self.assertEqual(self.app.current_button_state, "idle_no_file")
+
+        # Switch back -> translate completed state preserved
+        self.app._on_mode_switched(self.app.tab_translate_label)
+        self.assertEqual(self.app.current_button_state, "completed")
+        self.assertEqual(self.app.open_file_btn.winfo_manager(), "pack")
+
+        # Cleanup
+        self.app.selected_file = None
+        self.app.last_output_file = None
+        self.app._update_button_states("idle_no_file")
+        self.app._refresh_status_text()
+
+    def test_shortcuts_locked_while_processing_and_convert_grid_reset(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_file = Path(tmpdir) / "a.pdf"
+            pdf_file.write_bytes(b"%PDF-1.4")
+            csv_file = Path(tmpdir) / "b.csv"
+            csv_file.write_text("A,B\n1,2\n", encoding="utf-8")
+
+            self.app._on_mode_switched(self.app.tab_convert_label)
+            self.app._on_convert_file_selected(str(pdf_file))
+            self.app._on_convert_file_selected(str(csv_file))
+
+            from format_converter import get_convert_options
+            csv_opts_count = len(get_convert_options(".csv"))
+            col_cfg = self.app.target_segmented.grid_columnconfigure(csv_opts_count)
+            self.assertEqual(col_cfg["weight"], 0)
+            self.assertIn(col_cfg["uniform"], (None, ""))
+
+        # Shortcuts blocked while processing or in settings
+        self.app.is_translating = True
+        with patch.object(self.app, "_start_translation") as mock_start, \
+             patch.object(self.app.drop_zone, "_browse_file") as mock_browse:
+            self.app.focus_force()
+            self.app.event_generate("<Control-o>")
+            self.app.event_generate("<Control-Return>")
+            self.app.update()
+            mock_start.assert_not_called()
+            mock_browse.assert_not_called()
+        self.app.is_translating = False
+
+        # Cleanup
+        self.app.selected_convert_file = None
+        self.app.selected_target_format = None
+        self.app._on_mode_switched(self.app.tab_translate_label)
+        self.app._update_button_states("idle_no_file")
+        self.app._refresh_status_text()
+
 
 if __name__ == "__main__":
     unittest.main()

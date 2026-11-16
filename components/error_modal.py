@@ -188,18 +188,38 @@ class ErrorModal(BaseModal):
         )
         close_btn.pack(side="right")
 
+    def _reset_copy_btn(self):
+        self._copy_after_id = None
+        try:
+            if self.winfo_exists() and self.copy_btn.winfo_exists():
+                self.copy_btn.set_text(self.t("copy_log"))
+                self.copy_btn.set_icon("copy", 14)
+        except Exception:
+            pass
+
     def _copy_log(self):
         try:
             self.clipboard_clear()
             self.clipboard_append(self.diag.technical_details)
-            self.copy_btn.configure(text=self.t("copied"))
+            self.copy_btn.set_text(self.t("copied"))
             self.copy_btn.set_icon("check", 14)
-            self.after(2000, lambda: (
-                self.copy_btn.configure(text=self.t("copy_log")),
-                self.copy_btn.set_icon("copy", 14)
-            ))
+            if getattr(self, "_copy_after_id", None):
+                try:
+                    self.after_cancel(self._copy_after_id)
+                except Exception:
+                    pass
+            self._copy_after_id = self.after(2000, self._reset_copy_btn)
         except Exception:
             pass
+
+    def destroy(self):
+        if getattr(self, "_copy_after_id", None):
+            try:
+                self.after_cancel(self._copy_after_id)
+            except Exception:
+                pass
+            self._copy_after_id = None
+        super().destroy()
 
     def _handle_retry(self):
         self.close_modal()

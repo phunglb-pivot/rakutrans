@@ -7,6 +7,8 @@ provider-reported model capabilities/limits locally without hardcoded model gues
 
 from datetime import datetime, timezone
 import json
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 CACHE_DIR = Path.home() / ".rakutrans"
 MODELS_CACHE_FILE = CACHE_DIR / "models_cache.json"
+_CACHE_LOCK = threading.RLock()
 
 SUPPORTED_PROVIDERS = ("Gemini", "OpenAI", "Claude")
 
@@ -52,31 +55,51 @@ def _is_past_date(date_str: Optional[str]) -> bool:
 
 
 def _read_cache_data() -> Dict[str, Any]:
-    """Reads the local models cache JSON safely."""
-    if not MODELS_CACHE_FILE.exists():
-        return {}
-    try:
-        with open(MODELS_CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data if isinstance(data, dict) else {}
-    except Exception as e:
-        print(f"[ModelFetcher] Warning: failed to read cache: {e}")
-        return {}
+    """Reads the local models cache JSON safely under lock."""
+    with _CACHE_LOCK:
+        if not MODELS_CACHE_FILE.exists():
+            return {}
+        try:
+            with open(MODELS_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, dict) else {}
+        except Exception as e:
+            print(f"[ModelFetcher] Warning: failed to read cache: {e}")
+            return {}
 
 
 def _write_cache_data(data: Dict[str, Any]) -> None:
-    """Persists the models cache JSON safely."""
+    """Persists the models cache JSON atomically and thread-safely."""
+    tmp_path: Optional[Path] = None
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        with open(MODELS_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        with _CACHE_LOCK:
+            MODELS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=".models_cache_",
+                suffix=".tmp",
+                dir=str(MODELS_CACHE_FILE.parent),
+            )
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            try:
+                os.chmod(tmp_path, 0o600)
+            except OSError:
+                pass
+            os.replace(str(tmp_path), str(MODELS_CACHE_FILE))
+            tmp_path = None
     except Exception as e:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
         print(f"[ModelFetcher] Warning: failed to write cache: {e}")
 
 
-def load_cached_models(provider: str) -> List[str]:
-    """Loads previously fetched live models for provider from local disk cache."""
-    data = _read_cache_data()
+def _extract_provider_models(data: Dict[str, Any], provider: str) -> List[str]:
     prov_data = data.get(provider)
     if isinstance(prov_data, dict):
         models = prov_data.get("models", [])
@@ -87,6 +110,12 @@ def load_cached_models(provider: str) -> List[str]:
     return []
 
 
+def load_cached_models(provider: str) -> List[str]:
+    """Loads previously fetched live models for provider from local disk cache."""
+    data = _read_cache_data()
+    return _extract_provider_models(data, provider)
+
+
 def load_cached_model_metadata(provider: str) -> Dict[str, Dict[str, Any]]:
     """Loads provider-reported model metadata dict keyed by model ID."""
     data = _read_cache_data()
@@ -94,7 +123,7 @@ def load_cached_model_metadata(provider: str) -> Dict[str, Dict[str, Any]]:
     if isinstance(prov_data, dict):
         meta = prov_data.get("models_meta", {})
         if isinstance(meta, dict):
-            return meta
+            return dict(meta)
     return {}
 
 
@@ -102,7 +131,8 @@ def get_model_metadata(provider: str, model_name: str) -> Dict[str, Any]:
     """Returns cached API metadata for a specific model if available."""
     if not model_name:
         return {}
-    return dict(load_cached_model_metadata(provider).get(model_name, {}))
+    entry = load_cached_model_metadata(provider).get(model_name, {})
+    return dict(entry) if isinstance(entry, dict) else {}
 
 
 def save_cached_models(
@@ -113,37 +143,43 @@ def save_cached_models(
     """Saves live fetched models and optional API metadata for a provider to disk cache."""
     if not models:
         return
-    data = _read_cache_data()
-    existing = data.get(provider) if isinstance(data.get(provider), dict) else {}
-    entry: Dict[str, Any] = {
-        "updated_at": time.time(),
-        "models": list(dict.fromkeys(models)),
-    }
-    if models_meta is not None:
-        entry["models_meta"] = models_meta
-    elif isinstance(existing.get("models_meta"), dict):
-        entry["models_meta"] = existing["models_meta"]
+    with _CACHE_LOCK:
+        data = _read_cache_data()
+        existing = data.get(provider) if isinstance(data.get(provider), dict) else {}
+        entry: Dict[str, Any] = {
+            "updated_at": time.time(),
+            "models": list(dict.fromkeys(models)),
+        }
+        if models_meta is not None:
+            entry["models_meta"] = models_meta
+        elif isinstance(existing.get("models_meta"), dict):
+            entry["models_meta"] = existing["models_meta"]
 
-    data[provider] = entry
-    _write_cache_data(data)
+        data[provider] = entry
+        _write_cache_data(data)
 
 
 def update_model_metadata(provider: str, model_name: str, meta: Dict[str, Any]) -> None:
     """Merges official API metadata for a single model into the local disk cache."""
     if not model_name or not meta:
         return
-    data = _read_cache_data()
-    prov_entry = data.get(provider)
-    if not isinstance(prov_entry, dict):
-        prov_entry = {"updated_at": time.time(), "models": [], "models_meta": {}}
-    models_meta = prov_entry.setdefault("models_meta", {})
-    current = models_meta.get(model_name, {})
-    if not isinstance(current, dict):
-        current = {}
-    current.update(meta)
-    models_meta[model_name] = current
-    data[provider] = prov_entry
-    _write_cache_data(data)
+    with _CACHE_LOCK:
+        data = _read_cache_data()
+        prov_entry = data.get(provider)
+        if not isinstance(prov_entry, dict):
+            prov_entry = {"updated_at": time.time(), "models": [], "models_meta": {}}
+        models_meta = prov_entry.setdefault("models_meta", {})
+        if not isinstance(models_meta, dict):
+            models_meta = {}
+            prov_entry["models_meta"] = models_meta
+        current = models_meta.get(model_name, {})
+        if not isinstance(current, dict):
+            current = {}
+        current = dict(current)
+        current.update(meta)
+        models_meta[model_name] = current
+        data[provider] = prov_entry
+        _write_cache_data(data)
 
 
 def _strip_gemini_prefix(name: str) -> str:
@@ -418,8 +454,9 @@ def resolve_provider_for_model(
     if not target:
         return fallback
 
+    cache_data = _read_cache_data()
     cached_matches = [
-        prov for prov in SUPPORTED_PROVIDERS if target in load_cached_models(prov)
+        prov for prov in SUPPORTED_PROVIDERS if target in _extract_provider_models(cache_data, prov)
     ]
     if len(cached_matches) == 1:
         return cached_matches[0]

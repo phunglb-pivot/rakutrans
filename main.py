@@ -51,6 +51,9 @@ def run_cli_translation(
         if resolved_provider in AI_PROVIDERS:
             config.active_provider = resolved_provider
 
+    if provider or model:
+        # Never persist temporary CLI --provider/--model overrides into GUI config.json
+        config.save = lambda: None
     if model:
         config.selected_models[config.active_provider] = model
     llm_manager = LLMManager(config)
@@ -155,6 +158,10 @@ def build_cli_parser() -> argparse.ArgumentParser:
 def main():
     parser = build_cli_parser()
     args = parser.parse_args()
+
+    if args.convert_fmt and not args.file:
+        print("[RakuTrans Converter] Error: --convert requires --file <path>.")
+        sys.exit(1)
 
     if args.file and args.convert_fmt:
         from format_converter import convert_file_direct

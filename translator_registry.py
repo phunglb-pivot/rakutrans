@@ -5,6 +5,7 @@ translator engines dynamically, providing clean extensible document handling.
 """
 
 from pathlib import Path
+import threading
 from typing import Dict, Type, List, Optional, Any, Union
 
 from base_translator import BaseTranslator
@@ -21,77 +22,84 @@ class TranslatorRegistry:
 
     _registry: Dict[str, Type[BaseTranslator]] = {}
     _initialized: bool = False
+    _lock = threading.RLock()
 
     @classmethod
     def _init_registry(cls):
-        """Lazily populates the registry mapping."""
+        """Lazily populates the registry mapping in a thread-safe manner."""
         if cls._initialized:
             return
+        with cls._lock:
+            if cls._initialized:
+                return
 
-        from excel_parser import ExcelTranslator
-        from markdown_parser import MarkdownTranslator
-        from docx_parser import DocxTranslator
-        from pptx_parser import PptxTranslator
-        from data_parser import CsvTranslator, JsonTranslator, TextTranslator
-        from pdf_parser import PdfTranslator
+            from excel_parser import ExcelTranslator
+            from markdown_parser import MarkdownTranslator
+            from docx_parser import DocxTranslator
+            from pptx_parser import PptxTranslator
+            from data_parser import CsvTranslator, JsonTranslator, TextTranslator
+            from pdf_parser import PdfTranslator
 
-        cls._registry = {
-            ".xlsx": ExcelTranslator,
-            ".md": MarkdownTranslator,
-            ".docx": DocxTranslator,
-            ".pptx": PptxTranslator,
-            ".pdf": PdfTranslator,
-            ".csv": CsvTranslator,
-            ".tsv": CsvTranslator,
-            ".json": JsonTranslator,
-            ".txt": TextTranslator,
-        }
-        cls._initialized = True
+            cls._registry = {
+                ".xlsx": ExcelTranslator,
+                ".md": MarkdownTranslator,
+                ".docx": DocxTranslator,
+                ".pptx": PptxTranslator,
+                ".pdf": PdfTranslator,
+                ".csv": CsvTranslator,
+                ".tsv": CsvTranslator,
+                ".json": JsonTranslator,
+                ".txt": TextTranslator,
+            }
+            cls._initialized = True
+
+    @staticmethod
+    def _extract_extension(file_path_or_ext: Union[str, Path]) -> str:
+        raw = str(file_path_or_ext).lower().strip()
+        if not raw:
+            return ""
+        if raw.startswith(".") and "/" not in raw and "\\" not in raw:
+            return raw
+        ext = Path(raw).suffix.lower()
+        if not ext and "/" not in raw and "\\" not in raw:
+            return f".{raw}"
+        return ext
 
     @classmethod
     def register(cls, extension: str, translator_cls: Type[BaseTranslator]):
         """Registers or overrides a translator class for an extension."""
         cls._init_registry()
-        ext = extension.lower()
+        ext = extension.lower().strip()
         if not ext.startswith("."):
             ext = f".{ext}"
-        cls._registry[ext] = translator_cls
+        with cls._lock:
+            cls._registry[ext] = translator_cls
 
     @classmethod
     def get_supported_extensions(cls) -> List[str]:
         """Returns sorted list of supported file extensions (e.g. ['.csv', '.docx', ...])."""
         cls._init_registry()
-        return sorted(list(cls._registry.keys()))
+        with cls._lock:
+            return sorted(list(cls._registry.keys()))
 
     @classmethod
     def is_supported(cls, file_path_or_ext: Union[str, Path]) -> bool:
         """Returns True if the file extension is supported."""
         cls._init_registry()
-        raw = str(file_path_or_ext).lower().strip()
-        if raw.startswith("."):
-            ext = raw
-        else:
-            ext = Path(raw).suffix.lower()
-            if not ext and raw:
-                ext = f".{raw}"
-        return ext in cls._registry
+        ext = cls._extract_extension(file_path_or_ext)
+        with cls._lock:
+            return ext in cls._registry
 
     @classmethod
     def get_translator_class(cls, file_path_or_ext: Union[str, Path]) -> Type[BaseTranslator]:
         """Returns the translator class for a given file or extension."""
         cls._init_registry()
-        raw = str(file_path_or_ext).lower().strip()
-        if raw.startswith("."):
-            ext = raw
-        else:
-            ext = Path(raw).suffix.lower()
-            if not ext and raw:
-                ext = f".{raw}"
-
-        if ext not in cls._registry:
-            supported = ", ".join(cls.get_supported_extensions())
-            raise ValueError(f"Unsupported file format '{ext}'. Supported formats: {supported}")
-        return cls._registry[ext]
+        ext = cls._extract_extension(file_path_or_ext)
+        with cls._lock:
+            if ext not in cls._registry:
+                supported = ", ".join(sorted(list(cls._registry.keys())))
+                raise ValueError(f"Unsupported file format '{ext}'. Supported formats: {supported}")
+            return cls._registry[ext]
 
     @classmethod
     def create_translator(

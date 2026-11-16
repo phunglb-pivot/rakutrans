@@ -6,13 +6,23 @@
 # pyenv, asdf, mise, and uv (prioritizing Tkinter support), heals/rebuilds
 # broken virtual environments, and installs all required dependencies.
 #
-# Optional override:
+# Optional flags / overrides:
+#   ./setup_env.sh --with-build         (also installs PyInstaller)
 #   RAKUTRANS_PYTHON=/path/to/python3 ./setup_env.sh
 # ==============================================================================
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
+
+WITH_BUILD="${RAKUTRANS_WITH_BUILD:-0}"
+for arg in "$@"; do
+    case "$arg" in
+        --with-build)
+            WITH_BUILD="1"
+            ;;
+    esac
+done
 
 echo "============================================="
 echo "   RakuTrans AI - Environment Setup          "
@@ -185,7 +195,13 @@ echo "Upgrading pip..."
 
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
     echo "Installing application dependencies..."
-    "$VENV_PY" -m pip install -q -r "$SCRIPT_DIR/requirements.txt" pyinstaller
+    "$VENV_PY" -m pip install -q -r "$SCRIPT_DIR/requirements.txt"
+    "$VENV_PY" -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.venv/.req_stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest())"
+fi
+
+if [ "$WITH_BUILD" = "1" ]; then
+    echo "Installing PyInstaller..."
+    "$VENV_PY" -m pip install -q pyinstaller
 fi
 
 # 5. Validate Tkinter readiness

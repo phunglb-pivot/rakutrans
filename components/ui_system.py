@@ -174,6 +174,8 @@ class CustomButton(ctk.CTkButton):
                 kwargs.setdefault("cursor", "hand2")
         if "image" in kwargs and not self._is_loading:
             self._current_image = kwargs["image"]
+        if "text" in kwargs and not self._is_loading:
+            self._raw_text = kwargs["text"]
         return super().configure(require_redraw=require_redraw, **kwargs)
 
     def set_icon(self, icon_name: Optional[str], icon_size: Optional[int] = None):
@@ -262,18 +264,32 @@ class CustomButton(ctk.CTkButton):
 
     def _animate_spinner(self):
         if not self._is_loading or not self.winfo_exists():
+            self._loading_after_id = None
             return
 
         spinner = SPINNER_FRAMES[self._spinner_idx % len(SPINNER_FRAMES)]
         self._spinner_idx += 1
-        self.configure(text=f"{spinner} {self._loading_text}")
-        self._loading_after_id = self.after(100, self._animate_spinner)
+        try:
+            self.configure(text=f"{spinner} {self._loading_text}")
+            self._loading_after_id = self.after(100, self._animate_spinner)
+        except Exception:
+            self._loading_after_id = None
 
     def set_text(self, text: str):
         """Update button text and keep internal raw text in sync."""
         self._raw_text = text
         if not self._is_loading:
             self.configure(text=text)
+
+    def destroy(self):
+        self._is_loading = False
+        if getattr(self, "_loading_after_id", None):
+            try:
+                self.after_cancel(self._loading_after_id)
+            except Exception:
+                pass
+            self._loading_after_id = None
+        super().destroy()
 
 
 # -----------------------------------------------------------------------------
@@ -313,11 +329,16 @@ class BaseModal(ctk.CTkToplevel):
         apply_windows_window_icon(self)
 
         # Modality setup
+        self._grab_after_id = None
         self.transient(parent)
         try:
             self.grab_set()
         except Exception:
             pass
+        try:
+            self._grab_after_id = self.after(20, self._ensure_grab)
+        except Exception:
+            self._grab_after_id = None
 
         # Center relative to parent
         self._center_on_parent(width, height)
@@ -330,6 +351,14 @@ class BaseModal(ctk.CTkToplevel):
         # Protocol for window close button (X)
         self.protocol("WM_DELETE_WINDOW", self.close_modal)
 
+    def _ensure_grab(self):
+        self._grab_after_id = None
+        try:
+            if self.winfo_exists() and self.winfo_ismapped():
+                self.grab_set()
+        except Exception:
+            pass
+
     def _center_on_parent(self, width: int, height: int):
         """Calculate and apply relative centering coordinates."""
         try:
@@ -341,15 +370,18 @@ class BaseModal(ctk.CTkToplevel):
                 ph = self.parent.winfo_height()
                 x = px + (pw - width) // 2
                 y = py + (ph - height) // 2
+                # Keep title bar visible on primary monitor while preserving negative multi-monitor coords
+                if px >= 0:
+                    x = max(20, x)
+                if py >= 0:
+                    y = max(20, y)
             else:
                 sw = self.winfo_screenwidth()
                 sh = self.winfo_screenheight()
-                x = (sw - width) // 2
-                y = (sh - height) // 2
+                x = max(20, (sw - width) // 2)
+                y = max(20, (sh - height) // 2)
 
-            x = max(20, x)
-            y = max(20, y)
-            self.geometry(f"{width}x{height}+{x}+{y}")
+            self.geometry(f"{width}x{height}{x:+d}{y:+d}")
         except Exception:
             pass
 
@@ -391,4 +423,13 @@ class BaseModal(ctk.CTkToplevel):
             self.destroy()
         except Exception:
             pass
+
+    def destroy(self):
+        if getattr(self, "_grab_after_id", None):
+            try:
+                self.after_cancel(self._grab_after_id)
+            except Exception:
+                pass
+            self._grab_after_id = None
+        super().destroy()
 

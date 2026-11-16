@@ -8,9 +8,22 @@ Provides:
 
 import csv
 import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
 from pathlib import Path
 from typing import List, Dict, Set, Callable, Optional, Any, Tuple
+
+
+def _ensure_large_csv_field_limit() -> None:
+    """Raises csv.field_size_limit safely (up to 10 MiB) to handle large CSV cells."""
+    target = min(sys.maxsize, 10 * 1024 * 1024)
+    if csv.field_size_limit() >= target:
+        return
+    while target > 131072:
+        try:
+            csv.field_size_limit(target)
+            return
+        except OverflowError:
+            target //= 2
 
 from base_translator import (
     BaseTranslator,
@@ -47,11 +60,26 @@ class CsvTranslator(BaseTranslator):
         try:
             with open(file_path, "r", encoding=encoding, errors="replace") as f:
                 sample = f.read(8192)
-            lines = [ln for ln in sample.splitlines() if ln.strip()][:20]
-            if len(lines) >= 2:
-                dialect = csv.Sniffer().sniff("\n".join(lines), delimiters=[",", "\t", ";", "|"])
+            non_empty = [ln for ln in sample.splitlines() if ln.strip()]
+            if not non_empty:
+                return ","
+            sniff_sample = "\n".join(non_empty[:20])
+            try:
+                dialect = csv.Sniffer().sniff(sniff_sample, delimiters=[",", "\t", ";", "|"])
                 if dialect.delimiter in (",", "\t", ";", "|"):
                     return dialect.delimiter
+            except Exception:
+                # Fallback for single-row files where Sniffer refuses to guess
+                first_line = non_empty[0]
+                best_delim = ","
+                best_count = 0
+                for cand in (",", ";", "\t", "|"):
+                    parsed_cols = next(csv.reader([first_line], delimiter=cand), [])
+                    if len(parsed_cols) > best_count:
+                        best_count = len(parsed_cols)
+                        best_delim = cand
+                if best_count > 1:
+                    return best_delim
         except Exception:
             pass
         return ","
@@ -64,6 +92,7 @@ class CsvTranslator(BaseTranslator):
             return {"type": "csv", "error": "File not found"}
 
         try:
+            _ensure_large_csv_field_limit()
             enc = _detect_encoding(path)
             delimiter = cls._detect_delimiter(path, enc)
             row_count = 0
@@ -118,6 +147,7 @@ class CsvTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(5, 100, "Reading CSV table...")
 
+        _ensure_large_csv_field_limit()
         enc = _detect_encoding(src)
         delimiter = self._detect_delimiter(src, enc)
 
@@ -205,16 +235,17 @@ class JsonTranslator(BaseTranslator):
 
     @classmethod
     def _traverse_json(cls, data: Any, on_string: Callable[[str], None]):
-        """Recursively traverses JSON data and calls on_string for string values."""
-        if isinstance(data, dict):
-            for v in data.values():
-                cls._traverse_json(v, on_string)
-        elif isinstance(data, list):
-            for item in data:
-                cls._traverse_json(item, on_string)
-        elif isinstance(data, str):
-            if _should_translate_cell(data):
-                on_string(data)
+        """Iteratively traverses JSON data (immune to deep-nesting RecursionError) and calls on_string for translatable strings."""
+        stack = [data]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                stack.extend(reversed(list(node.values())))
+            elif isinstance(node, list):
+                stack.extend(reversed(node))
+            elif isinstance(node, str):
+                if _should_translate_cell(node):
+                    on_string(node)
 
     @classmethod
     def inspect_file(cls, file_path: str) -> Dict[str, Any]:
@@ -232,21 +263,19 @@ class JsonTranslator(BaseTranslator):
             string_count = 0
             unique_texts: Set[str] = set()
 
-            def count_visitor(node: Any):
-                nonlocal key_count, string_count
+            stack = [data]
+            while stack:
+                node = stack.pop()
                 if isinstance(node, dict):
                     key_count += len(node)
-                    for v in node.values():
-                        count_visitor(v)
+                    stack.extend(reversed(list(node.values())))
                 elif isinstance(node, list):
-                    for item in node:
-                        count_visitor(item)
+                    stack.extend(reversed(node))
                 elif isinstance(node, str):
                     if _should_translate_cell(node):
                         string_count += 1
                         unique_texts.add(node.strip())
 
-            count_visitor(data)
             return {
                 "type": "json",
                 "total_keys": key_count,
@@ -317,19 +346,61 @@ class JsonTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(90, 100, "Reconstructing translated JSON...")
 
-        def replace_values(node: Any) -> Any:
-            if isinstance(node, dict):
-                return {k: replace_values(v) for k, v in node.items()}
-            elif isinstance(node, list):
-                return [replace_values(item) for item in node]
-            elif isinstance(node, str):
-                trimmed = node.strip()
-                if _should_translate_cell(node) and trimmed in translation_map:
-                    prefix = node[: len(node) - len(node.lstrip())]
-                    suffix = node[len(node.rstrip()) :]
-                    return f"{prefix}{translation_map[trimmed]}{suffix}"
-                return node
-            return node
+        def replace_values(root: Any) -> Any:
+            if not isinstance(root, (dict, list)):
+                if isinstance(root, str):
+                    trimmed = root.strip()
+                    if _should_translate_cell(root) and trimmed in translation_map:
+                        prefix = root[: len(root) - len(root.lstrip())]
+                        suffix = root[len(root.rstrip()) :]
+                        return f"{prefix}{translation_map[trimmed]}{suffix}"
+                return root
+
+            root_copy: Any = {} if isinstance(root, dict) else []
+            stack: List[Tuple[Any, Any]] = [(root, root_copy)]
+            while stack:
+                src_node, dst_node = stack.pop()
+                if isinstance(src_node, dict):
+                    for k, v in src_node.items():
+                        if isinstance(v, dict):
+                            child_d: Dict[str, Any] = {}
+                            dst_node[k] = child_d
+                            stack.append((v, child_d))
+                        elif isinstance(v, list):
+                            child_l: List[Any] = []
+                            dst_node[k] = child_l
+                            stack.append((v, child_l))
+                        elif isinstance(v, str):
+                            trimmed = v.strip()
+                            if _should_translate_cell(v) and trimmed in translation_map:
+                                prefix = v[: len(v) - len(v.lstrip())]
+                                suffix = v[len(v.rstrip()) :]
+                                dst_node[k] = f"{prefix}{translation_map[trimmed]}{suffix}"
+                            else:
+                                dst_node[k] = v
+                        else:
+                            dst_node[k] = v
+                else:
+                    for item in src_node:
+                        if isinstance(item, dict):
+                            child_d = {}
+                            dst_node.append(child_d)
+                            stack.append((item, child_d))
+                        elif isinstance(item, list):
+                            child_l = []
+                            dst_node.append(child_l)
+                            stack.append((item, child_l))
+                        elif isinstance(item, str):
+                            trimmed = item.strip()
+                            if _should_translate_cell(item) and trimmed in translation_map:
+                                prefix = item[: len(item) - len(item.lstrip())]
+                                suffix = item[len(item.rstrip()) :]
+                                dst_node.append(f"{prefix}{translation_map[trimmed]}{suffix}")
+                            else:
+                                dst_node.append(item)
+                        else:
+                            dst_node.append(item)
+            return root_copy
 
         translated_data = replace_values(data)
 
@@ -348,9 +419,53 @@ class JsonTranslator(BaseTranslator):
 
     @staticmethod
     def _save_json(target_path: Path, data: Any):
-        """Saves data to JSON with UTF-8 and 2-space indentation."""
-        with open(target_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        """Saves data to JSON with UTF-8 and 2-space indentation (falling back to iterative dump on deep nesting)."""
+        try:
+            with open(target_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except RecursionError:
+            with open(target_path, "w", encoding="utf-8") as f:
+                JsonTranslator._dump_json_iterative(f, data, indent=2)
+
+    @staticmethod
+    def _dump_json_iterative(fp, data: Any, indent: int = 2) -> None:
+        """Iterative JSON encoder for arbitrarily deep JSON trees beyond Python's recursion limit."""
+        stack: List[Tuple[str, Any, int]] = [("val", data, 0)]
+        while stack:
+            op, payload, depth = stack.pop()
+            if op == "str":
+                fp.write(payload)
+            elif op == "val":
+                if isinstance(payload, dict):
+                    if not payload:
+                        fp.write("{}")
+                    else:
+                        fp.write("{\n")
+                        pad = " " * ((depth + 1) * indent)
+                        close_pad = " " * (depth * indent)
+                        stack.append(("str", f"\n{close_pad}}}", depth))
+                        items = list(payload.items())
+                        for idx in range(len(items) - 1, -1, -1):
+                            k, v = items[idx]
+                            if idx < len(items) - 1:
+                                stack.append(("str", ",\n", depth))
+                            stack.append(("val", v, depth + 1))
+                            stack.append(("str", f"{pad}{json.dumps(str(k), ensure_ascii=False)}: ", depth))
+                elif isinstance(payload, list):
+                    if not payload:
+                        fp.write("[]")
+                    else:
+                        fp.write("[\n")
+                        pad = " " * ((depth + 1) * indent)
+                        close_pad = " " * (depth * indent)
+                        stack.append(("str", f"\n{close_pad}]", depth))
+                        for idx in range(len(payload) - 1, -1, -1):
+                            if idx < len(payload) - 1:
+                                stack.append(("str", ",\n", depth))
+                            stack.append(("val", payload[idx], depth + 1))
+                            stack.append(("str", pad, depth))
+                else:
+                    fp.write(json.dumps(payload, ensure_ascii=False))
 
 
 class TextTranslator(BaseTranslator):
@@ -361,7 +476,28 @@ class TextTranslator(BaseTranslator):
     """
 
     @staticmethod
-    def _split_text_chunks(content: str, max_chars: int = 3000) -> List[Tuple[str, str]]:
+    def _split_long_line(line: str, max_chars: int) -> List[str]:
+        """Splits an oversized single line (> max_chars) along whitespace without dropping chars."""
+        if len(line) <= max_chars:
+            return [line]
+        parts: List[str] = []
+        start = 0
+        n = len(line)
+        while start < n:
+            if n - start <= max_chars:
+                parts.append(line[start:])
+                break
+            split_at = line.rfind(" ", start, start + max_chars + 1)
+            if split_at <= start:
+                split_at = start + max_chars
+            else:
+                split_at += 1  # Keep trailing space with left piece so exact join == original
+            parts.append(line[start:split_at])
+            start = split_at
+        return parts
+
+    @classmethod
+    def _split_text_chunks(cls, content: str, max_chars: int = 3000) -> List[Tuple[str, str]]:
         """
         Splits text into (chunk_text, join_sep_after_chunk) tuples preserving exact paragraph/line boundaries.
         """
@@ -379,32 +515,47 @@ class TextTranslator(BaseTranslator):
                 lines = para.split("\n")
                 for l_idx, ln in enumerate(lines):
                     l_sep = "\n" if l_idx < len(lines) - 1 else sep_after
-                    atomic_units.append((ln, l_sep))
+                    if len(ln) <= max_chars:
+                        atomic_units.append((ln, l_sep))
+                    else:
+                        sub_parts = cls._split_long_line(ln, max_chars)
+                        for s_idx, sub in enumerate(sub_parts):
+                            s_sep = "" if s_idx < len(sub_parts) - 1 else l_sep
+                            atomic_units.append((sub, s_sep))
 
         chunks: List[Tuple[str, str]] = []
-        buf_parts: List[str] = []
-        buf_len = 0
+        buf_text = ""
+        pending_sep = ""
 
-        for idx, (unit, sep_after) in enumerate(atomic_units):
-            unit_len = len(unit)
-            if buf_parts and (buf_len + unit_len > max_chars):
-                # Flush previous accumulated chunk without trailing sep; sep belongs between chunks
-                prev_text = "".join(buf_parts[:-1]) if len(buf_parts) > 1 else buf_parts[0]
-                prev_sep = buf_parts[-1] if len(buf_parts) > 1 else ""
-                chunks.append((prev_text, prev_sep))
-                buf_parts = [unit]
-                if sep_after and idx < len(atomic_units) - 1:
-                    buf_parts.append(sep_after)
-                buf_len = unit_len + len(sep_after)
+        for unit, sep_after in atomic_units:
+            if not buf_text and not pending_sep:
+                buf_text = unit
+                pending_sep = sep_after
+                continue
+
+            if not buf_text and pending_sep:
+                # Leading blank lines before any non-empty content
+                chunks.append(("", pending_sep))
+                buf_text = unit
+                pending_sep = sep_after
+                continue
+
+            if not unit and sep_after:
+                # Consecutive blank lines: keep whitespace in separator rather than inside buf_text
+                pending_sep += sep_after
+                continue
+
+            candidate_len = len(buf_text) + len(pending_sep) + len(unit)
+            if candidate_len > max_chars:
+                chunks.append((buf_text, pending_sep))
+                buf_text = unit
+                pending_sep = sep_after
             else:
-                buf_parts.append(unit)
-                buf_len += unit_len
-                if sep_after and idx < len(atomic_units) - 1:
-                    buf_parts.append(sep_after)
-                    buf_len += len(sep_after)
+                buf_text = f"{buf_text}{pending_sep}{unit}"
+                pending_sep = sep_after
 
-        if buf_parts:
-            chunks.append(("".join(buf_parts), ""))
+        if buf_text or pending_sep:
+            chunks.append((buf_text, pending_sep))
 
         return chunks
 
@@ -469,78 +620,26 @@ class TextTranslator(BaseTranslator):
             return str(saved_path)
 
         chunk_specs = self._split_text_chunks(content)
-        total_chunks = len(chunk_specs)
-        translated_texts: List[Optional[str]] = [None] * total_chunks
-
-        translatable_indices: List[int] = []
-        translatable_inputs: List[str] = []
-        for idx, (chunk_text, _) in enumerate(chunk_specs):
-            if not chunk_text.strip():
-                translated_texts[idx] = chunk_text
-            else:
-                translatable_indices.append(idx)
-                translatable_inputs.append(chunk_text)
-
-        model_id = self._get_cache_model_id()
-        cached_map, uncached_items = self.cache.get_batch(
-            texts=translatable_inputs,
+        section_inputs = [chunk_text for chunk_text, _ in chunk_specs if chunk_text.strip()]
+        section_map = self.translate_unique_sections(
+            sections=section_inputs,
             target_lang=target_lang,
-            options=options,
             source_lang=source_lang,
+            options=options,
             mode="text",
-            model_id=model_id,
+            plain_text=True,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_span=80,
+            progress_formatter=lambda done, total, _hits: f"Translated section {done}/{total}...",
         )
 
-        for local_idx, trans_val in cached_map.items():
-            translated_texts[translatable_indices[local_idx]] = trans_val
-
-        completed_count = len(cached_map)
-        total_translatable = len(translatable_inputs)
-
-        if uncached_items:
-            def translate_chunk(item: Tuple[int, str]) -> Tuple[int, str]:
-                local_idx, chunk_text = item
-                if self.is_cancelled:
-                    raise InterruptedError("Translation cancelled by user.")
-                trans = self.llm_manager.translate_markdown_text(
-                    markdown_text=chunk_text,
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    cancel_check=lambda: self.is_cancelled,
-                    plain_text=True,
-                )
-                self.cache.save_batch(
-                    source_texts=[chunk_text],
-                    translated_texts=[trans],
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    mode="text",
-                    model_id=model_id,
-                )
-                return local_idx, trans
-
-            max_workers = self.get_max_workers(len(uncached_items))
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {executor.submit(translate_chunk, item): item[0] for item in uncached_items}
-                for future in as_completed(futures):
-                    if self.is_cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise InterruptedError("Translation cancelled by user.")
-                    local_idx, trans = future.result()
-                    translated_texts[translatable_indices[local_idx]] = trans
-                    completed_count += 1
-                    pct = 10 + int((completed_count / max(1, total_translatable)) * 80)
-                    if progress_callback:
-                        progress_callback(
-                            pct, 100, f"Translated section {completed_count}/{total_translatable}..."
-                        )
-
         parts: List[str] = []
-        for idx, (chunk_text, sep_after) in enumerate(chunk_specs):
-            t_val = translated_texts[idx]
-            parts.append(chunk_text if t_val is None else t_val)
+        for chunk_text, sep_after in chunk_specs:
+            if not chunk_text.strip():
+                parts.append(chunk_text)
+            else:
+                parts.append(section_map.get(chunk_text, chunk_text))
             if sep_after:
                 parts.append(sep_after)
         final_content = "".join(parts)

@@ -18,8 +18,9 @@ Enables cross-format document and data conversions:
 import csv
 import os
 import re
+import time
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Set, Tuple, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import openpyxl
@@ -29,8 +30,9 @@ from openpyxl.utils import get_column_letter
 from base_translator import detect_text_encoding
 from config import get_smart_output_path, get_unique_output_path
 from data_parser import CsvTranslator
+from excel_parser import load_workbook_safe
+from markdown_parser import match_code_fence_open
 
-_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
 _STRICT_INT_RE = re.compile(r"^-?(?:0|[1-9]\d*)$")
@@ -108,7 +110,7 @@ def _is_md_separator_row(cells: List[str], row_idx: int) -> bool:
 def _escape_md_cell(val: Any) -> str:
     if val is None:
         return ""
-    s = str(val).replace("\\", "\\\\").replace("|", "\\|")
+    s = str(val).replace("\x0b", "\n").replace("\\", "\\\\").replace("|", "\\|")
     s = s.replace("\r\n", "<br>").replace("\n", "<br>")
     return s.strip()
 
@@ -392,8 +394,10 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
     try:
         from pdf2docx import Converter
         cv = Converter(str(src))
-        cv.convert(str(out_file))
-        cv.close()
+        try:
+            cv.convert(str(out_file))
+        finally:
+            cv.close()
     except Exception:
         import docx
         doc = docx.Document()
@@ -617,17 +621,18 @@ def excel_to_markdown(xlsx_path: str, md_output_path: Optional[str] = None) -> s
         raise FileNotFoundError(f"Excel file not found: {xlsx_path}")
 
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
-    wb_val = openpyxl.load_workbook(str(src), data_only=True)
-    wb_formula = openpyxl.load_workbook(str(src), data_only=False, read_only=True)
+    wb_val = load_workbook_safe(str(src), data_only=True, read_only=True)
+    wb_formula = load_workbook_safe(str(src), data_only=False, read_only=True)
 
     md_lines: List[str] = []
     doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
     md_lines.append(f"# {doc_title}\n")
 
     try:
-        for sheet_name in wb_val.sheetnames:
-            ws_val = wb_val[sheet_name]
-            ws_formula = wb_formula[sheet_name] if sheet_name in wb_formula.sheetnames else None
+        formula_names = set(wb_formula.sheetnames)
+        for ws_val in wb_val.worksheets:
+            sheet_name = ws_val.title
+            ws_formula = wb_formula[sheet_name] if sheet_name in formula_names else None
             raw_rows = _merged_row_values(ws_val, ws_formula)
             filtered_rows = [
                 row for row in raw_rows if any(c is not None and str(c).strip() != "" for c in row)
@@ -742,12 +747,10 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
             continue
 
         # Fenced code block (must be checked before '#' headings and '|' tables)
-        fence_m = _FENCE_OPEN_RE.match(raw_line)
-        if fence_m:
+        fence_open = match_code_fence_open(raw_line)
+        if fence_open:
             flush_pending_title()
-            fence_seq = fence_m.group(1)
-            fence_char = fence_seq[0]
-            fence_len = len(fence_seq)
+            fence_char, fence_len = fence_open
             close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
             code_lines: List[str] = []
             idx += 1
@@ -955,19 +958,23 @@ def excel_to_csv(xlsx_path: str, csv_output_path: Optional[str] = None) -> str:
         raise FileNotFoundError(f"Excel file not found: {xlsx_path}")
 
     out_file = Path(csv_output_path) if csv_output_path else get_unique_output_path(src.with_suffix(".csv"))
-    wb_val = openpyxl.load_workbook(str(src), data_only=True)
-    wb_formula = openpyxl.load_workbook(str(src), data_only=False, read_only=True)
+    wb_val = load_workbook_safe(str(src), data_only=True, read_only=True)
+    wb_formula = load_workbook_safe(str(src), data_only=False, read_only=True)
 
     try:
-        ws_val = wb_val.active
-        ws_formula = wb_formula[ws_val.title] if ws_val.title in wb_formula.sheetnames else None
-        rows = _merged_row_values(ws_val, ws_formula)
-        non_empty = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]
+        formula_names = set(wb_formula.sheetnames)
+        non_empty: List[List[Any]] = []
+        active_ws = wb_val.active
+        if active_ws is not None and hasattr(active_ws, "iter_rows"):
+            ws_formula = wb_formula[active_ws.title] if active_ws.title in formula_names else None
+            rows = _merged_row_values(active_ws, ws_formula)
+            non_empty = [r for r in rows if any(c is not None and str(c).strip() != "" for c in r)]
 
         if not non_empty:
-            for s_name in wb_val.sheetnames:
-                cand_val = wb_val[s_name]
-                cand_f = wb_formula[s_name] if s_name in wb_formula.sheetnames else None
+            for cand_val in wb_val.worksheets:
+                if cand_val is active_ws:
+                    continue
+                cand_f = wb_formula[cand_val.title] if cand_val.title in formula_names else None
                 cand_rows = _merged_row_values(cand_val, cand_f)
                 cand_non_empty = [
                     r for r in cand_rows if any(c is not None and str(c).strip() != "" for c in r)
@@ -1044,13 +1051,13 @@ def markdown_to_csv(md_path: str, csv_output_path: Optional[str] = None) -> str:
 
     while idx < len(lines):
         raw_line = lines[idx]
-        fence_m = _FENCE_OPEN_RE.match(raw_line)
-        if not in_fence and fence_m:
-            in_fence = True
-            fence_char = fence_m.group(1)[0]
-            fence_len = len(fence_m.group(1))
-            idx += 1
-            continue
+        if not in_fence:
+            fence_open = match_code_fence_open(raw_line)
+            if fence_open:
+                in_fence = True
+                fence_char, fence_len = fence_open
+                idx += 1
+                continue
         if in_fence:
             if re.match(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$", raw_line):
                 in_fence = False
@@ -1151,7 +1158,71 @@ def _rl_safe_text(text: str) -> str:
     return xml_escape(text).replace("\r\n", "\n").replace("\n", "<br/>")
 
 
-def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
+def _iter_docx_body_blocks(doc):
+    """
+    Yields ('p', Paragraph) or ('tbl', Table) in document reading order across
+    body paragraphs, tables, Content Controls (<w:sdt>), and text boxes (<w:txbxContent>).
+    """
+    import docx
+
+    w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    p_tag = f"{w_ns}p"
+    tbl_tag = f"{w_ns}tbl"
+    sdt_tag = f"{w_ns}sdt"
+    sdt_content_tag = f"{w_ns}sdtContent"
+    txbx_tag = f"{w_ns}txbxContent"
+
+    seen_elems: Set[Any] = set()
+
+    def walk(container_elem):
+        for child in container_elem:
+            tag = child.tag
+            if tag == p_tag:
+                if child not in seen_elems:
+                    seen_elems.add(child)
+                    yield ("p", docx.text.paragraph.Paragraph(child, doc))
+                # Also yield any text box paragraphs nested inside this paragraph
+                for tb_p in child.xpath(".//w:txbxContent//w:p"):
+                    if tb_p not in seen_elems:
+                        seen_elems.add(tb_p)
+                        yield ("p", docx.text.paragraph.Paragraph(tb_p, doc))
+            elif tag == tbl_tag:
+                if child not in seen_elems:
+                    seen_elems.add(child)
+                    yield ("tbl", docx.table.Table(child, doc))
+            elif tag == sdt_tag:
+                content = child.find(sdt_content_tag)
+                if content is not None:
+                    yield from walk(content)
+            elif tag in (sdt_content_tag, txbx_tag):
+                yield from walk(child)
+
+    yield from walk(doc.element.body)
+
+
+def _dedup_docx_table_rows(table) -> List[List[Tuple[Any, bool]]]:
+    """
+    Extracts table rows as (cell, is_primary_tc) pairs so merged table cells
+    are only emitted once instead of duplicating cell text/images across spans.
+    """
+    seen_tcs: Set[Any] = set()
+    rows_out: List[List[Tuple[Any, bool]]] = []
+    for row in table.rows:
+        row_cells: List[Tuple[Any, bool]] = []
+        for cell in row.cells:
+            is_primary = cell._tc not in seen_tcs
+            if is_primary:
+                seen_tcs.add(cell._tc)
+            row_cells.append((cell, is_primary))
+        rows_out.append(row_cells)
+    return rows_out
+
+
+def docx_to_pdf(
+    docx_path: str,
+    pdf_output_path: Optional[str] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> str:
     """
     Converts a Microsoft Word (.docx) document to a PDF document.
     Attempts system engines (LibreOffice CLI / docx2pdf) first,
@@ -1161,10 +1232,13 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
     if not src.exists():
         raise FileNotFoundError(f"Word document not found: {docx_path}")
 
+    if cancel_check and cancel_check():
+        raise InterruptedError("Conversion cancelled by user.")
+
     out_file = Path(pdf_output_path) if pdf_output_path else get_unique_output_path(src.with_suffix(".pdf"))
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
-    # 1. Try LibreOffice CLI if available
+    # 1. Try LibreOffice CLI if available (poll so user cancellation terminates soffice immediately)
     import shutil
     import subprocess
     soffice_bin = _find_soffice_binary()
@@ -1181,11 +1255,39 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
                     tmp_dir,
                     str(src),
                 ]
-                subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=90)
+                with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+                    deadline = time.monotonic() + 90.0
+                    while True:
+                        if cancel_check and cancel_check():
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=3.0)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                            proc.communicate()
+                            raise InterruptedError("Conversion cancelled by user.")
+                        rc = proc.poll()
+                        if rc is not None:
+                            _, err_b = proc.communicate()
+                            if rc != 0:
+                                raise subprocess.CalledProcessError(rc, cmd, stderr=err_b)
+                            break
+                        if time.monotonic() >= deadline:
+                            proc.terminate()
+                            try:
+                                proc.wait(timeout=3.0)
+                            except subprocess.TimeoutExpired:
+                                proc.kill()
+                            proc.communicate()
+                            raise subprocess.TimeoutExpired(cmd, 90)
+                        time.sleep(0.2)
+
                 gen_pdf = Path(tmp_dir) / f"{src.stem}.pdf"
                 if gen_pdf.exists():
                     shutil.copy2(gen_pdf, out_file)
                     return str(out_file)
+        except InterruptedError:
+            raise
         except Exception as e:
             print(f"[Warning] LibreOffice conversion failed, falling back to python renderer: {e}")
 
@@ -1258,8 +1360,8 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
                     rel = doc.part.rels[rId]
                     if "image" in rel.target_ref:
                         blob = rel.target_part.blob
-                        im = PILImage.open(io.BytesIO(blob))
-                        w, h = im.size
+                        with PILImage.open(io.BytesIO(blob)) as im:
+                            w, h = im.size
                         scale = min(1.0, max_w / max(1, w), max_h / max(1, h))
                         disp_w = max(10.0, w * scale)
                         disp_h = max(10.0, h * scale)
@@ -1268,10 +1370,11 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
             pass
         return imgs
 
-    for elem in doc.element.body:
-        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-        if tag == "p":
-            p = docx.text.paragraph.Paragraph(elem, doc)
+    for kind, obj in _iter_docx_body_blocks(doc):
+        if cancel_check and cancel_check():
+            raise InterruptedError("Conversion cancelled by user.")
+        if kind == "p":
+            p = obj
             for img in get_element_images(p._p):
                 story.append(img)
                 story.append(Spacer(1, 4))
@@ -1288,14 +1391,18 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
                 else:
                     st = body_style
                 story.append(Paragraph(_rl_safe_text(text), st))
-        elif tag == "tbl":
-            table = docx.table.Table(elem, doc)
+        elif kind == "tbl":
+            table = obj
+            dedup_rows = _dedup_docx_table_rows(table)
             table_data = []
-            max_cols = max((len(r.cells) for r in table.rows), default=0)
+            max_cols = max((len(r) for r in dedup_rows), default=0)
             col_w = usable_width / max(1, max_cols)
-            for row in table.rows:
+            for row_cells in dedup_rows:
                 row_data = []
-                for cell in row.cells:
+                for cell, is_primary in row_cells:
+                    if not is_primary:
+                        row_data.append(Paragraph("", body_style))
+                        continue
                     cell_flowables = []
                     ctext = cell.text.strip()
                     if ctext:
@@ -1308,7 +1415,7 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
                 table_data.append(row_data)
             if table_data:
                 col_widths = [usable_width / max_cols] * max_cols if max_cols > 0 else None
-                rl_table = Table(table_data, colWidths=col_widths)
+                rl_table = Table(table_data, colWidths=col_widths, repeatRows=0)
                 rl_table.setStyle(TableStyle([
                     ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -1331,14 +1438,29 @@ def docx_to_pdf(docx_path: str, pdf_output_path: Optional[str] = None) -> str:
         topMargin=40,
         bottomMargin=40,
     )
-    pdf_doc.build(story)
+    try:
+        pdf_doc.build(story)
+    except Exception:
+        # Fallback if a single giant table row exceeds ReportLab's single-page LayoutError limit
+        flat_story = []
+        for item in story:
+            if isinstance(item, Table):
+                for row in item._cellvalues:
+                    for cell_item in row:
+                        if isinstance(cell_item, list):
+                            flat_story.extend(cell_item)
+                        else:
+                            flat_story.append(cell_item)
+            else:
+                flat_story.append(item)
+        pdf_doc.build(flat_story or [Paragraph("", body_style)])
     return str(out_file)
 
 
 def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> str:
     """
     Converts a Microsoft Word (.docx) document to GitHub Flavored Markdown,
-    strictly preserving the original interleaving order of paragraphs and tables.
+    strictly preserving the original interleaving order of paragraphs, text boxes, SDTs, and tables.
     """
     src = Path(docx_path)
     if not src.exists():
@@ -1356,10 +1478,9 @@ def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> st
     if not has_top_heading:
         md_lines.append(f"# {src.stem}\n")
 
-    for elem in doc.element.body:
-        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-        if tag == "p":
-            p = docx.text.paragraph.Paragraph(elem, doc)
+    for kind, obj in _iter_docx_body_blocks(doc):
+        if kind == "p":
+            p = obj
             txt = p.text.strip()
             if not txt:
                 continue
@@ -1367,22 +1488,21 @@ def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> st
             if "title" in style_name:
                 md_lines.append(f"# {txt}\n")
             elif "heading 1" in style_name:
-                md_lines.append(f"# {txt}\n" if not has_top_heading else f"## {txt}\n")
+                md_lines.append(f"## {txt}\n" if not has_top_heading else f"# {txt}\n")
             elif "heading 2" in style_name:
-                md_lines.append(f"### {txt}\n")
+                md_lines.append(f"### {txt}\n" if not has_top_heading else f"## {txt}\n")
             elif "heading 3" in style_name:
-                md_lines.append(f"#### {txt}\n")
+                md_lines.append(f"#### {txt}\n" if not has_top_heading else f"### {txt}\n")
             elif "heading 4" in style_name:
-                md_lines.append(f"##### {txt}\n")
+                md_lines.append(f"##### {txt}\n" if not has_top_heading else f"#### {txt}\n")
             elif "list bullet" in style_name:
                 md_lines.append(f"- {txt}")
             else:
                 md_lines.append(f"{txt}\n")
-        elif tag == "tbl":
-            t = docx.table.Table(elem, doc)
+        elif kind == "tbl":
             t_rows = [
-                [_escape_md_cell(cell.text) for cell in r.cells]
-                for r in t.rows
+                [_escape_md_cell(cell.text) if is_primary else "" for cell, is_primary in row_cells]
+                for row_cells in _dedup_docx_table_rows(obj)
             ]
             if t_rows:
                 header = t_rows[0]
@@ -1424,11 +1544,9 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
             continue
 
         # Fenced code blocks
-        fence_m = _FENCE_OPEN_RE.match(raw_line)
-        if fence_m:
-            fence_seq = fence_m.group(1)
-            fence_char = fence_seq[0]
-            fence_len = len(fence_seq)
+        fence_open = match_code_fence_open(raw_line)
+        if fence_open:
+            fence_char, fence_len = fence_open
             close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
             code_lines: List[str] = []
             idx += 1
@@ -1527,16 +1645,15 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
     doc = docx.Document(str(src))
 
     texts: List[str] = []
-    for elem in doc.element.body:
-        tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-        if tag == "p":
-            p = docx.text.paragraph.Paragraph(elem, doc)
-            if p.text.strip():
-                texts.append(p.text.strip())
-        elif tag == "tbl":
-            t = docx.table.Table(elem, doc)
-            for row in t.rows:
-                row_text = "\t".join(cell.text.strip() for cell in row.cells)
+    for kind, obj in _iter_docx_body_blocks(doc):
+        if kind == "p":
+            if obj.text.strip():
+                texts.append(obj.text.strip())
+        elif kind == "tbl":
+            for row_cells in _dedup_docx_table_rows(obj):
+                row_text = "\t".join(
+                    cell.text.strip() for cell, is_primary in row_cells if is_primary and cell.text.strip()
+                )
                 if row_text.strip():
                     texts.append(row_text)
 
@@ -1545,6 +1662,20 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
         f.write("\n\n".join(texts).strip() + "\n")
 
     return str(out_file)
+
+
+def _dedup_pptx_table_rows(table) -> List[List[Tuple[Any, bool]]]:
+    seen_tcs: Set[Any] = set()
+    rows_out: List[List[Tuple[Any, bool]]] = []
+    for row in table.rows:
+        row_cells: List[Tuple[Any, bool]] = []
+        for cell in row.cells:
+            is_primary = cell._tc not in seen_tcs
+            if is_primary:
+                seen_tcs.add(cell._tc)
+            row_cells.append((cell, is_primary))
+        rows_out.append(row_cells)
+    return rows_out
 
 
 def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> str:
@@ -1567,13 +1698,13 @@ def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> st
             if shape.has_text_frame:
                 is_title = title_shape is not None and shape == title_shape
                 for p in shape.text_frame.paragraphs:
-                    txt = p.text.strip()
+                    txt = p.text.replace("\x0b", " ").strip()
                     if txt:
                         md_lines.append(f"### {txt}" if is_title else f"- {txt}")
             if shape.has_table:
                 t_rows = [
-                    [_escape_md_cell(c.text) for c in row.cells]
-                    for row in shape.table.rows
+                    [_escape_md_cell(c.text) if is_primary else "" for c, is_primary in row_cells]
+                    for row_cells in _dedup_pptx_table_rows(shape.table)
                 ]
                 if t_rows:
                     header = t_rows[0]
@@ -1585,7 +1716,7 @@ def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> st
                     md_lines.append("")
 
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-            notes_txt = slide.notes_slide.notes_text_frame.text.strip()
+            notes_txt = slide.notes_slide.notes_text_frame.text.replace("\x0b", "\n").strip()
             if notes_txt:
                 md_lines.append(f"\n> **Notes:** {notes_txt}\n")
 
@@ -1616,17 +1747,21 @@ def pptx_to_text(pptx_path: str, txt_output_path: Optional[str] = None) -> str:
         for shape in iter_pptx_shapes(slide.shapes):
             if shape.has_text_frame:
                 for p in shape.text_frame.paragraphs:
-                    txt = p.text.strip()
+                    txt = p.text.replace("\x0b", "\n").strip()
                     if txt:
                         texts.append(txt)
             if shape.has_table:
-                for row in shape.table.rows:
-                    row_txt = "\t".join(c.text.strip() for c in row.cells)
+                for row_cells in _dedup_pptx_table_rows(shape.table):
+                    row_txt = "\t".join(
+                        c.text.replace("\x0b", " ").strip()
+                        for c, is_primary in row_cells
+                        if is_primary and c.text.strip()
+                    )
                     if row_txt.strip():
                         texts.append(row_txt)
 
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
-            notes_txt = slide.notes_slide.notes_text_frame.text.strip()
+            notes_txt = slide.notes_slide.notes_text_frame.text.replace("\x0b", "\n").strip()
             if notes_txt:
                 texts.append(f"[Notes] {notes_txt}")
 
@@ -1684,6 +1819,20 @@ _CONVERSION_REGISTRY = {
 }
 
 
+def _extract_source_ext(file_path_or_ext: Union[str, Path]) -> str:
+    raw = str(file_path_or_ext).lower().strip()
+    if not raw:
+        return ""
+    if raw.startswith(".") and "/" not in raw and "\\" not in raw:
+        return raw.lstrip(".")
+    suffix = Path(raw).suffix.lower().lstrip(".")
+    if suffix:
+        return suffix
+    if "/" not in raw and "\\" not in raw:
+        return raw
+    return ""
+
+
 def get_convertible_extensions() -> List[str]:
     """Returns sorted list of supported source extensions (e.g. ['.csv', '.docx', ...]) from _CONVERSION_REGISTRY."""
     return sorted({f".{src}" for (src, _) in _CONVERSION_REGISTRY})
@@ -1691,20 +1840,18 @@ def get_convertible_extensions() -> List[str]:
 
 def is_convert_supported(file_path_or_ext: Union[str, Path]) -> bool:
     """Returns True if source file extension has at least one conversion target in _CONVERSION_REGISTRY."""
-    raw = str(file_path_or_ext).lower().strip()
-    ext = raw.lstrip(".") if raw.startswith(".") else Path(raw).suffix.lower().lstrip(".")
-    return any(src == ext for (src, _) in _CONVERSION_REGISTRY)
+    ext = _extract_source_ext(file_path_or_ext)
+    return bool(ext) and any(src == ext for (src, _) in _CONVERSION_REGISTRY)
 
 
-def get_convert_options(file_path_or_ext: str) -> List[str]:
+def get_convert_options(file_path_or_ext: Union[str, Path]) -> List[str]:
     """
     Returns available target format keys for a given source file extension,
     derived directly from _CONVERSION_REGISTRY (Single Source of Truth).
     """
-    ext = file_path_or_ext.lower().lstrip(".")
-    if "." in ext:
-        ext = ext.split(".")[-1]
-
+    ext = _extract_source_ext(file_path_or_ext)
+    if not ext:
+        return []
     return [tgt for (src, tgt) in _CONVERSION_REGISTRY if src == ext]
 
 

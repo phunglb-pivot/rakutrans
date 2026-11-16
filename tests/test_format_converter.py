@@ -327,6 +327,80 @@ class TestFormatConverter(unittest.TestCase):
             self.assertIn("映画『アイアンマン』で、主人公トニー・スタークがAIアシスタントの「J.A.R.V.I.S.（ジャーヴィス）」", md_text)
             self.assertIn("| --- |", md_text)
 
+    def test_chartsheet_inline_backticks_docx_sdt_txbx_and_pptx_clean_breaks(self):
+        from unittest.mock import patch
+        from docx.oxml import parse_xml
+        from docx.oxml.ns import nsdecls
+        import format_converter
+        import pypdf
+
+        # 1. Excel with Chartsheet converts to Markdown & CSV without crashing
+        from openpyxl.chart import LineChart
+        cs_xlsx = self.tmp_path / "with_chart.xlsx"
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Data"
+        ws.append(["Col1", "Col2"])
+        ws.append(["Alpha", 10])
+        cs = wb.create_chartsheet(title="Chart")
+        cs.add_chart(LineChart())
+        wb.save(str(cs_xlsx))
+        wb.close()
+        self.assertIn("Alpha", Path(excel_to_markdown(str(cs_xlsx))).read_text(encoding="utf-8"))
+        self.assertIn("Alpha", Path(excel_to_csv(str(cs_xlsx))).read_text(encoding="utf-8-sig"))
+
+        # 2. Inline triple backticks do not hijack markdown_to_excel / markdown_to_csv
+        md_inline = self.tmp_path / "inline_bt.md"
+        md_inline.write_text("```code``` is inline.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n", encoding="utf-8")
+        csv_from_md = markdown_to_csv(str(md_inline))
+        self.assertIn("1,2", Path(csv_from_md).read_text(encoding="utf-8-sig"))
+        xlsx_from_md = markdown_to_excel(str(md_inline))
+        wb_md = openpyxl.load_workbook(xlsx_from_md)
+        self.assertEqual(wb_md.active.cell(1, 1).value, "```code``` is inline.")
+        wb_md.close()
+
+        # 3. DOCX with SDT + merged table cells -> PDF fallback & Markdown without duplicating merged cells
+        doc_path = self.tmp_path / "sdt_merged.docx"
+        doc = docx.Document()
+        doc.element.body.append(
+            parse_xml(f'<w:sdt {nsdecls("w")}><w:sdtContent><w:p><w:r><w:t>SDT Content</w:t></w:r></w:p></w:sdtContent></w:sdt>')
+        )
+        tbl = doc.add_table(rows=1, cols=2)
+        tbl.cell(0, 0).text = "Span Header"
+        tbl.cell(0, 0).merge(tbl.cell(0, 1))
+        doc.save(str(doc_path))
+
+        md_from_doc = docx_to_markdown(str(doc_path))
+        md_doc_txt = Path(md_from_doc).read_text(encoding="utf-8")
+        self.assertIn("SDT Content", md_doc_txt)
+        self.assertEqual(md_doc_txt.count("Span Header"), 1)
+
+        with patch.object(format_converter, "_find_soffice_binary", return_value=None):
+            pdf_out = format_converter.docx_to_pdf(str(doc_path), str(self.tmp_path / "sdt.pdf"))
+        pdf_txt = "\n".join(p.extract_text() or "" for p in pypdf.PdfReader(pdf_out).pages)
+        self.assertIn("SDT Content", pdf_txt)
+        self.assertEqual(pdf_txt.count("Span Header"), 1)
+
+        # 4. PPTX with <a:br> and merged table cells produces clean Markdown/Text without \x0b
+        pptx_path = self.tmp_path / "br_tbl.pptx"
+        prs = Presentation()
+        sl = prs.slides.add_slide(prs.slide_layouts[6])
+        sl.shapes.add_textbox(100, 100, 300, 100).text_frame.text = "Line A\nLine B"
+        t_sh = sl.shapes.add_table(1, 2, 100, 300, 300, 100).table
+        t_sh.cell(0, 0).text = "UniqueMerged"
+        t_sh.cell(0, 0).merge(t_sh.cell(0, 1))
+        prs.save(str(pptx_path))
+
+        p_md = Path(pptx_to_markdown(str(pptx_path))).read_text(encoding="utf-8")
+        p_txt = Path(pptx_to_text(str(pptx_path))).read_text(encoding="utf-8")
+        self.assertNotIn("\x0b", p_md)
+        self.assertNotIn("\x0b", p_txt)
+        self.assertEqual(p_md.count("UniqueMerged"), 1)
+        self.assertEqual(p_txt.count("UniqueMerged"), 1)
+
+        # 5. Extensionless path in dotted directory returns []
+        self.assertEqual(get_convert_options("/tmp/v1.0/README"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

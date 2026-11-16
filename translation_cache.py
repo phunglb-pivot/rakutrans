@@ -6,6 +6,8 @@ LLM API calls for duplicate terms and reducing API cost and latency by 40-70%.
 
 import hashlib
 import sqlite3
+import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
@@ -54,12 +56,14 @@ class TranslationCache:
 
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = Path(db_path) if db_path is not None else CACHE_DB_PATH
+        self._write_lock = threading.RLock()
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not self.db_path.parent.exists():
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=10000;")
         return conn
 
     @contextmanager
@@ -71,8 +75,27 @@ class TranslationCache:
         finally:
             conn.close()
 
+    def _run_write(self, fn):
+        """Serialize in-process writes and retry transient SQLite lock contention."""
+        with self._write_lock:
+            last_err: Optional[Exception] = None
+            for attempt in range(4):
+                try:
+                    with self._connection() as conn:
+                        return fn(conn)
+                except sqlite3.OperationalError as e:
+                    last_err = e
+                    msg = str(e).lower()
+                    if ("locked" in msg or "busy" in msg) and attempt < 3:
+                        time.sleep(0.05 * (2 ** attempt))
+                        continue
+                    raise
+            if last_err is not None:
+                raise last_err
+
     def _init_db(self):
-        with self._connection() as conn:
+        def _init(conn: sqlite3.Connection):
+            conn.execute("PRAGMA journal_mode=WAL;")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS translations (
                     source_lang TEXT,
@@ -92,6 +115,8 @@ class TranslationCache:
                 CREATE INDEX IF NOT EXISTS idx_lookup_auto
                 ON translations (target_lang, options_hash, source_text);
             """)
+
+        self._run_write(_init)
 
     @staticmethod
     def _resolve_legacy_args(
@@ -207,8 +232,8 @@ class TranslationCache:
         if not records:
             return
 
-        with self._connection() as conn:
-            conn.executemany(
+        self._run_write(
+            lambda conn: conn.executemany(
                 """
                 INSERT OR REPLACE INTO translations
                 (source_lang, target_lang, source_text, translated_text, options_hash)
@@ -216,6 +241,7 @@ class TranslationCache:
                 """,
                 records,
             )
+        )
 
     def get(
         self,
@@ -270,7 +296,6 @@ class TranslationCache:
     def clear(self):
         """Wipes the translation cache."""
         try:
-            with self._connection() as conn:
-                conn.execute("DELETE FROM translations;")
+            self._run_write(lambda conn: conn.execute("DELETE FROM translations;"))
         except Exception as e:
             print(f"[Warning] Failed to clear cache: {e}")

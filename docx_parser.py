@@ -6,9 +6,11 @@ tables (including nested), text boxes, headers/footers, hyperlinks, and inline r
 
 import copy
 from pathlib import Path
+import re
 from typing import List, Dict, Set, Callable, Optional, Any, Tuple
 import docx
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
@@ -32,11 +34,20 @@ _RPR_TAG = f"{_W_NS}rPr"
 _RFONTS_TAG = f"{_W_NS}rFonts"
 _P_TAG = f"{_W_NS}p"
 _T_TAG = f"{_W_NS}t"
+_TAB_TAG = f"{_W_NS}tab"
+_BR_TAG = f"{_W_NS}br"
+_DRAWING_TAG = f"{_W_NS}drawing"
+_PICT_TAG = f"{_W_NS}pict"
+_SECTPR_TAG = f"{_W_NS}sectPr"
 
 
 def _should_translate(text: Optional[str]) -> bool:
     """Checks if a string has translatable content."""
     return should_translate_text(text, ignore_formulas=False)
+
+
+def _is_structural_break(br_elem) -> bool:
+    return br_elem.get(qn("w:type")) in ("page", "column")
 
 
 def _collect_direct_t_elements(p_elem) -> List[Any]:
@@ -45,15 +56,16 @@ def _collect_direct_t_elements(p_elem) -> List[Any]:
     (including inside <w:hyperlink> or <w:r>), without descending into nested
     text boxes (<w:txbxContent>) or nested paragraphs (<w:p>).
     """
-    return [u[0] for u in _collect_direct_t_units(p_elem)]
+    return [u[0] for u in _collect_direct_t_units(p_elem) if u[0].tag == _T_TAG]
 
 
-def _collect_direct_t_units(p_elem) -> List[Tuple[Any, Optional[Any], Optional[Any]]]:
+def _collect_direct_t_units(p_elem) -> List[Tuple[Any, Optional[Any], Optional[Any], str]]:
     """
-    Collects (t_elem, r_elem, hyperlink_elem) tuples belonging directly to p_elem
-    without descending into nested text boxes or nested paragraphs.
+    Collects (elem, r_elem, hyperlink_elem, text_val) tuples belonging directly to p_elem
+    (including <w:t>, <w:tab/>, and soft <w:br/>) without descending into nested text boxes
+    or nested paragraphs.
     """
-    units: List[Tuple[Any, Optional[Any], Optional[Any]]] = []
+    units: List[Tuple[Any, Optional[Any], Optional[Any], str]] = []
 
     def walk(node, curr_r=None, curr_hl=None):
         for child in node:
@@ -63,7 +75,11 @@ def _collect_direct_t_units(p_elem) -> List[Tuple[Any, Optional[Any], Optional[A
             next_r = child if tag == _R_TAG else curr_r
             next_hl = child if tag == _HYPERLINK_TAG else curr_hl
             if tag == _T_TAG:
-                units.append((child, next_r, next_hl))
+                units.append((child, next_r, next_hl, child.text or ""))
+            elif tag == _TAB_TAG:
+                units.append((child, next_r, next_hl, "\t"))
+            elif tag == _BR_TAG and not _is_structural_break(child):
+                units.append((child, next_r, next_hl, "\n"))
             else:
                 walk(child, next_r, next_hl)
 
@@ -124,57 +140,54 @@ def _semantic_run_style(r_elem: Optional[Any], hl_elem: Optional[Any]) -> Tuple:
     )
 
 
-def _iter_table_paragraphs(table, seen_p_ids: Set[int]):
+def _iter_table_paragraphs(table, seen_p_elems: Set[Any]):
     """Recursively yields paragraphs inside tables and nested tables."""
     for row in table.rows:
         for cell in row.cells:
             for p in cell.paragraphs:
-                pid = id(p._p)
-                if pid not in seen_p_ids:
-                    seen_p_ids.add(pid)
+                if p._p not in seen_p_elems:
+                    seen_p_elems.add(p._p)
                     yield p
             for nested_tbl in cell.tables:
-                yield from _iter_table_paragraphs(nested_tbl, seen_p_ids)
+                yield from _iter_table_paragraphs(nested_tbl, seen_p_elems)
 
 
-def _iter_container_paragraphs(container, parent_doc, seen_p_ids: Set[int]):
-    """Yields paragraphs from a document or header/footer container including tables and text boxes."""
+def _iter_container_paragraphs(container, parent_doc, seen_p_elems: Set[Any]):
+    """Yields paragraphs from a document or header/footer container including tables, SDTs, and text boxes."""
     for p in getattr(container, "paragraphs", []):
-        pid = id(p._p)
-        if pid not in seen_p_ids:
-            seen_p_ids.add(pid)
+        if p._p not in seen_p_elems:
+            seen_p_elems.add(p._p)
             yield p
 
     for tbl in getattr(container, "tables", []):
-        yield from _iter_table_paragraphs(tbl, seen_p_ids)
+        yield from _iter_table_paragraphs(tbl, seen_p_elems)
 
     root_elem = getattr(container, "_element", None)
     if root_elem is not None:
-        for p_elem in root_elem.xpath(".//w:txbxContent//w:p"):
-            pid = id(p_elem)
-            if pid not in seen_p_ids:
-                seen_p_ids.add(pid)
-                yield Paragraph(p_elem, parent_doc)
+        for xpath_expr in (".//w:txbxContent//w:p", ".//w:sdtContent//w:p"):
+            for p_elem in root_elem.xpath(xpath_expr):
+                if p_elem not in seen_p_elems:
+                    seen_p_elems.add(p_elem)
+                    yield Paragraph(p_elem, parent_doc)
 
 
 def _iter_all_paragraphs(doc: docx.document.Document):
-    """Yields unique paragraphs across body, tables, nested tables, headers/footers, and text boxes."""
-    seen_p_ids: Set[int] = set()
+    """Yields unique paragraphs across body, tables, nested tables, SDTs, headers/footers, footnotes/endnotes, and text boxes."""
+    seen_p_elems: Set[Any] = set()
 
     for p in doc.paragraphs:
-        pid = id(p._p)
-        if pid not in seen_p_ids:
-            seen_p_ids.add(pid)
+        if p._p not in seen_p_elems:
+            seen_p_elems.add(p._p)
             yield p
 
     for table in doc.tables:
-        yield from _iter_table_paragraphs(table, seen_p_ids)
+        yield from _iter_table_paragraphs(table, seen_p_elems)
 
-    for p_elem in doc.element.body.xpath(".//w:txbxContent//w:p"):
-        pid = id(p_elem)
-        if pid not in seen_p_ids:
-            seen_p_ids.add(pid)
-            yield Paragraph(p_elem, doc)
+    for xpath_expr in (".//w:txbxContent//w:p", ".//w:sdtContent//w:p"):
+        for p_elem in doc.element.body.xpath(xpath_expr):
+            if p_elem not in seen_p_elems:
+                seen_p_elems.add(p_elem)
+                yield Paragraph(p_elem, doc)
 
     for section in doc.sections:
         for hf_attr in (
@@ -187,7 +200,27 @@ def _iter_all_paragraphs(doc: docx.document.Document):
         ):
             hf = getattr(section, hf_attr, None)
             if hf is not None and not getattr(hf, "is_linked_to_previous", False):
-                yield from _iter_container_paragraphs(hf, doc, seen_p_ids)
+                yield from _iter_container_paragraphs(hf, doc, seen_p_elems)
+
+    # Footnotes and endnotes XML parts (if present in the Word archive)
+    try:
+        for rel in doc.part.rels.values():
+            reltype = getattr(rel, "reltype", "") or ""
+            if reltype.endswith("/footnotes") or reltype.endswith("/endnotes"):
+                target_part = getattr(rel, "target_part", None)
+                note_root = getattr(target_part, "_element", None)
+                if note_root is None:
+                    continue
+                for note_tag in ("w:footnote", "w:endnote"):
+                    for note_el in note_root.xpath(f".//{note_tag}"):
+                        if note_el.get(qn("w:type")) in ("separator", "continuationSeparator"):
+                            continue
+                        for p_elem in note_el.xpath(".//w:p"):
+                            if p_elem not in seen_p_elems:
+                                seen_p_elems.add(p_elem)
+                                yield Paragraph(p_elem, doc)
+    except Exception:
+        pass
 
 
 def _set_w_t_text(t_elem, value: str) -> None:
@@ -198,6 +231,77 @@ def _set_w_t_text(t_elem, value: str) -> None:
         del t_elem.attrib[qn("xml:space")]
 
 
+def _clear_direct_units(
+    units: List[Tuple[Any, Optional[Any], Optional[Any], str]],
+    keep_nodes: Optional[Set[Any]] = None,
+) -> None:
+    """Clears <w:t> nodes and removes soft <w:br/> / <w:tab/> nodes from direct paragraph units."""
+    keep = keep_nodes or set()
+    for el, _r, _hl, _txt in units:
+        if el in keep:
+            continue
+        if el.tag == _T_TAG:
+            _set_w_t_text(el, "")
+        elif el.tag in (_TAB_TAG, _BR_TAG):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+
+
+def _write_value_into_slot(target_el, r_elem, value: str) -> None:
+    """
+    Writes text into target <w:t> / <w:r>, emitting genuine <w:tab/> and <w:br/>
+    elements instead of literal '\\n' inside <w:t> (which Word collapses).
+    """
+    clean = (value or "").replace("\r\n", "\n")
+    if target_el is not None and target_el.tag != _T_TAG:
+        parent = target_el.getparent()
+        replacement = OxmlElement("w:t")
+        if parent is not None:
+            pos = list(parent).index(target_el)
+            parent.remove(target_el)
+            parent.insert(pos, replacement)
+            target_el = replacement
+        elif r_elem is not None:
+            r_elem.append(replacement)
+            target_el = replacement
+        else:
+            return
+    elif target_el is None:
+        if r_elem is not None:
+            target_el = OxmlElement("w:t")
+            r_elem.append(target_el)
+        else:
+            return
+
+    if "\n" not in clean and "\t" not in clean:
+        _set_w_t_text(target_el, clean)
+        return
+
+    parent = target_el.getparent()
+    if parent is None:
+        _set_w_t_text(target_el, clean)
+        return
+
+    tokens = [tok for tok in re.split(r"(\n|\t)", clean) if tok != ""]
+    if not tokens:
+        _set_w_t_text(target_el, "")
+        return
+
+    insert_idx = list(parent).index(target_el)
+    parent.remove(target_el)
+    for tok in tokens:
+        if tok == "\n":
+            parent.insert(insert_idx, OxmlElement("w:br"))
+        elif tok == "\t":
+            parent.insert(insert_idx, OxmlElement("w:tab"))
+        else:
+            t_node = OxmlElement("w:t")
+            _set_w_t_text(t_node, tok)
+            parent.insert(insert_idx, t_node)
+        insert_idx += 1
+
+
 def _prepare_paragraph_item(
     p: Paragraph,
 ) -> Tuple[Paragraph, str, Optional[List[Dict[str, Any]]], str, str]:
@@ -205,28 +309,28 @@ def _prepare_paragraph_item(
     Extracts translation payload and semantic inline style groups for a paragraph.
     Returns (paragraph, query_text, style_groups_or_None, outer_prefix, outer_suffix).
     """
-    raw_text = p.text
+    units = _collect_direct_t_units(p._p)
+    raw_text = "".join(txt for _, _, _, txt in units) if units else p.text
     prefix = raw_text[: len(raw_text) - len(raw_text.lstrip())]
     suffix = raw_text[len(raw_text.rstrip()) :]
 
-    units = _collect_direct_t_units(p._p)
-    non_empty_units = [(t, r, hl, t.text or "") for t, r, hl in units if (t.text or "") != ""]
+    non_empty_units = [(el, r, hl, txt) for el, r, hl, txt in units if txt != ""]
     if not non_empty_units:
         return p, raw_text.strip(), None, prefix, suffix
 
     # 1. Group contiguous units sharing semantic visual style
     raw_groups: List[Dict[str, Any]] = []
-    for t_el, r_el, hl_el, txt in non_empty_units:
+    for el, r_el, hl_el, txt in non_empty_units:
         sig = _semantic_run_style(r_el, hl_el)
         rpr = r_el.find(_RPR_TAG) if r_el is not None else None
         if raw_groups and raw_groups[-1]["sig"] == sig:
-            raw_groups[-1]["nodes"].append(t_el)
+            raw_groups[-1]["nodes"].append(el)
             raw_groups[-1]["runs"].append(r_el)
             raw_groups[-1]["text"] += txt
         else:
             raw_groups.append({
                 "sig": sig,
-                "nodes": [t_el],
+                "nodes": [el],
                 "runs": [r_el],
                 "text": txt,
                 "has_hl": hl_el is not None,
@@ -284,41 +388,44 @@ def _apply_paragraph_translation(
     prefix: str = "",
     suffix: str = "",
 ) -> None:
-    """Applies translated text back to paragraph preserving inline run styles and hyperlinks."""
+    """Applies translated text back to paragraph preserving inline run styles, tabs/breaks, and hyperlinks."""
+    all_units = _collect_direct_t_units(p._p)
+
     if groups:
         segments = parse_inline_tagged_text(translated, len(groups))
         if segments is not None:
-            # Attach outer paragraph whitespace back cleanly
             first_idx, first_txt = segments[0]
             segments[0] = (first_idx, f"{prefix}{first_txt}")
             last_idx, last_txt = segments[-1]
             segments[-1] = (last_idx, f"{last_txt}{suffix}")
 
             order = [idx for idx, _ in segments]
-            all_t_elems = _collect_direct_t_elements(p._p)
 
-            # Case 1: Standard order [0, 1, ..., N-1] (or repeated idx in-order)
+            # Case 1: Standard order [0, 1, ..., N-1]
             if order == list(range(len(groups))):
+                slot_targets = []
+                keep_nodes: Set[Any] = set()
                 for idx, seg_text in segments:
                     nodes = groups[idx]["nodes"]
-                    _set_w_t_text(nodes[0], seg_text)
-                    for extra in nodes[1:]:
-                        _set_w_t_text(extra, "")
-                assigned = {g["nodes"][0] for g in groups}
-                for t_el in all_t_elems:
-                    if t_el not in assigned:
-                        _set_w_t_text(t_el, "")
+                    t_target = next((n for n in nodes if n.tag == _T_TAG), nodes[0])
+                    slot_r = groups[idx]["runs"][0]
+                    keep_nodes.add(t_target)
+                    slot_targets.append((t_target, slot_r, seg_text))
+                _clear_direct_units(all_units, keep_nodes=keep_nodes)
+                for t_target, slot_r, seg_text in slot_targets:
+                    _write_value_into_slot(t_target, slot_r, seg_text)
                 return
 
             # Case 2: Reordered target-language grammar without hyperlinks -> swap run rPr templates
             has_hyperlinks = any(g["has_hl"] for g in groups)
             if not has_hyperlinks and len(segments) == len(groups) and len(set(order)) == len(groups):
+                slot_targets = []
+                keep_nodes = set()
                 for pos, (src_idx, seg_text) in enumerate(segments):
                     slot_nodes = groups[pos]["nodes"]
+                    t_target = next((n for n in slot_nodes if n.tag == _T_TAG), slot_nodes[0])
                     slot_run = groups[pos]["runs"][0]
-                    _set_w_t_text(slot_nodes[0], seg_text)
-                    for extra in slot_nodes[1:]:
-                        _set_w_t_text(extra, "")
+                    keep_nodes.add(t_target)
                     if slot_run is not None:
                         old_rpr = slot_run.find(_RPR_TAG)
                         if old_rpr is not None:
@@ -326,33 +433,35 @@ def _apply_paragraph_translation(
                         tpl_rpr = groups[src_idx]["rpr_template"]
                         if tpl_rpr is not None:
                             slot_run.insert(0, copy.deepcopy(tpl_rpr))
-                assigned = {g["nodes"][0] for g in groups}
-                for t_el in all_t_elems:
-                    if t_el not in assigned:
-                        _set_w_t_text(t_el, "")
+                    slot_targets.append((t_target, slot_run, seg_text))
+                _clear_direct_units(all_units, keep_nodes=keep_nodes)
+                for t_target, slot_run, seg_text in slot_targets:
+                    _write_value_into_slot(t_target, slot_run, seg_text)
                 return
 
-            # Safe fallback when tags were reordered around hyperlinks or split irregularly:
-            # emit clean reading-order text without scrambling sentence order.
+            # Safe fallback when tags were reordered around hyperlinks or split irregularly
             plain = "".join(seg_text for _, seg_text in segments)
-            target_t = next((t for t in all_t_elems if (t.text or "").strip()), all_t_elems[0] if all_t_elems else None)
+            t_elems = [el for el, _r, _hl, _txt in all_units if el.tag == _T_TAG]
+            target_t = next((t for t in t_elems if (t.text or "").strip()), t_elems[0] if t_elems else None)
             if target_t is not None:
-                for t_el in all_t_elems:
-                    _set_w_t_text(t_el, plain if t_el is target_t else "")
+                _clear_direct_units(all_units, keep_nodes={target_t})
+                _write_value_into_slot(target_t, target_t.getparent(), plain)
                 return
 
-        # Fallback if LLM dropped/corrupted tags: strip markers and apply cleanly
         translated = strip_inline_tags(translated)
 
     final_text = f"{prefix}{translated}{suffix}"
-    t_elems = _collect_direct_t_elements(p._p)
+    t_elems = [el for el, _r, _hl, _txt in all_units if el.tag == _T_TAG]
     if t_elems:
         target_t = next((t for t in t_elems if (t.text or "").strip()), t_elems[0])
-        for t in t_elems:
-            _set_w_t_text(t, final_text if t is target_t else "")
+        _clear_direct_units(all_units, keep_nodes={target_t})
+        _write_value_into_slot(target_t, target_t.getparent(), final_text)
     elif p.runs:
+        _clear_direct_units(all_units)
         runs = list(p.runs)
-        runs[0].text = final_text
+        t_node = OxmlElement("w:t")
+        runs[0]._r.append(t_node)
+        _write_value_into_slot(t_node, runs[0]._r, final_text)
         for r in runs[1:]:
             r.text = ""
     else:
@@ -421,6 +530,7 @@ class DocxTranslator(BaseTranslator):
         target_lang, source_lang, options = self._resolve_params(
             target_lang, source_lang, options, kwargs
         )
+        is_bilingual = bool(getattr(options, "bilingual_mode", False))
 
         if progress_callback:
             progress_callback(5, 100, "Reading Word document structure...")
@@ -432,7 +542,10 @@ class DocxTranslator(BaseTranslator):
 
         if not paragraphs_to_process:
             out_path = get_smart_output_path(
-                src, target_lang=target_lang, custom_output_path=custom_output_path
+                src,
+                target_lang=target_lang,
+                is_bilingual=is_bilingual,
+                custom_output_path=custom_output_path,
             )
             saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)
             if progress_callback:
@@ -465,6 +578,19 @@ class DocxTranslator(BaseTranslator):
         for p, query, groups, prefix, suffix in prepared_items:
             translated = translation_map.get(query)
             if translated is not None:
+                if is_bilingual:
+                    orig_clone = copy.deepcopy(p._p)
+                    for tag_rm in (_DRAWING_TAG, _PICT_TAG, _SECTPR_TAG):
+                        for node in orig_clone.findall(f".//{tag_rm}"):
+                            parent = node.getparent()
+                            if parent is not None:
+                                parent.remove(node)
+                    for br in orig_clone.findall(f".//{_BR_TAG}"):
+                        if _is_structural_break(br):
+                            parent = br.getparent()
+                            if parent is not None:
+                                parent.remove(br)
+                    p._p.addprevious(orig_clone)
                 _apply_paragraph_translation(p, translated, groups=groups, prefix=prefix, suffix=suffix)
 
         if progress_callback:
@@ -474,6 +600,7 @@ class DocxTranslator(BaseTranslator):
             source_path=src,
             target_lang=target_lang,
             target_format=".docx",
+            is_bilingual=is_bilingual,
             custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)

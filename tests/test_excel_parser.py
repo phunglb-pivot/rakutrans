@@ -277,6 +277,41 @@ class TestExcelTranslator(unittest.TestCase):
         translator2.process_file(file_path=str(xlsx_path), target_lang="Vietnamese")
         self.assertGreater(mock_llm.call_count, first_calls)
 
+    def test_chartsheet_richtext_arrayformula_and_comments(self):
+        from openpyxl.cell.rich_text import CellRichText, TextBlock
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.chart import LineChart
+        from openpyxl.comments import Comment
+        from openpyxl.worksheet.formula import ArrayFormula
+        from translation_cache import TranslationCache
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "MainData"
+        ws["A1"] = CellRichText(["Hello ", TextBlock(InlineFont(b=True), "RichText")])
+        ws["A1"].comment = Comment("Cell note", "Author")
+        ws["A2"] = ArrayFormula("A2:A3", "=SUM(B2:B3)")
+        cs = wb.create_chartsheet(title="ChartTab")
+        cs.add_chart(LineChart())
+
+        xlsx_path = Path(self.temp_dir.name) / "chart_rich.xlsx"
+        wb.save(str(xlsx_path))
+        wb.close()
+
+        info = ExcelTranslator.inspect_file(str(xlsx_path))
+        self.assertEqual(info["translatable_cells"], 1)
+        self.assertEqual(info["formula_count"], 1)
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "chart_cache.db")
+        translator = ExcelTranslator(AppConfig(translation_options=TranslationOptions(bilingual_mode=True)), MockLLMManager(), cache=cache)
+        out = translator.process_file(file_path=str(xlsx_path), target_lang="Vietnamese")
+
+        out_wb = openpyxl.load_workbook(out, data_only=False)
+        self.assertEqual(out_wb["MainData"]["A1"].value, "[VI] Hello RichText")
+        self.assertEqual(out_wb["MainData"]["A1"].comment.text, "[VI] Cell note")
+        self.assertIn("MainData_Orig", out_wb.sheetnames)
+        out_wb.close()
+
 
 if __name__ == "__main__":
     unittest.main()

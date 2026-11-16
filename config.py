@@ -6,11 +6,16 @@ Handles user settings persistence, default API keys, providers, and localization
 import json
 import os
 import re
+import tempfile
+import threading
+import uuid
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, Optional, Union
 
 from model_fetcher import load_cached_models
+
+_CONFIG_IO_LOCK = threading.RLock()
 
 APP_NAME = "RakuTrans AI"
 APP_VERSION = "1.0.0"
@@ -197,8 +202,8 @@ def normalize_language_name(lang_name_or_code: Optional[str]) -> str:
         ):
             return lang.display_name
 
-    # 2. Extract content inside parentheses e.g. "Tiếng Việt (Vietnamese)" or "(English)"
-    m = re.search(r"\((.*?)\)", query)
+    # 2. Extract content inside parentheses e.g. "Tiếng Việt (Vietnamese)" or "繁體中文 (Chinese (Traditional))"
+    m = re.search(r"\((.+)\)", query)
     if m:
         inner = m.group(1).strip().lower()
         for lang in ALL_LANGUAGES:
@@ -215,9 +220,7 @@ class AppConfig:
     theme_mode: str = "dark"
     active_provider: str = "Gemini"
     api_keys: Dict[str, str] = field(default_factory=lambda: {
-        "Gemini": DEFAULT_FALLBACK_KEYS["Gemini"],
-        "OpenAI": DEFAULT_FALLBACK_KEYS["OpenAI"],
-        "Claude": DEFAULT_FALLBACK_KEYS["Claude"]
+        prov: "" for prov in AI_PROVIDERS
     })
     selected_models: Dict[str, str] = field(default_factory=lambda: {
         prov: "" for prov in AI_PROVIDERS
@@ -238,18 +241,21 @@ class AppConfig:
         self.recent_target_languages = self.recent_target_languages[:3]
 
     def get_effective_api_key(self, provider: Optional[str] = None) -> str:
-        """Returns the active API key with fallback to env vars or default fallback."""
+        """Returns the active API key with dynamic fallback to env vars."""
         target_provider = provider or self.active_provider
-        user_key = self.api_keys.get(target_provider, "").strip()
+        user_key = (self.api_keys.get(target_provider) or "").strip()
         if user_key:
             return user_key
-        
-        # Fallback to environment variable
+
+        # Fallback to environment variable dynamically so rotations/unsets take effect
         env_var = AI_PROVIDERS.get(target_provider, {}).get("env_key")
-        if env_var and os.getenv(env_var):
-            return os.getenv(env_var, "").strip()
-            
-        return DEFAULT_FALLBACK_KEYS.get(target_provider, "").strip()
+        if env_var:
+            env_val = os.getenv(env_var)
+            if env_val is not None:
+                return env_val.strip()
+            return ""
+
+        return (DEFAULT_FALLBACK_KEYS.get(target_provider) or "").strip()
 
     def get_active_model(self) -> str:
         """Returns selected model for the active provider, or first cached live model if unset."""
@@ -265,99 +271,159 @@ class AppConfig:
         return load_cached_models(prov)
 
     def save(self) -> None:
-        """Save settings to disk."""
+        """Save settings atomically and thread-safely to disk."""
+        tmp_path: Optional[Path] = None
         try:
-            CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-            data = {
-                "ui_language": self.ui_language,
-                "theme_mode": self.theme_mode,
-                "active_provider": self.active_provider,
-                "api_keys": self.api_keys,
-                "selected_models": self.selected_models,
-                "batch_size": self.batch_size,
-                "max_concurrent_requests": self.max_concurrent_requests,
-                "target_language": self.target_language,
-                "recent_target_languages": self.recent_target_languages,
-                "translation_options": asdict(self.translation_options)
-            }
-            if self.source_language:
-                data["source_language"] = self.source_language
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+            with _CONFIG_IO_LOCK:
+                CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                data = {
+                    "ui_language": self.ui_language,
+                    "theme_mode": self.theme_mode,
+                    "active_provider": self.active_provider,
+                    "api_keys": {
+                        prov: str(self.api_keys.get(prov) or "")
+                        for prov in AI_PROVIDERS
+                    },
+                    "selected_models": {
+                        prov: str(self.selected_models.get(prov) or "")
+                        for prov in AI_PROVIDERS
+                    },
+                    "batch_size": self.batch_size,
+                    "max_concurrent_requests": self.max_concurrent_requests,
+                    "target_language": self.target_language,
+                    "recent_target_languages": self.recent_target_languages,
+                    "translation_options": asdict(self.translation_options)
+                }
+                if self.source_language:
+                    data["source_language"] = self.source_language
+
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=".config_",
+                    suffix=".tmp",
+                    dir=str(CONFIG_FILE.parent),
+                )
+                tmp_path = Path(tmp_name)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass
+                os.replace(str(tmp_path), str(CONFIG_FILE))
+                tmp_path = None
         except Exception as e:
+            if tmp_path is not None and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
             print(f"[Warning] Failed to save config: {e}")
 
     @classmethod
     def load(cls) -> "AppConfig":
         """Load settings from disk or return default config."""
-        if not CONFIG_FILE.exists():
-            config = cls()
-            config.save()
-            return config
+        with _CONFIG_IO_LOCK:
+            if not CONFIG_FILE.exists():
+                config = cls()
+                config.save()
+                return config
 
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            raw_options = data.get("translation_options", {})
-            options = TranslationOptions(
-                keep_it_terms=bool(raw_options.get("keep_it_terms", True)),
-                append_original_words=bool(raw_options.get("append_original_words", False)),
-                custom_context=str(raw_options.get("custom_context", "") or ""),
-                bilingual_mode=bool(raw_options.get("bilingual_mode", False)),
-            )
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    return cls()
 
-            loaded_models = data.get("selected_models", {})
-            if not isinstance(loaded_models, dict):
-                loaded_models = {}
-            resolved_models = {
-                prov: str(loaded_models.get(prov) or "").strip()
-                for prov in AI_PROVIDERS
-            }
+                raw_options = data.get("translation_options", {})
+                if not isinstance(raw_options, dict):
+                    raw_options = {}
+                options = TranslationOptions(
+                    keep_it_terms=bool(raw_options.get("keep_it_terms", True)),
+                    append_original_words=bool(raw_options.get("append_original_words", False)),
+                    custom_context=str(raw_options.get("custom_context", "") or ""),
+                    bilingual_mode=bool(raw_options.get("bilingual_mode", False)),
+                )
 
-            raw_provider = str(data.get("active_provider", "Gemini") or "Gemini")
-            active_provider = raw_provider if raw_provider in AI_PROVIDERS else "Gemini"
+                loaded_models = data.get("selected_models", {})
+                if not isinstance(loaded_models, dict):
+                    loaded_models = {}
+                resolved_models = {
+                    prov: str(loaded_models.get(prov) or "").strip()
+                    for prov in AI_PROVIDERS
+                }
 
-            raw_target = data.get("target_language", DEFAULT_TARGET_LANGUAGE)
-            normalized_target = normalize_language_name(raw_target)
+                loaded_keys = data.get("api_keys", {})
+                if not isinstance(loaded_keys, dict):
+                    loaded_keys = {}
+                resolved_keys = {
+                    prov: str(loaded_keys.get(prov) or "").strip()
+                    for prov in AI_PROVIDERS
+                }
 
-            raw_recents = data.get("recent_target_languages")
-            if raw_recents and isinstance(raw_recents, list):
-                recents = []
-                for r in raw_recents:
-                    norm = normalize_language_name(str(r))
-                    if norm not in recents:
-                        recents.append(norm)
-                recents = recents[:3]
-            else:
-                recents = list(DEFAULT_RECENT_TARGET_LANGUAGES)
+                raw_provider = str(data.get("active_provider", "Gemini") or "Gemini")
+                active_provider = raw_provider if raw_provider in AI_PROVIDERS else "Gemini"
 
-            # Ensure the active target language is at the top of recent list
-            if normalized_target not in recents:
-                recents.insert(0, normalized_target)
-                recents = recents[:3]
+                raw_ui_lang = str(data.get("ui_language", "en") or "en")
+                ui_language = raw_ui_lang if raw_ui_lang in UI_LANGUAGES else "en"
 
-            config = cls(
-                ui_language=data.get("ui_language", "en"),
-                theme_mode=data.get("theme_mode", "dark"),
-                active_provider=active_provider,
-                api_keys={
-                    "Gemini": data.get("api_keys", {}).get("Gemini", DEFAULT_FALLBACK_KEYS["Gemini"]),
-                    "OpenAI": data.get("api_keys", {}).get("OpenAI", DEFAULT_FALLBACK_KEYS["OpenAI"]),
-                    "Claude": data.get("api_keys", {}).get("Claude", DEFAULT_FALLBACK_KEYS["Claude"])
-                },
-                selected_models=resolved_models,
-                batch_size=max(1, int(data.get("batch_size", 60) or 60)),
-                max_concurrent_requests=max(1, min(int(data.get("max_concurrent_requests", 2) or 2), 5)),
-                target_language=normalized_target,
-                recent_target_languages=recents,
-                source_language=data.get("source_language", None),
-                translation_options=options
-            )
-            return config
-        except Exception as e:
-            print(f"[Warning] Failed to load config, using defaults: {e}")
-            return cls()
+                raw_theme = str(data.get("theme_mode", "dark") or "dark").lower()
+                theme_mode = raw_theme if raw_theme in ("dark", "light", "system") else "dark"
+
+                try:
+                    batch_size = max(1, int(data.get("batch_size", 60) or 60))
+                except (TypeError, ValueError):
+                    batch_size = 60
+
+                try:
+                    max_concurrent_requests = max(
+                        1, min(int(data.get("max_concurrent_requests", 2) or 2), 5)
+                    )
+                except (TypeError, ValueError):
+                    max_concurrent_requests = 2
+
+                raw_target = data.get("target_language", DEFAULT_TARGET_LANGUAGE)
+                normalized_target = normalize_language_name(
+                    raw_target if isinstance(raw_target, str) else DEFAULT_TARGET_LANGUAGE
+                )
+
+                raw_recents = data.get("recent_target_languages")
+                if raw_recents and isinstance(raw_recents, list):
+                    recents = []
+                    for r in raw_recents:
+                        norm = normalize_language_name(str(r))
+                        if norm not in recents:
+                            recents.append(norm)
+                    recents = recents[:3]
+                else:
+                    recents = list(DEFAULT_RECENT_TARGET_LANGUAGES)
+
+                # Ensure the active target language is at the top of recent list
+                if normalized_target not in recents:
+                    recents.insert(0, normalized_target)
+                    recents = recents[:3]
+
+                raw_source = data.get("source_language", None)
+                source_language = str(raw_source).strip() if isinstance(raw_source, str) and raw_source.strip() else None
+
+                config = cls(
+                    ui_language=ui_language,
+                    theme_mode=theme_mode,
+                    active_provider=active_provider,
+                    api_keys=resolved_keys,
+                    selected_models=resolved_models,
+                    batch_size=batch_size,
+                    max_concurrent_requests=max_concurrent_requests,
+                    target_language=normalized_target,
+                    recent_target_languages=recents,
+                    source_language=source_language,
+                    translation_options=options
+                )
+                return config
+            except Exception as e:
+                print(f"[Warning] Failed to load config, using defaults: {e}")
+                return cls()
 
 
 # -------------------------------------------------------------------------
@@ -436,7 +502,7 @@ def get_unique_output_path(target_path: Path) -> Path:
             return candidate
         counter += 1
         if counter > 1000:
-            return candidate
+            return parent / f"{base_stem} ({uuid.uuid4().hex[:8]}){suffix}"
 
 
 def get_smart_output_path(
@@ -463,8 +529,8 @@ def get_smart_output_path(
     src = Path(source_path)
     parent = src.parent
     src_stem = src.stem
-    suffix = (target_format if target_format else src.suffix)
-    if not suffix.startswith("."):
+    suffix = (target_format if target_format else src.suffix).strip()
+    if suffix and not suffix.startswith("."):
         suffix = f".{suffix}"
 
     if target_lang:

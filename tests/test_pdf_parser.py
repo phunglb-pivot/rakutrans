@@ -177,6 +177,31 @@ class TestPdfParser(unittest.TestCase):
         self.assertEqual(cleaned.paragraphs[0].text, "AIが判断する")
         self.assertEqual(cleaned.paragraphs[1].text, "Hello world")
 
+    def test_soft_break_dehyphenation_and_scanned_watermark_heuristic(self):
+        from docx import Document
+        from PIL import Image
+        from reportlab.pdfgen import canvas as rl_canvas
+        from pdf_parser import _clean_pdf2docx_soft_breaks, _is_scanned_image_pdf
+
+        docx_path = self.tmp_path / "hyphen_br.docx"
+        doc = Document()
+        p = doc.add_paragraph()
+        p.add_run("trans-").add_break()
+        p.add_run("lation")
+        doc.save(str(docx_path))
+        _clean_pdf2docx_soft_breaks(docx_path)
+        self.assertEqual(Document(str(docx_path)).paragraphs[0].text, "translation")
+
+        # Image PDF with only page number "1" should still be flagged as scanned
+        img_path = self.tmp_path / "scan_wm.png"
+        Image.new("RGB", (100, 100), color="white").save(img_path)
+        wm_pdf = self.tmp_path / "scanned_wm.pdf"
+        c = rl_canvas.Canvas(str(wm_pdf))
+        c.drawImage(str(img_path), 50, 500, width=100, height=100)
+        c.drawString(300, 20, "1")
+        c.save()
+        self.assertTrue(_is_scanned_image_pdf(wm_pdf))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -137,6 +137,7 @@ class ConfirmModal(BaseModal):
             command=self.close_modal
         )
         self.cancel_btn.pack(side="right")
+        self.cancel_btn.bind("<Return>", lambda e: (self.close_modal(), "break")[1])
         self.cancel_btn.focus_set()
 
     def _handle_confirm(self):

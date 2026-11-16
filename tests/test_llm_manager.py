@@ -549,6 +549,235 @@ class TestLLMManager(unittest.TestCase):
             self.assertEqual(dummy_402.calls, 1)
             mock_sleep.assert_not_called()
 
+    def test_first_run_cache_model_id_matches_subsequent_runs(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        import config as config_mod
+        import model_fetcher
+        from translation_cache import TranslationCache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
+                 patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
+                 patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+                 patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
+                cfg = AppConfig()
+                cfg.active_provider = "OpenAI"
+                cfg.api_keys["OpenAI"] = "sk-test-key"
+                cfg.selected_models["OpenAI"] = ""
+
+                mgr = LLMManager(cfg)
+                client_calls = {"count": 0}
+
+                def _fake_complete(sys_p, usr_p, model_name, is_json=True):
+                    client_calls["count"] += 1
+                    items = json.loads(usr_p.split(":\n", 1)[1])
+                    return json.dumps({"translations": [{"i": it["i"], "t": f"VI:{it['t']}"} for it in items]})
+
+                mgr._get_client = lambda: SimpleNamespace(generate_completion=_fake_complete)
+                cache = TranslationCache(db_path=tmp_path / "cache.db")
+                translator = _DummyTranslator(cfg, mgr, cache=cache)
+
+                with patch("llm_manager.fetch_live_models", return_value=["gpt-live-first"]):
+                    res1 = translator.translate_unique_texts(
+                        ["Hello", "World"],
+                        target_lang="Vietnamese",
+                        source_lang="English",
+                        options=TranslationOptions(),
+                    )
+                    self.assertEqual(res1, {"Hello": "VI:Hello", "World": "VI:World"})
+                    self.assertEqual(client_calls["count"], 1)
+
+                    # Second run must hit cache 100% with matching OpenAI:gpt-live-first key
+                    res2 = translator.translate_unique_texts(
+                        ["Hello", "World"],
+                        target_lang="Vietnamese",
+                        source_lang="English",
+                        options=TranslationOptions(),
+                    )
+                    self.assertEqual(res2, {"Hello": "VI:Hello", "World": "VI:World"})
+                    self.assertEqual(client_calls["count"], 1)
+
+    def test_cancel_returns_promptly_without_waiting_for_slow_worker(self):
+        import tempfile
+        import threading
+        import time
+        from pathlib import Path
+        from translation_cache import TranslationCache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = AppConfig(batch_size=5, max_concurrent_requests=2)
+            mgr = LLMManager(cfg)
+            cache = TranslationCache(db_path=Path(tmpdir) / "cancel_cache.db")
+            translator = _DummyTranslator(cfg, mgr, cache=cache)
+
+            started = threading.Event()
+            release_slow = threading.Event()
+
+            def _slow_translate_batch(texts, **kwargs):
+                cancel_check = kwargs.get("cancel_check")
+                if texts[0] == "item 0":
+                    started.set()
+                    release_slow.wait(timeout=3.0)
+                else:
+                    started.wait(timeout=1.0)
+                    translator.cancel()
+                    if cancel_check and cancel_check():
+                        raise InterruptedError("cancelled")
+                return [f"T:{t}" for t in texts]
+
+            mgr.translate_batch = _slow_translate_batch
+
+            t0 = time.monotonic()
+            with self.assertRaises(InterruptedError):
+                translator.translate_unique_texts(
+                    [f"item {i}" for i in range(10)],
+                    target_lang="Vietnamese",
+                    source_lang="English",
+                    options=TranslationOptions(),
+                )
+            elapsed = time.monotonic() - t0
+            self.assertLess(elapsed, 1.0)
+            release_slow.set()
+
+    def test_format_error_splits_immediately_without_wasted_retries(self):
+        import json
+        cfg = AppConfig()
+        manager = LLMManager(cfg)
+        calls = []
+
+        class _TruncatingClient:
+            def generate_completion(self, sys_p, usr_p, model_name, is_json=True):
+                items = json.loads(usr_p.split(":\n", 1)[1])
+                calls.append(len(items))
+                if len(items) > 1:
+                    raise LLMError("Truncated", is_format_error=True)
+                return json.dumps({"translations": [{"i": 0, "t": f"OK:{items[0]['t']}"}]})
+
+        manager._get_client = lambda: _TruncatingClient()
+        manager._min_interval = 0.0
+        with patch("llm_manager.time.sleep") as mock_sleep:
+            res = manager.translate_batch(["A", "B"], target_lang="Vietnamese")
+        self.assertEqual(res, ["OK:A", "OK:B"])
+        self.assertEqual(calls, [2, 1, 1])
+        mock_sleep.assert_not_called()
+
+    @patch("llm_manager.time.sleep")
+    def test_separate_retry_budgets_and_no_cooldown_leak_on_failure(self, _mock_sleep):
+        cfg = AppConfig()
+        manager = LLMManager(cfg)
+        dummy_client = _DummyClient([
+            Exception("429 RESOURCE_EXHAUSTED"),
+            Exception("429 Too Many Requests"),
+            Exception("500 Internal Server Error"),
+            '["Thành công"]',
+        ])
+        manager._get_client = lambda: dummy_client
+        res = manager.translate_batch(["Success"], target_lang="Vietnamese")
+        self.assertEqual(res, ["Thành công"])
+        self.assertEqual(dummy_client.calls, 4)
+
+        # Exhausting rate-limit retries must not leave a multi-second cooldown stuck for next run
+        manager2 = LLMManager(cfg)
+        failing_client = _DummyClient([Exception("429 Too Many Requests")] * 5)
+        manager2._get_client = lambda: failing_client
+        with self.assertRaises(LLMError):
+            manager2.translate_batch(["Fail"], target_lang="Vietnamese")
+        self.assertLessEqual(manager2._cooldown_until, 0.0)
+
+    def test_acquire_request_slot_rechecks_extended_cooldown(self):
+        import threading
+        import time
+
+        cfg = AppConfig()
+        manager = LLMManager(cfg)
+        manager._record_rate_limit(0.08)
+        finished_at = []
+
+        def _waiter():
+            manager._acquire_request_slot()
+            finished_at.append(time.monotonic())
+
+        t_start = time.monotonic()
+        t = threading.Thread(target=_waiter)
+        t.start()
+        time.sleep(0.03)
+        manager._record_rate_limit(0.20)
+        t.join(timeout=2.0)
+
+        self.assertEqual(len(finished_at), 1)
+        self.assertGreaterEqual(finished_at[0] - t_start, 0.18)
+
+    def test_clean_json_text_skips_numeric_markers_and_preserves_string_commas(self):
+        import json
+
+        marked = '[1] {"translations": [{"i": 0, "t": "Xin chào"}]}'
+        parsed_marked = json.loads(clean_json_text(marked))
+        self.assertEqual(parsed_marked["translations"][0]["t"], "Xin chào")
+
+        str_list_marked = '[1] ["Xin chào"]'
+        self.assertEqual(json.loads(clean_json_text(str_list_marked)), ["Xin chào"])
+
+        comma_in_str = '{"translations": [{"i": 0, "t": "keep , } intact"}],}'
+        parsed_comma = json.loads(clean_json_text(comma_in_str))
+        self.assertEqual(parsed_comma["translations"][0]["t"], "keep , } intact")
+
+    def test_gemini_client_llm_error_no_cause_cycle_and_markdown_split_on_truncation(self):
+        from llm_manager import GeminiClient
+
+        gm = GeminiClient("test-key")
+        gm._call_gemini = lambda *a, **kw: (_ for _ in ()).throw(
+            LLMError("Gemini response truncated (finish_reason=MAX_TOKENS).", is_format_error=True)
+        )
+        with self.assertRaises(LLMError) as ctx:
+            gm.generate_completion("sys", "usr", "gemini-2.5-flash")
+        self.assertIsNot(ctx.exception.__cause__, ctx.exception)
+
+        cfg = AppConfig()
+        mgr = LLMManager(cfg)
+
+        def _split_md_complete(sys_p, usr_p, model_name, is_json=False):
+            if "Part Two" in usr_p and "Part One" in usr_p:
+                raise LLMError("Truncated", is_format_error=True)
+            return f"VI:{usr_p}"
+
+        mgr._get_client = lambda: SimpleNamespace(generate_completion=_split_md_complete)
+        out = mgr.translate_markdown_text(
+            "Part One is long enough to split safely.\n\nPart Two is also long enough.",
+            target_lang="Vietnamese",
+        )
+        self.assertEqual(out, "VI:Part One is long enough to split safely.\n\nVI:Part Two is also long enough.")
+
+    def test_claude_client_streaming_fallback_on_value_error(self):
+        from llm_manager import ClaudeClient
+
+        final_msg = SimpleNamespace(
+            stop_reason="end_turn",
+            content=[SimpleNamespace(type="text", text="Streamed OK")],
+        )
+
+        class _FakeStreamCtx:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get_final_message(self):
+                return final_msg
+
+        fake_messages = SimpleNamespace(
+            create=lambda **kw: (_ for _ in ()).throw(ValueError("Streaming is required for operations that may take longer than 10 minutes")),
+            stream=lambda **kw: _FakeStreamCtx(),
+        )
+        cc = ClaudeClient("sk-ant-test")
+        cc._model_max_tokens["claude-test"] = 64000
+        cc._get_client = lambda: SimpleNamespace(messages=fake_messages)
+
+        self.assertEqual(cc.generate_completion("sys", "usr", "claude-test", is_json=False), "Streamed OK")
+
 
 if __name__ == "__main__":
     unittest.main()

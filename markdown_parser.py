@@ -5,7 +5,6 @@ intact, splits oversized tables strictly at row boundaries without breaking tabl
 and preserves exact inter-block separators.
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import re
 from typing import List, Tuple, Callable, Optional
@@ -20,13 +19,25 @@ from config import AppConfig, TranslationOptions, get_smart_output_path
 from llm_manager import LLMManager
 from translation_cache import TranslationCache
 
-try:
-    from markitdown import MarkItDown
-    HAS_MARKITDOWN = True
-except ImportError:
-    HAS_MARKITDOWN = False
+# Backtick fence info strings cannot contain backticks (CommonMark spec),
+# preventing lines starting with inline ```code``` spans from hijacking tokenization.
+_FENCE_OPEN_RE = re.compile(r"^\s*(?:(`{3,})([^`]*)|(~{3,})(.*))$")
 
-_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+def match_code_fence_open(line: str) -> Optional[Tuple[str, int]]:
+    """Returns (fence_char, fence_len) if line opens a fenced code block, else None."""
+    m = _FENCE_OPEN_RE.match(line)
+    if not m:
+        return None
+    fence_seq = m.group(1) or m.group(3)
+    return fence_seq[0], len(fence_seq)
+
+
+def _has_translatable_markdown(chunk_text: str) -> bool:
+    """Returns True if chunk contains at least one non-empty prose/heading/table block outside code fences."""
+    if not chunk_text or not chunk_text.strip():
+        return False
+    return any(kind != "code_fence" and block_text.strip() for kind, block_text, _ in _tokenize_markdown_blocks(chunk_text))
 
 
 def safe_save_markdown(content: str, target_path: Path) -> Path:
@@ -71,11 +82,9 @@ def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
                 blocks.append(("prose", "", "\n" * blank_count))
             continue
 
-        fence_m = _FENCE_OPEN_RE.match(lines[i])
-        if fence_m:
-            fence_seq = fence_m.group(1)
-            fence_char = fence_seq[0]
-            fence_len = len(fence_seq)
+        fence_open = match_code_fence_open(lines[i])
+        if fence_open:
+            fence_char, fence_len = fence_open
             close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
 
             buf = [lines[i]]
@@ -116,7 +125,7 @@ def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
         buf = [lines[i]]
         i += 1
         while i < n:
-            if not lines[i].strip() or _FENCE_OPEN_RE.match(lines[i]) or _is_table_line(lines[i]):
+            if not lines[i].strip() or match_code_fence_open(lines[i]) or _is_table_line(lines[i]):
                 break
             buf.append(lines[i])
             i += 1
@@ -147,12 +156,6 @@ class MarkdownTranslator(BaseTranslator):
         cache: Optional[TranslationCache] = None,
     ):
         super().__init__(config, llm_manager, cache)
-        self._markitdown = None
-        if HAS_MARKITDOWN:
-            try:
-                self._markitdown = MarkItDown()
-            except Exception:
-                self._markitdown = None
 
     @classmethod
     def inspect_file(cls, file_path: str) -> dict:
@@ -226,7 +229,14 @@ class MarkdownTranslator(BaseTranslator):
         pending_sep = ""
 
         for unit_text, unit_sep in atomic_units:
-            if not buf_text:
+            if not buf_text and not pending_sep:
+                buf_text = unit_text
+                pending_sep = unit_sep
+                continue
+
+            if not buf_text and pending_sep:
+                # Preserve leading blank lines from blocks[0] == ("prose", "", "\n...")
+                chunks.append(("", pending_sep))
                 buf_text = unit_text
                 pending_sep = unit_sep
                 continue
@@ -294,88 +304,30 @@ class MarkdownTranslator(BaseTranslator):
 
         chunk_specs = self._split_into_chunk_specs(content)
         total_chunks = len(chunk_specs)
-        translated_chunks: List[Optional[str]] = [None] * total_chunks
+        section_inputs = [
+            chunk_text for chunk_text, _ in chunk_specs if _has_translatable_markdown(chunk_text)
+        ]
 
-        translatable_indices: List[int] = []
-        translatable_inputs: List[str] = []
-        for idx, (chunk_text, _) in enumerate(chunk_specs):
-            if not chunk_text.strip():
-                translated_chunks[idx] = chunk_text
-            else:
-                translatable_indices.append(idx)
-                translatable_inputs.append(chunk_text)
+        def _on_cache_checked(cache_hits: int, _total_unique: int) -> None:
+            if progress_callback:
+                progress_callback(
+                    5,
+                    100,
+                    f"Prepared {total_chunks} sections ({cache_hits} from memory cache)...",
+                )
 
-        model_id = self._get_cache_model_id()
-        cached_map, uncached_items = self.cache.get_batch(
-            texts=translatable_inputs,
+        section_map = self.translate_unique_sections(
+            sections=section_inputs,
             target_lang=target_lang,
-            options=options,
             source_lang=source_lang,
+            options=options,
             mode="markdown",
-            model_id=model_id,
+            plain_text=False,
+            progress_callback=progress_callback,
+            progress_start=10,
+            progress_span=80,
+            on_cache_checked=_on_cache_checked,
         )
-
-        for local_idx, trans_val in cached_map.items():
-            translated_chunks[translatable_indices[local_idx]] = trans_val
-
-        cache_hits = len(cached_map)
-        completed_count = cache_hits
-        total_translatable = len(translatable_inputs)
-
-        if progress_callback:
-            progress_callback(
-                5,
-                100,
-                f"Prepared {total_chunks} sections ({cache_hits} from memory cache)...",
-            )
-
-        if uncached_items:
-            def translate_single_chunk(item: Tuple[int, str]) -> Tuple[int, str]:
-                local_idx, chunk_text = item
-                if self._is_cancelled:
-                    raise InterruptedError("Translation was cancelled by user.")
-
-                trans = self.llm_manager.translate_markdown_text(
-                    markdown_text=chunk_text,
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    cancel_check=lambda: self._is_cancelled,
-                )
-                self.cache.save_batch(
-                    source_texts=[chunk_text],
-                    translated_texts=[trans],
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    mode="markdown",
-                    model_id=model_id,
-                )
-                return local_idx, trans
-
-            max_workers = self.get_max_workers(len(uncached_items))
-
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                future_to_chunk = {
-                    executor.submit(translate_single_chunk, item): item[0]
-                    for item in uncached_items
-                }
-
-                for future in as_completed(future_to_chunk):
-                    if self._is_cancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
-                        raise InterruptedError("Translation was cancelled by user.")
-
-                    local_idx, trans = future.result()
-                    translated_chunks[translatable_indices[local_idx]] = trans
-                    completed_count += 1
-                    pct = 10 + int((completed_count / max(1, total_translatable)) * 80)
-                    if progress_callback:
-                        progress_callback(
-                            pct,
-                            100,
-                            f"Section {completed_count}/{total_translatable} completed ({cache_hits} cached)...",
-                        )
 
         if self._is_cancelled:
             raise InterruptedError("Translation was cancelled by user.")
@@ -384,9 +336,11 @@ class MarkdownTranslator(BaseTranslator):
             progress_callback(95, 100, "Saving translated markdown document...")
 
         parts: List[str] = []
-        for idx, (orig_chunk, sep_after) in enumerate(chunk_specs):
-            t_val = translated_chunks[idx]
-            parts.append(orig_chunk if t_val is None else t_val)
+        for orig_chunk, sep_after in chunk_specs:
+            if not orig_chunk.strip():
+                parts.append(orig_chunk)
+            else:
+                parts.append(section_map.get(orig_chunk, orig_chunk))
             if sep_after:
                 parts.append(sep_after)
         final_markdown = "".join(parts)

@@ -9,6 +9,7 @@ from functools import lru_cache
 import math
 from pathlib import Path
 import platform
+import sys
 from typing import Optional, Tuple, Union
 
 import customtkinter as ctk
@@ -414,22 +415,28 @@ def get_provider_icon(provider: str, color: ColorPair = "default", size: int = 1
 _APP_USER_MODEL_ID = "RakuTrans.AI.Desktop"
 
 
+_APP_ID_INITIALIZED = False
+
+
 def init_windows_app_id():
     """
     Sets a dedicated Windows AppUserModelID before any Tk window is created so the
     Windows Taskbar displays RakuTrans's own icon instead of grouping under python.exe.
     """
-    if platform.system() != "Windows":
+    global _APP_ID_INITIALIZED
+    if _APP_ID_INITIALIZED or platform.system() != "Windows":
         return
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
+        _APP_ID_INITIALIZED = True
     except Exception:
         pass
 
 
 def get_assets_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "assets"
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base_dir / "assets"
 
 
 def apply_windows_window_icon(window, ico_path: Optional[Path] = None):
@@ -469,6 +476,18 @@ def apply_windows_window_icon(window, ico_path: Optional[Path] = None):
             ICON_SMALL = 0
             ICON_BIG = 1
 
+            def _destroy_win32_hicons(handles):
+                for hicon in handles:
+                    if hicon:
+                        try:
+                            user32.DestroyIcon(hicon)
+                        except Exception:
+                            pass
+
+            old_handles = getattr(window, "_win32_hicons", None)
+            if old_handles:
+                _destroy_win32_hicons(old_handles)
+
             hicon_big = user32.LoadImageW(None, str(target_ico), IMAGE_ICON, 256, 256, LR_LOADFROMFILE)
             if not hicon_big:
                 hicon_big = user32.LoadImageW(None, str(target_ico), IMAGE_ICON, 48, 48, LR_LOADFROMFILE)
@@ -478,6 +497,15 @@ def apply_windows_window_icon(window, ico_path: Optional[Path] = None):
                 user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon_big)
             if hicon_small:
                 user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon_small)
+
+            window._win32_hicons = [h for h in (hicon_big, hicon_small) if h]
+            if not getattr(window, "_win32_hicon_cleanup_bound", False):
+                def _on_window_destroy(event):
+                    if event.widget is window:
+                        _destroy_win32_hicons(getattr(window, "_win32_hicons", []))
+                        window._win32_hicons = []
+                window.bind("<Destroy>", _on_window_destroy, add="+")
+                window._win32_hicon_cleanup_bound = True
         except Exception:
             pass
 

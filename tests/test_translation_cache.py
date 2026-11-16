@@ -109,6 +109,33 @@ class TestTranslationCache(unittest.TestCase):
         self.assertEqual(len(hit), 950)
         self.assertEqual(miss, [(950, "term_new")])
 
+    def test_concurrent_wal_saves_and_reads(self):
+        import threading
+
+        opts = TranslationOptions()
+        errors = []
+
+        def _worker(tid: int):
+            try:
+                for j in range(5):
+                    key = f"src_{tid}_{j}"
+                    val = f"tgt_{tid}_{j}"
+                    self.cache.save_batch([key], [val], target_lang="Vietnamese", options=opts)
+                    hit, _ = self.cache.get_batch([key], target_lang="Vietnamese", options=opts)
+                    if hit.get(0) != val:
+                        raise AssertionError(f"Expected {val}, got {hit}")
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker, args=(i,)) for i in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(self.cache.count(), 30)
+
 
 if __name__ == "__main__":
     unittest.main()

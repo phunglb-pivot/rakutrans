@@ -66,6 +66,31 @@ class TestTranslatorRegistry(unittest.TestCase):
         res = TranslatorRegistry.inspect("nonexistent_file_path.docx")
         self.assertIn("error", res)
 
+    def test_extensionless_path_not_prefixed_with_dot_and_thread_safe(self):
+        import threading
+
+        self.assertFalse(TranslatorRegistry.is_supported("/tmp/README"))
+        with self.assertRaises(ValueError) as ctx:
+            TranslatorRegistry.get_translator_class("/tmp/README")
+        self.assertNotIn("./tmp/readme", str(ctx.exception))
+
+        errors = []
+        results = []
+
+        def _worker():
+            try:
+                results.append(TranslatorRegistry.is_supported("report.xlsx"))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [True] * 8)
+
 
 if __name__ == "__main__":
     unittest.main()

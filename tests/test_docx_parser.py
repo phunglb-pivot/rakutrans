@@ -213,6 +213,53 @@ class TestDocxTranslator(unittest.TestCase):
         self.assertEqual(out_doc.paragraphs[1].text, "TR:ABC")
         self.assertEqual(out_doc.paragraphs[2].text, "Đậm đuôi")
 
+    def test_tabs_soft_breaks_content_controls_and_bilingual_mode(self):
+        from docx.oxml import OxmlElement, parse_xml
+        from docx.oxml.ns import nsdecls
+        from config import TranslationOptions
+
+        doc_path = Path(self.temp_dir.name) / "controls_tabs.docx"
+        doc = Document()
+
+        # Paragraph with tab and soft break
+        p = doc.add_paragraph()
+        r_bold = p.add_run("Title")
+        r_bold.bold = True
+        r_bold.add_tab()
+        p.add_run("Value")
+        p.runs[-1].add_break()
+        p.add_run("Next line")
+
+        # Content control (<w:sdt><w:sdtContent><w:p>...</w:p></w:sdtContent></w:sdt>)
+        sdt_xml = parse_xml(
+            f'<w:sdt {nsdecls("w")}><w:sdtContent><w:p><w:r><w:t>SDT Text</w:t></w:r></w:p></w:sdtContent></w:sdt>'
+        )
+        doc.element.body.append(sdt_xml)
+        doc.save(str(doc_path))
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "docx_ctrl_cache.db")
+        translator = DocxTranslator(AppConfig(), MockLLMManager(), cache=cache)
+        out = translator.process_file(
+            file_path=str(doc_path),
+            target_lang="Vietnamese",
+            options=TranslationOptions(bilingual_mode=True),
+        )
+        self.assertTrue(out.endswith("_vi_bilingual.docx"))
+
+        out_doc = Document(out)
+        # Bilingual keeps original paragraph AND translated paragraph right below it
+        body_texts = [par.text for par in out_doc.paragraphs]
+        self.assertIn("Title\tValue\nNext line", body_texts)
+        self.assertTrue(any("[Vietnamese]" in t and "\t" in t and "\n" in t for t in body_texts))
+        # Verify genuine <w:tab/> and <w:br/> elements were emitted (not duplicated or collapsed)
+        translated_p = next(par for par in out_doc.paragraphs if "[Vietnamese]" in par.text and "\t" in par.text)
+        self.assertEqual(len(translated_p._p.xpath(".//w:tab")), 1)
+        self.assertEqual(len(translated_p._p.xpath(".//w:br")), 1)
+        # Verify SDT text translated too
+        sdt_texts = [el.text for el in out_doc.element.body.xpath(".//w:sdtContent//w:t") if el.text]
+        self.assertIn("SDT Text", sdt_texts)
+        self.assertTrue(any("[Vietnamese] SDT Text" in s for s in sdt_texts))
+
 
 if __name__ == "__main__":
     unittest.main()

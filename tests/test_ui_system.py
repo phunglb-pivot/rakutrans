@@ -156,6 +156,122 @@ class TestUISystem(unittest.TestCase):
             self.assertIn((32, 32), ico_img.ico.sizes())
         root.destroy()
 
+    def test_custom_button_text_sync_and_destroy_cancels_spinner(self):
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        btn = CustomButton(root, text="Initial")
+        btn.pack()
+        btn.configure(text="Updated")
+        self.assertEqual(btn._raw_text, "Updated")
+
+        btn.start_loading("Working")
+        self.assertTrue(btn._is_loading)
+        self.assertIsNotNone(btn._loading_after_id)
+        btn.destroy()
+        self.assertFalse(btn._is_loading)
+        self.assertIsNone(btn._loading_after_id)
+        root.update()
+        root.destroy()
+
+    def test_confirm_modal_enter_on_cancel_closes_instead_of_confirming(self):
+        import customtkinter as ctk
+
+        root = ctk.CTk()
+        confirmed = []
+        modal = ConfirmModal(root, on_confirm=lambda: confirmed.append(True), get_translation=lambda k, **kw: k)
+        modal.update()
+        modal.cancel_btn.focus_set()
+        modal.cancel_btn.event_generate("<Return>")
+        root.update()
+
+        self.assertEqual(confirmed, [])
+        self.assertTrue(modal._closed)
+        root.destroy()
+
+    def test_dropzone_splitlist_directory_guard_and_inspection_race(self):
+        import tempfile
+        from pathlib import Path
+        import customtkinter as ctk
+        from components.dnd_zone import DropZone
+
+        root = ctk.CTk()
+        invalid_calls = []
+        selected = []
+        dz = DropZone(
+            root,
+            on_file_selected=lambda p: selected.append(p),
+            get_translation=lambda k, **kw: k,
+            on_invalid_file=lambda msg, p: invalid_calls.append((msg, p)),
+        )
+        dz.pack()
+
+        parsed = dz._parse_drop_paths("{/tmp/dir with spaces/a.docx} {/tmp/b.pdf}")
+        self.assertEqual(parsed, ["/tmp/dir with spaces/a.docx", "/tmp/b.pdf"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dz.set_file(tmpdir)
+            self.assertIsNone(dz.selected_file)
+            self.assertEqual(len(invalid_calls), 1)
+
+            f1 = Path(tmpdir) / "doc.txt"
+            f1.write_text("hello", encoding="utf-8")
+            dz.set_file(str(f1))
+            tok1 = dz._inspect_token
+            dz.clear()
+            dz._on_inspection_ready(tok1, str(f1.resolve()), ".txt", {"line_count": 1, "word_count": 1, "char_count": 5})
+            self.assertEqual(dz.inspector_label.cget("text"), "")
+
+        dz.destroy()
+        root.destroy()
+
+    def test_settings_key_debounce_and_provider_race(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import customtkinter as ctk
+        import config as config_mod
+        import model_fetcher
+        from config import AppConfig
+        from components.settings_modal import SettingsView
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
+                 patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
+                 patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+                 patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"), \
+                 patch("components.settings_modal.fetch_models_async") as mock_fetch:
+                cfg = AppConfig()
+                root = ctk.CTk()
+                sv = SettingsView(
+                    root,
+                    config=cfg,
+                    get_translation=lambda k, **kw: k,
+                    on_save_callback=lambda c: None,
+                    on_close_callback=lambda: None,
+                )
+                root.update()
+                mock_fetch.assert_not_called()
+
+                sv.refresh_values()
+                self.assertFalse(sv._key_save_pending)
+
+                sv.key_var.set("sk-live-123")
+                self.assertEqual(cfg.api_keys[cfg.active_provider], "sk-live-123")
+                self.assertTrue(sv._key_save_pending)
+
+                old_fetch_id = sv._fetch_request_id
+                old_conn_id = sv._test_conn_request_id
+                sv.fetch_btn.start_loading("fetching")
+                sv._on_provider_changed("OpenAI")
+                self.assertGreater(sv._fetch_request_id, old_fetch_id)
+                self.assertGreater(sv._test_conn_request_id, old_conn_id)
+                self.assertFalse(sv.fetch_btn._is_loading)
+
+                sv.destroy()
+                root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

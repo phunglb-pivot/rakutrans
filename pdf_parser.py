@@ -44,12 +44,18 @@ from format_converter import pdf_to_docx, docx_to_pdf, _is_cjk_char
 def _clean_pdf2docx_soft_breaks(docx_path: Path) -> None:
     """
     Removes visual line-wrap <w:br/> tags inside intermediate DOCX paragraphs produced by pdf2docx
-    (while keeping page/column breaks intact) so split words and sentences translate continuously.
+    (while keeping page/column breaks and consecutive blank-line breaks intact) and de-hyphenates
+    split ASCII words so sentences translate continuously.
     """
     try:
         from docx import Document
         from docx.oxml import OxmlElement
         from docx.oxml.ns import qn
+
+        w_br_tag = qn("w:br")
+        w_t_tag = qn("w:t")
+        w_type_attr = qn("w:type")
+        xml_space_attr = qn("xml:space")
 
         doc = Document(str(docx_path))
         changed = False
@@ -57,34 +63,68 @@ def _clean_pdf2docx_soft_breaks(docx_path: Path) -> None:
             brs = p._p.xpath(".//w:br")
             if not brs:
                 continue
-            for br in brs:
-                br_type = br.get(qn("w:type"))
+
+            # Walk paragraph XML once in document order instead of recomputing list(p._p.iter()) per <w:br>
+            all_nodes = list(p._p.iter())
+            t_positions = [idx for idx, nd in enumerate(all_nodes) if nd.tag == w_t_tag]
+            br_positions = {id(nd): idx for idx, nd in enumerate(all_nodes) if nd.tag == w_br_tag}
+
+            for b_idx, br in enumerate(brs):
+                br_type = br.get(w_type_attr)
                 if br_type in ("page", "column"):
                     continue
                 parent_r = br.getparent()
                 if parent_r is None:
                     continue
-                # Find adjacent text around this break inside paragraph
-                all_nodes = list(p._p.iter())
-                try:
-                    br_pos = all_nodes.index(br)
-                except ValueError:
+                br_pos = br_positions.get(id(br))
+                if br_pos is None:
                     continue
-                prev_char = ""
-                for node in reversed(all_nodes[:br_pos]):
-                    if node.tag == qn("w:t") and node.text:
-                        prev_char = node.text[-1]
+
+                # Preserve consecutive <w:br/> breaks used as intentional blank lines
+                if b_idx > 0:
+                    prev_br_pos = br_positions.get(id(brs[b_idx - 1]))
+                    if prev_br_pos is not None and not any(
+                        prev_br_pos < tp < br_pos and (all_nodes[tp].text or "").strip()
+                        for tp in t_positions
+                    ):
+                        continue
+
+                prev_t = None
+                for tp in reversed(t_positions):
+                    if tp < br_pos and all_nodes[tp].text:
+                        prev_t = all_nodes[tp]
                         break
-                next_char = ""
-                for node in all_nodes[br_pos + 1 :]:
-                    if node.tag == qn("w:t") and node.text:
-                        next_char = node.text[0]
+
+                next_t = None
+                for tp in t_positions:
+                    if tp > br_pos and all_nodes[tp].text:
+                        next_t = all_nodes[tp]
                         break
-                if prev_char and next_char:
+
+                if prev_t is not None and next_t is not None:
+                    prev_text = prev_t.text or ""
+                    next_text = next_t.text or ""
+                    prev_char = prev_text[-1]
+                    next_char = next_text[0]
+
+                    # De-hyphenate wrapped English/Latin words like "trans-\nlation" -> "translation"
+                    if (
+                        len(prev_text) >= 2
+                        and prev_char == "-"
+                        and prev_text[-2].isascii()
+                        and prev_text[-2].isalpha()
+                        and next_char.isascii()
+                        and next_char.islower()
+                    ):
+                        prev_t.text = prev_text[:-1]
+                        parent_r.remove(br)
+                        changed = True
+                        continue
+
                     if not prev_char.isspace() and not next_char.isspace():
                         if not _is_cjk_char(prev_char) and not _is_cjk_char(next_char):
                             space_t = OxmlElement("w:t")
-                            space_t.set(qn("xml:space"), "preserve")
+                            space_t.set(xml_space_attr, "preserve")
                             space_t.text = " "
                             idx_in_r = list(parent_r).index(br)
                             parent_r.insert(idx_in_r, space_t)
@@ -92,8 +132,8 @@ def _clean_pdf2docx_soft_breaks(docx_path: Path) -> None:
                     changed = True
         if changed:
             doc.save(str(docx_path))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[Warning] Failed to clean pdf2docx soft breaks: {e}")
 
 
 def _should_translate(text: Optional[str]) -> bool:
@@ -102,27 +142,61 @@ def _should_translate(text: Optional[str]) -> bool:
 
 
 def _is_scanned_image_pdf(src: Path) -> bool:
-    """Returns True if the PDF has pages and images but zero selectable text."""
+    """Returns True if the PDF is image-based with little or no meaningful selectable text."""
     try:
         if HAS_PYMUPDF:
             doc = pymupdf.open(str(src))
             try:
-                if len(doc) == 0:
+                page_count = len(doc)
+                if page_count == 0:
                     return False
-                has_text = any((page.get_text() or "").strip() for page in doc)
-                if has_text:
+                total_alnum = 0
+                max_page_alnum = 0
+                pages_with_images = 0
+                for page in doc:
+                    txt = page.get_text() or ""
+                    alnum_cnt = sum(1 for ch in txt if ch.isalnum())
+                    total_alnum += alnum_cnt
+                    if alnum_cnt > max_page_alnum:
+                        max_page_alnum = alnum_cnt
+                    if page.get_images():
+                        pages_with_images += 1
+                if pages_with_images == 0:
                     return False
-                return any(bool(page.get_images()) for page in doc)
+                if total_alnum == 0:
+                    return True
+                return (
+                    pages_with_images >= max(1, page_count // 2)
+                    and max_page_alnum <= 10
+                    and total_alnum <= 5 * page_count
+                )
             finally:
                 doc.close()
         else:
             reader = pypdf.PdfReader(str(src))
-            if not reader.pages:
+            page_count = len(reader.pages)
+            if page_count == 0:
                 return False
-            has_text = any((page.extract_text() or "").strip() for page in reader.pages)
-            if has_text:
+            total_alnum = 0
+            max_page_alnum = 0
+            pages_with_images = 0
+            for page in reader.pages:
+                txt = page.extract_text() or ""
+                alnum_cnt = sum(1 for ch in txt if ch.isalnum())
+                total_alnum += alnum_cnt
+                if alnum_cnt > max_page_alnum:
+                    max_page_alnum = alnum_cnt
+                if getattr(page, "images", None):
+                    pages_with_images += 1
+            if pages_with_images == 0:
                 return False
-            return any(bool(getattr(page, "images", None)) for page in reader.pages)
+            if total_alnum == 0:
+                return True
+            return (
+                pages_with_images >= max(1, page_count // 2)
+                and max_page_alnum <= 10
+                and total_alnum <= 5 * page_count
+            )
     except Exception:
         return False
 
@@ -262,6 +336,7 @@ class PdfTranslator(BaseTranslator):
             if progress_callback:
                 progress_callback(12, 100, "Translating document content...")
 
+            is_bilingual = bool(getattr(options, "bilingual_mode", False))
             if custom_output_path:
                 out_path = Path(custom_output_path)
                 if out_path.suffix.lower() != ".pdf":
@@ -271,6 +346,7 @@ class PdfTranslator(BaseTranslator):
                     source_path=src,
                     target_lang=target_lang,
                     target_format=".pdf",
+                    is_bilingual=is_bilingual,
                 )
 
             def docx_progress(current: int, total: int, msg: str):
@@ -301,7 +377,11 @@ class PdfTranslator(BaseTranslator):
                 progress_callback(88, 100, "Converting translated document to final PDF...")
 
             saved_path = safe_save_file(
-                lambda p: docx_to_pdf(str(translated_docx_path), str(p)),
+                lambda p: docx_to_pdf(
+                    str(translated_docx_path),
+                    str(p),
+                    cancel_check=lambda: self.is_cancelled,
+                ),
                 out_path,
             )
 

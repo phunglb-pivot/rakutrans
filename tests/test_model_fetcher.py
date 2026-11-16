@@ -184,6 +184,32 @@ class TestModelFetcher(unittest.TestCase):
                     "Claude",
                 )
 
+    def test_concurrent_save_and_update_model_metadata_no_corruption(self):
+        import threading
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_cache_file = Path(tmpdir) / "models_cache.json"
+            with patch.object(model_fetcher, "MODELS_CACHE_FILE", test_cache_file), \
+                 patch.object(model_fetcher, "CACHE_DIR", Path(tmpdir)):
+                save_cached_models("Claude", [f"m-{i}" for i in range(8)])
+                errors = []
+
+                def _worker(idx: int):
+                    try:
+                        model_fetcher.update_model_metadata("Claude", f"m-{idx}", {"max_tokens": 1000 + idx})
+                    except Exception as exc:
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=_worker, args=(i,)) for i in range(8)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
+
+                self.assertEqual(errors, [])
+                for i in range(8):
+                    self.assertEqual(get_model_metadata("Claude", f"m-{i}").get("max_tokens"), 1000 + i)
+
 
 if __name__ == "__main__":
     unittest.main()

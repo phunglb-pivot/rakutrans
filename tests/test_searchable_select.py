@@ -247,6 +247,54 @@ class TestSearchableSelect(unittest.TestCase):
 
         root.destroy()
 
+    @unittest.skipUnless(HAS_TKINTER, "Tkinter is required for GUI dropdown test")
+    def test_open_single_render_disabled_and_destroy_unbinds(self):
+        """Verify open() renders once, set_enabled(False) blocks opening, and destroy() preserves siblings."""
+        import customtkinter as ctk
+        from components.searchable_select import SearchableLanguageSelect
+
+        root = ctk.CTk()
+        root.geometry("400x500")
+
+        sel1 = SearchableLanguageSelect(root, current_language="en")
+        sel2 = SearchableLanguageSelect(root, current_language="vi")
+        sel1.pack()
+        sel2.pack()
+        root.update()
+
+        # Pre-populate search filter, close, then open -> _render_items runs only once
+        sel1.search_var.set("viet")
+        render_calls = 0
+        orig_render = sel1._render_items
+
+        def counted_render():
+            nonlocal render_calls
+            render_calls += 1
+            return orig_render()
+
+        sel1._render_items = counted_render
+        sel1.open()
+        self.assertEqual(render_calls, 1)
+        sel1.close()
+
+        # set_enabled(False) blocks opening
+        sel1.set_enabled(False)
+        sel1.open()
+        self.assertFalse(sel1.is_open)
+
+        # Destroy sel1 -> _global_bindings cleared while sel2 still dismisses on outside click
+        sel1.destroy()
+        self.assertEqual(sel1._global_bindings, [])
+
+        sel2.open()
+        root.update()
+        self.assertTrue(sel2.is_open)
+        root.event_generate("<ButtonPress-1>", x=2, y=2)
+        root.update()
+        self.assertFalse(sel2.is_open)
+
+        root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()

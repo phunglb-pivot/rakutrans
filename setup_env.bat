@@ -8,21 +8,28 @@ REM Detects Python 3.10+ across py launcher, PATH, and standard install paths
 REM (prioritizing Tkinter support), heals/rebuilds broken virtual environments,
 REM and installs all required dependencies.
 REM
-REM Optional override:
+REM Optional flags / overrides:
+REM   setup_env.bat --with-build          (also installs PyInstaller)
 REM   set RAKUTRANS_PYTHON=C:\Path\To\python.exe
-REM   setup_env.bat
 REM ==============================================================================
 
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
+set "WITH_BUILD=0"
+if /I "%~1"=="--with-build" set "WITH_BUILD=1"
+if "%RAKUTRANS_WITH_BUILD%"=="1" set "WITH_BUILD=1"
+
 echo =============================================
 echo    RakuTrans AI - Environment Setup (Windows)
 echo =============================================
 
-set "PY_CMD="
-set "FALLBACK_PY="
+set "PY_EXE="
+set "PY_ARGS="
+set "FALLBACK_EXE="
+set "FALLBACK_ARG="
 set "OVERRIDE_PY=%RAKUTRANS_PYTHON%"
+if defined OVERRIDE_PY set "OVERRIDE_PY=%OVERRIDE_PY:"=%"
 
 if defined OVERRIDE_PY (
     "%OVERRIDE_PY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
@@ -32,36 +39,43 @@ if defined OVERRIDE_PY (
         pause
         exit /b 1
     )
-    set "PY_CMD="%OVERRIDE_PY%""
+    set "PY_EXE=%OVERRIDE_PY%"
+    set "PY_ARGS="
     goto :found_python
 )
 
 REM 1. Detect Python 3.10+ (preferring interpreters with Tkinter support)
 for %%P in ("py -3.12" "py -3.11" "py -3.13" "py -3.10" "py -3.14" "py -3" "py" "python" "python3") do (
-    if not defined PY_CMD (
+    if not defined PY_EXE (
         call :check_cmd %%~P
     )
 )
 
-REM Also check standard per-user / system Python install directories if still needed
-if not defined PY_CMD (
+REM Also check standard per-user and system-wide Python install directories
+if not defined PY_EXE (
     for %%D in (Python312 Python311 Python313 Python310 Python314) do (
-        if not defined PY_CMD (
+        if not defined PY_EXE (
             if exist "%LocalAppData%\Programs\Python\%%D\python.exe" (
-                call :check_exe "%LocalAppData%\Programs\Python\%%D\python.exe"
+                call :check_cmd "%LocalAppData%\Programs\Python\%%D\python.exe"
+            )
+        )
+        if not defined PY_EXE (
+            if exist "%ProgramFiles%\%%D\python.exe" (
+                call :check_cmd "%ProgramFiles%\%%D\python.exe"
             )
         )
     )
 )
 
-if not defined PY_CMD (
-    if defined FALLBACK_PY (
-        set "PY_CMD=!FALLBACK_PY!"
+if not defined PY_EXE (
+    if defined FALLBACK_EXE (
+        set "PY_EXE=!FALLBACK_EXE!"
+        set "PY_ARGS=!FALLBACK_ARG!"
     )
 )
 
 :found_python
-if not defined PY_CMD (
+if not defined PY_EXE (
     echo.
     echo [Error] Python 3.10 or higher is required.
     echo Please install Python from https://www.python.org/downloads/
@@ -74,8 +88,8 @@ if not defined PY_CMD (
     exit /b 1
 )
 
-for /f "delims=" %%V in ('!PY_CMD! -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"') do set "PY_VER=%%V"
-echo Found Python: !PY_CMD! (!PY_VER!)
+for /f "delims=" %%V in ('""!PY_EXE!" !PY_ARGS! -c "import sys; print(chr(46).join(map(str, sys.version_info[:3])))"" 2^>nul') do set "PY_VER=%%V"
+echo Found Python: !PY_EXE! !PY_ARGS! (!PY_VER!)
 
 REM 2. Check virtual environment integrity
 set "VENV_DIR=%SCRIPT_DIR%.venv"
@@ -92,7 +106,7 @@ if exist "%VENV_DIR%" (
             echo [Notice] Existing .venv is ^< 3.10, was moved from another path, or is corrupted.
             set "RECREATE_VENV=1"
         ) else if defined OVERRIDE_PY (
-            for /f "delims=" %%V in ('"%VENV_PY%" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')" 2^>nul') do set "VENV_VER=%%V"
+            for /f "delims=" %%V in ('""%VENV_PY%" -c "import sys; print(chr(46).join(map(str, sys.version_info[:3])))"" 2^>nul') do set "VENV_VER=%%V"
             if not "!VENV_VER!"=="!PY_VER!" (
                 echo [Notice] Rebuilding .venv to match requested Python !PY_VER! ^(was !VENV_VER!^)...
                 set "RECREATE_VENV=1"
@@ -100,7 +114,7 @@ if exist "%VENV_DIR%" (
         ) else (
             "%VENV_PY%" -c "import tkinter" >nul 2>&1
             if errorlevel 1 (
-                !PY_CMD! -c "import tkinter" >nul 2>&1
+                "!PY_EXE!" !PY_ARGS! -c "import tkinter" >nul 2>&1
                 if not errorlevel 1 (
                     echo [Notice] Upgrading .venv to use Python !PY_VER! with Tkinter support...
                     set "RECREATE_VENV=1"
@@ -115,7 +129,14 @@ if exist "%VENV_DIR%" (
 if "!RECREATE_VENV!"=="1" (
     echo Recreating clean virtual environment at %VENV_DIR%...
     if exist "%VENV_DIR%" rmdir /s /q "%VENV_DIR%"
-    !PY_CMD! -m venv "%VENV_DIR%"
+    if exist "%VENV_DIR%" (
+        echo.
+        echo [Error] Failed to remove existing "%VENV_DIR%" because a file inside it is in use.
+        echo         Close open terminals, IDE interpreters, or RakuTrans windows using .venv and retry.
+        pause
+        exit /b 1
+    )
+    "!PY_EXE!" !PY_ARGS! -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo [Error] Failed to create virtual environment.
         pause
@@ -129,9 +150,20 @@ echo Upgrading pip...
 
 if exist "%SCRIPT_DIR%requirements.txt" (
     echo Installing application dependencies...
-    "%VENV_PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt" pyinstaller
+    "%VENV_PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt"
     if errorlevel 1 (
         echo [Error] Failed to install dependencies.
+        pause
+        exit /b 1
+    )
+    "%VENV_PY%" -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.venv/.req_stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest())"
+)
+
+if "!WITH_BUILD!"=="1" (
+    echo Installing PyInstaller...
+    "%VENV_PY%" -m pip install -q pyinstaller
+    if errorlevel 1 (
+        echo [Error] Failed to install PyInstaller.
         pause
         exit /b 1
     )
@@ -152,19 +184,16 @@ echo =============================================
 goto :eof
 
 :check_cmd
-set "CAND=%*"
-%CAND% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+if "%~1"=="" goto :eof
+"%~1" %~2 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
 if errorlevel 1 goto :eof
-if not defined FALLBACK_PY set "FALLBACK_PY=%CAND%"
-%CAND% -c "import tkinter" >nul 2>&1
-if not errorlevel 1 set "PY_CMD=%CAND%"
-goto :eof
-
-:check_exe
-set "CAND=%~1"
-"%CAND%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
-if errorlevel 1 goto :eof
-if not defined FALLBACK_PY set "FALLBACK_PY="%CAND%""
-"%CAND%" -c "import tkinter" >nul 2>&1
-if not errorlevel 1 set "PY_CMD="%CAND%""
+if not defined FALLBACK_EXE (
+    set "FALLBACK_EXE=%~1"
+    set "FALLBACK_ARG=%~2"
+)
+"%~1" %~2 -c "import tkinter" >nul 2>&1
+if not errorlevel 1 (
+    set "PY_EXE=%~1"
+    set "PY_ARGS=%~2"
+)
 goto :eof

@@ -152,6 +152,75 @@ For more info, visit [Documentation](https://api.example.com).
         out_text = Path(out_path).read_text(encoding="utf-8")
         self.assertEqual(out_text, table_md)
 
+    def test_markdown_first_run_resolves_model_before_caching(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        import config as config_mod
+        import model_fetcher
+        from llm_manager import LLMManager
+        from translation_cache import TranslationCache
+
+        tmp_path = Path(self.temp_dir.name)
+        with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
+             patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
+             patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+             patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
+            cfg = AppConfig()
+            cfg.active_provider = "OpenAI"
+            cfg.api_keys["OpenAI"] = "sk-test"
+            cfg.selected_models["OpenAI"] = ""
+            mgr = LLMManager(cfg)
+            calls = {"count": 0}
+
+            def _complete(sys_p, usr_p, model_name, is_json=False):
+                calls["count"] += 1
+                return f"[VI]\n{usr_p}"
+
+            mgr._get_client = lambda: SimpleNamespace(generate_completion=_complete)
+            cache = TranslationCache(db_path=tmp_path / "md_first_run.db")
+            tr = MarkdownTranslator(cfg, mgr, cache=cache)
+            with patch("llm_manager.fetch_live_models", return_value=["gpt-live-1"]):
+                tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
+                first_calls = calls["count"]
+                self.assertGreater(first_calls, 0)
+                tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
+                self.assertEqual(calls["count"], first_calls)
+
+    def test_inline_backticks_leading_blanks_and_code_only_chunk_skipped(self):
+        from translation_cache import TranslationCache
+
+        md_doc = (
+            "\n\n"
+            "```inline_var``` is described here.\n\n"
+            + ("Paragraph filler.\n\n" * 40)
+            + "```python\ndef only_code():\n    return 42\n```\n\n"
+            + "Closing prose line.\n"
+        )
+        md_path = Path(self.temp_dir.name) / "edge_fence.md"
+        md_path.write_text(md_doc, encoding="utf-8")
+
+        seen_chunks = []
+
+        class _SpyMD:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                seen_chunks.append(markdown_text)
+                return f"[TR]\n{markdown_text}"
+
+        tr = MarkdownTranslator(
+            AppConfig(),
+            _SpyMD(),
+            cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_edge.db"),
+        )
+        specs = tr._split_into_chunk_specs(md_doc, max_chars=400)
+        self.assertTrue(specs[0][1].startswith("\n\n"))
+
+        out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+        self.assertIn("[TR]\n", out_text)
+        self.assertIn("Closing prose line.", out_text)
+        self.assertFalse(any(c.strip().startswith("```python") and "only_code" in c and "Paragraph" not in c and "Closing" not in c for c in seen_chunks))
+        self.assertIn("def only_code():", out_text)
+
 
 if __name__ == "__main__":
     unittest.main()

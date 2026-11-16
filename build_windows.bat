@@ -8,6 +8,12 @@ REM ============================================================================
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
+set "NO_PAUSE=0"
+if defined CI set "NO_PAUSE=1"
+if "%RAKUTRANS_NO_PAUSE%"=="1" set "NO_PAUSE=1"
+if /I "%~1"=="--ci" set "NO_PAUSE=1"
+if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
+
 echo =============================================
 echo    Building RakuTrans AI for Windows (.exe)
 echo =============================================
@@ -31,7 +37,7 @@ if "!NEED_SETUP!"=="1" (
     call "%SCRIPT_DIR%setup_env.bat" --with-build
     if errorlevel 1 (
         echo [Error] Setup failed.
-        pause
+        call :maybe_pause
         exit /b 1
     )
 )
@@ -41,7 +47,7 @@ if not exist "%PYINSTALLER%" (
     "%VENV_PY%" -m pip install -q pyinstaller
     if errorlevel 1 (
         echo [Error] Failed to install PyInstaller.
-        pause
+        call :maybe_pause
         exit /b 1
     )
 )
@@ -57,7 +63,7 @@ if not errorlevel 1 (
 if exist "build" rmdir /s /q build
 if exist "build" (
     echo [Error] Cannot remove "build" directory because files inside it are locked.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 if exist "dist" rmdir /s /q dist
@@ -65,7 +71,7 @@ if exist "dist\RakuTrans" (
     echo.
     echo [Error] Cannot remove "dist\RakuTrans" because a file inside it is locked by another process.
     echo         Please close RakuTrans.exe, Explorer windows, or terminal tabs using "dist\RakuTrans" and retry.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -75,7 +81,7 @@ echo Compiling standalone Windows executable via RakuTrans.spec...
 if errorlevel 1 (
     echo.
     echo [Error] PyInstaller build failed.
-    pause
+    call :maybe_pause
     exit /b 1
 )
 
@@ -94,7 +100,7 @@ if defined ISCC_EXE (
     if errorlevel 1 (
         echo.
         echo [Error] Inno Setup installer compilation failed.
-        pause
+        call :maybe_pause
         exit /b 1
     )
 ) else (
@@ -113,4 +119,9 @@ if defined ISCC_EXE (
     echo      dist\RakuTrans-Installer-Windows.exe
 )
 echo =============================================
-pause
+call :maybe_pause
+goto :eof
+
+:maybe_pause
+if "%NO_PAUSE%"=="0" pause
+goto :eof

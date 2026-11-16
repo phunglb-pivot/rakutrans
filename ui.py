@@ -16,8 +16,9 @@ import customtkinter as ctk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 
-from config import AppConfig
+from config import AppConfig, APP_VERSION
 from i18n import I18nManager
+from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from llm_manager import LLMManager
 from translator_registry import TranslatorRegistry
 from base_translator import BaseTranslator
@@ -31,6 +32,7 @@ from format_converter import (
 from components.dnd_zone import DropZone
 from components.settings_modal import SettingsView
 from components.error_modal import ErrorModal
+from components.update_modal import UpdateModal
 from components.searchable_select import SearchableLanguageSelect
 from components.ui_system import CustomButton
 from components.confirm_modal import ConfirmModal
@@ -67,6 +69,9 @@ class RakuTransApp(ctk.CTk):
         self._options_save_after_id = None
         self._autohide_after_ids: list[str] = []
         self._cache_refresh_after_id = None
+        self._update_check_after_id = None
+        self._available_update_info: Optional[UpdateInfo] = None
+        self._update_banner_dismissed: bool = False
 
         # Runtime states
         self.selected_file: Optional[str] = None
@@ -195,6 +200,9 @@ class RakuTransApp(ctk.CTk):
         self.update()
         self.lift()
 
+        if self.config.auto_check_updates:
+            self._update_check_after_id = self.after(1500, self._start_startup_update_check)
+
     def _setup_ui(self):
         # Configure layout: Row 0 Header, Row 1 Nav Tabs, Row 2 Scrollable Body, Row 3 Sticky Bottom Bar
         self.grid_columnconfigure(0, weight=1)
@@ -281,6 +289,53 @@ class RakuTransApp(ctk.CTk):
         self.nav_frame.grid(row=1, column=0, sticky="ew", padx=20, pady=(12, 0))
         self.nav_frame.grid_columnconfigure(0, weight=1)
 
+        # Inline Update Notification Banner (hidden until an update is detected)
+        self.update_banner = ctk.CTkFrame(
+            self.nav_frame,
+            fg_color=("#EFF6FF", "#172554"),
+            border_width=1,
+            border_color=("#BFDBFE", "#1D4ED8"),
+            corner_radius=8,
+        )
+        self.update_banner_icon = ctk.CTkLabel(
+            self.update_banner,
+            text="",
+            image=get_icon("download", "info_accent", 15),
+        )
+        self.update_banner_icon.pack(side="left", padx=(12, 8), pady=7)
+
+        self.update_banner_label = ctk.CTkLabel(
+            self.update_banner,
+            text="",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("#1E3A8A", "#DBEAFE"),
+            anchor="w",
+        )
+        self.update_banner_label.pack(side="left", fill="x", expand=True, pady=7)
+
+        self.update_banner_dismiss_btn = CustomButton(
+            self.update_banner,
+            text="",
+            variant="ghost",
+            size="sm",
+            width=28,
+            icon_name="close",
+            icon_size=13,
+            command=self._dismiss_update_banner,
+        )
+        self.update_banner_dismiss_btn.pack(side="right", padx=(4, 8), pady=5)
+
+        self.update_banner_btn = CustomButton(
+            self.update_banner,
+            text=self.i18n.t("update_details_btn"),
+            variant="primary",
+            size="sm",
+            icon_name="download",
+            icon_size=13,
+            command=self._open_update_modal,
+        )
+        self.update_banner_btn.pack(side="right", padx=(8, 0), pady=5)
+
         self.tab_translate_label = self.i18n.t("tab_translate")
         self.tab_convert_label = self.i18n.t("tab_convert")
 
@@ -346,7 +401,8 @@ class RakuTransApp(ctk.CTk):
             config=self.config,
             get_translation=self.i18n.t,
             on_save_callback=self._on_settings_changed,
-            on_close_callback=self._close_settings
+            on_close_callback=self._close_settings,
+            on_update_found=self._on_update_found_from_settings,
         )
 
         # Global Keyboard Shortcuts
@@ -1358,6 +1414,11 @@ class RakuTransApp(ctk.CTk):
             text=self._format_provider_badge(),
             image=get_provider_icon(self.config.active_provider, "muted", 14),
         )
+        if (
+            self._available_update_info is not None
+            and (self.config.skipped_update_version or "").strip() == self._available_update_info.latest_version
+        ):
+            self._dismiss_update_banner()
         self.refresh_ui_texts()
 
     def refresh_ui_texts(self):
@@ -1380,6 +1441,16 @@ class RakuTransApp(ctk.CTk):
 
         if hasattr(self, "settings_view"):
             self.settings_view.refresh_i18n(self.i18n.t)
+
+        if self._available_update_info is not None and hasattr(self, "update_banner_label"):
+            self.update_banner_label.configure(
+                text=self.i18n.t(
+                    "update_banner_text",
+                    version=self._available_update_info.latest_version,
+                    current=self._available_update_info.current_version,
+                )
+            )
+            self.update_banner_btn.set_text(self.i18n.t("update_details_btn"))
 
         # Provider badge visibility according to active mode
         if hasattr(self, "provider_badge"):
@@ -1793,6 +1864,67 @@ class RakuTransApp(ctk.CTk):
         else:
             self.status_label.configure(text=text, text_color=("#18181B", "#FAFAFA"))
 
+    # -------------------------------------------------------------------------
+    # Update Check & Notification Banner
+    # -------------------------------------------------------------------------
+
+    def _start_startup_update_check(self):
+        self._update_check_after_id = None
+        if not self.winfo_exists() or not self.config.auto_check_updates:
+            return
+        check_for_updates_async(
+            lambda res: self._safe_after(0, lambda r=res: self._handle_startup_update_result(r)),
+            current_version=APP_VERSION,
+        )
+
+    def _handle_startup_update_result(self, result: UpdateCheckResult):
+        if not self.winfo_exists():
+            return
+        if result.status == "update_available" and result.info:
+            skipped = (self.config.skipped_update_version or "").strip()
+            if result.info.latest_version == skipped:
+                return
+            self._show_update_banner(result.info)
+
+    def _on_update_found_from_settings(self, info: UpdateInfo):
+        self._update_banner_dismissed = False
+        self._show_update_banner(info)
+
+    def _show_update_banner(self, info: UpdateInfo):
+        self._available_update_info = info
+        if self._update_banner_dismissed or not hasattr(self, "update_banner"):
+            return
+        self.update_banner_label.configure(
+            text=self.i18n.t(
+                "update_banner_text",
+                version=info.latest_version,
+                current=info.current_version,
+            )
+        )
+        self.update_banner_btn.set_text(self.i18n.t("update_details_btn"))
+        if not self.update_banner.winfo_manager():
+            self.update_banner.pack(fill="x", pady=(0, 10), before=self.mode_segmented)
+
+    def _dismiss_update_banner(self):
+        self._update_banner_dismissed = True
+        if hasattr(self, "update_banner") and self.update_banner.winfo_manager():
+            self.update_banner.pack_forget()
+
+    def _open_update_modal(self):
+        if not self._available_update_info:
+            return
+        UpdateModal(
+            self,
+            update_info=self._available_update_info,
+            on_skip_version=self._on_skip_update_version,
+            get_translation=self.i18n.t,
+        )
+
+    def _on_skip_update_version(self, version: str):
+        self.config.skipped_update_version = version
+        self.config.save()
+        self._dismiss_update_banner()
+
     def destroy(self):
         self._translation_cancel_event.set()
         for aid in list(getattr(self, "_autohide_after_ids", [])):
@@ -1801,7 +1933,7 @@ class RakuTransApp(ctk.CTk):
             except Exception:
                 pass
         self._autohide_after_ids.clear()
-        for attr in ("_options_save_after_id", "_cache_refresh_after_id"):
+        for attr in ("_options_save_after_id", "_cache_refresh_after_id", "_update_check_after_id"):
             aid = getattr(self, attr, None)
             if aid:
                 try:

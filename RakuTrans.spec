@@ -1,6 +1,36 @@
 # -*- mode: python ; coding: utf-8 -*-
+import ast
+import os
+from pathlib import Path
 import sys
 from PyInstaller.utils.hooks import collect_all
+
+
+def _read_app_metadata():
+    app_name = 'RakuTrans AI'
+    app_version = '1.0.0'
+    cfg_path = Path(SPECPATH) / 'config.py'
+    try:
+        tree = ast.parse(cfg_path.read_text(encoding='utf-8'))
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if (
+                        isinstance(target, ast.Name)
+                        and isinstance(node.value, ast.Constant)
+                        and isinstance(node.value.value, str)
+                    ):
+                        if target.id == 'APP_NAME':
+                            app_name = node.value.value
+                        elif target.id == 'APP_VERSION':
+                            app_version = node.value.value
+    except Exception:
+        pass
+    return app_name, app_version
+
+
+app_name, app_version = _read_app_metadata()
+codesign_identity = os.environ.get('RAKUTRANS_CODESIGN_IDENTITY') or None
 
 datas = [('assets', 'assets')]
 binaries = []
@@ -32,6 +62,15 @@ for pkg in (
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
+
+for optional_pkg in ('certifi',):
+    try:
+        tmp_ret = collect_all(optional_pkg)
+        datas += tmp_ret[0]
+        binaries += tmp_ret[1]
+        hiddenimports += tmp_ret[2]
+    except Exception:
+        pass
 
 is_mac = sys.platform == 'darwin'
 icon_path = 'assets/icon.icns' if is_mac else 'assets/icon.ico'
@@ -65,7 +104,7 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    codesign_identity=None,
+    codesign_identity=codesign_identity,
     entitlements_file=None,
     icon=[icon_path],
 )
@@ -85,4 +124,13 @@ if is_mac:
         name='RakuTrans.app',
         icon='assets/icon.icns',
         bundle_identifier='com.rakutrans.app',
+        version=app_version,
+        info_plist={
+            'CFBundleName': app_name,
+            'CFBundleDisplayName': app_name,
+            'CFBundleShortVersionString': app_version,
+            'CFBundleVersion': app_version,
+            'NSHighResolutionCapable': True,
+            'LSApplicationCategoryType': 'public.app-category.productivity',
+        },
     )

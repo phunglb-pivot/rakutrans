@@ -62,6 +62,7 @@ Run from the repository root:
 ## Language & Customization Notes (`installer_windows.iss`)
 
 - **Fixed `AppId`:** `{{8D4F2E1A-9C3B-4B7E-A21D-6F0C5E8A1B42}` must never be changed across releases so upgrades replace existing installations cleanly.
+- **Clean upgrades (`[InstallDelete]`):** `installer_windows.iss` removes the previous `{app}\_internal` runtime directory and `RakuTrans.exe` before copying the new build, preventing stale DLLs/packages across version upgrades while keeping user settings (`~/.rakutrans/`) untouched.
 - **Installer Languages:** `english` (`compiler:Default.isl`) and `japanese` (`compiler:Languages\Japanese.isl`) use Inno Setup 6's official built-in translations. If you want a Vietnamese wizard translation, place a community `Vietnamese.isl` file at `assets\Vietnamese.isl` — `installer_windows.iss` checks `#ifexist "assets\Vietnamese.isl"` and enables it automatically.
 - **Version Sync:** Keep `APP_VERSION` in `config.py` updated for each release; `build_windows.bat` injects it via `/DMyAppVersion=...` without needing manual edits to `installer_windows.iss`.
 - **Always keep `recursesubdirs createallsubdirs` in `[Files]`:** PyInstaller `--onedir` places Python DLLs, `assets/`, and bundled libraries inside `dist\RakuTrans\_internal\`.

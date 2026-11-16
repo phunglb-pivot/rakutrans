@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (.dmg)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify tag matches config.APP_VERSION
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          APP_VER="$(python3 -c "import ast, pathlib; t=ast.parse(pathlib.Path('config.py').read_text(encoding='utf-8')); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) for tgt in n.targets if isinstance(tgt, ast.Name) and tgt.id=='APP_VERSION'))")"
+          echo "Tag version: $TAG_VER | config.APP_VERSION: $APP_VER"
+          if [ "$TAG_VER" != "$APP_VER" ]; then
+            echo "::error::Git tag ($GITHUB_REF_NAME) does not match config.py APP_VERSION ($APP_VER). Please update APP_VERSION before tagging."
+            exit 1
+          fi
+
+      - name: Set up virtual environment and build dependencies
+        shell: bash
+        run: |
+          RAKUTRANS_PYTHON="$(which python3)" bash setup_env.sh --with-build
+
+      - name: Run unit tests
+        shell: bash
+        run: |
+          .venv/bin/python -m unittest discover -s tests -v
+
+      - name: Build macOS .app and .dmg
+        shell: bash
+        env:
+          RAKUTRANS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          bash build_macos.sh
+          test -d "dist/RakuTrans.app"
+          test -f "dist/RakuTrans-Installer-macOS.dmg"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "dist/RakuTrans.app/Contents/Info.plist"
+
+      - name: Upload macOS DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/RakuTrans-Installer-macOS.dmg
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows (.exe Installer)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify tag matches config.APP_VERSION
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $tagVer = $env:GITHUB_REF_NAME -replace '^v', ''
+          $appVer = python -c "import ast, pathlib; t=ast.parse(pathlib.Path('config.py').read_text(encoding='utf-8')); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) for tgt in n.targets if isinstance(tgt, ast.Name) and tgt.id=='APP_VERSION'))"
+          Write-Host "Tag version: $tagVer | config.APP_VERSION: $appVer"
+          if ($tagVer -ne $appVer) {
+            Write-Error "Git tag ($env:GITHUB_REF_NAME) does not match config.py APP_VERSION ($appVer). Please update APP_VERSION before tagging."
+            exit 1
+          }
+
+      - name: Ensure Inno Setup 6 is installed
+        shell: pwsh
+        run: |
+          $isccPaths = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $found = $isccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $found) {
+            Write-Host "Inno Setup 6 not found. Installing via Chocolatey..."
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "Found Inno Setup 6 at: $found"
+          }
+
+      - name: Set up virtual environment and build dependencies
+        shell: pwsh
+        run: |
+          $env:RAKUTRANS_PYTHON = (Get-Command python).Source
+          $env:RAKUTRANS_NO_PAUSE = "1"
+          cmd /c setup_env.bat --with-build --no-pause
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          .venv\Scripts\python.exe -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Build Windows executable and installer
+        shell: pwsh
+        run: |
+          $env:RAKUTRANS_NO_PAUSE = "1"
+          cmd /c build_windows.bat --ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "dist\RakuTrans-Installer-Windows.exe")) {
+            Write-Error "Expected installer dist\RakuTrans-Installer-Windows.exe was not generated."
+            exit 1
+          }
+
+      - name: Upload Windows Installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/RakuTrans-Installer-Windows.exe
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [build-macos, build-windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-dmg
+          path: release-assets
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release-assets
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            ### Upgrading from a previous version
+            Your API keys, settings, and translation cache in `~/.rakutrans` are preserved automatically — **you do not need to uninstall first**.
+
+            - **Windows (`RakuTrans-Installer-Windows.exe`)**: Run the installer directly to upgrade over your existing installation. *(If Windows SmartScreen appears on unsigned builds, click **More info → Run anyway**.)*
+            - **macOS (`RakuTrans-Installer-macOS.dmg`)**: Quit RakuTrans AI (`⌘Q`), open the `.dmg`, drag **RakuTrans.app** into **Applications**, and choose **Replace**. *(On unsigned builds, if Gatekeeper blocks first launch, allow it via **System Settings → Privacy & Security → Open Anyway**.)*
+          files: |
+            release-assets/RakuTrans-Installer-macOS.dmg
+            release-assets/RakuTrans-Installer-Windows.exe
+            release-assets/SHA256SUMS.txt

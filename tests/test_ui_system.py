@@ -138,7 +138,7 @@ class TestUISystem(unittest.TestCase):
             "globe", "settings", "refresh", "rotate_ccw", "folder", "folder_hero",
             "file_text", "file_excel", "file_word", "file_ppt", "file_pdf",
             "database", "save", "trash", "alert_triangle", "check", "info",
-            "close", "plus", "minus", "arrow_left", "zap", "eye", "lock",
+            "close", "plus", "minus", "arrow_left", "download", "zap", "eye", "lock",
             "key", "clock", "stop_circle", "lightbulb", "copy", "format",
             "provider_gemini", "provider_openai", "provider_claude"
         ):

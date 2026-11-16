@@ -12,10 +12,12 @@ import webbrowser
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES
+from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES, APP_VERSION
 from model_fetcher import fetch_live_models, fetch_models_async
+from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from components.ui_system import CustomButton
 from components.icons import get_icon, get_provider_icon
+from components.update_modal import UpdateModal
 
 
 class SettingsView(ctk.CTkFrame):
@@ -33,6 +35,7 @@ class SettingsView(ctk.CTkFrame):
         on_save_callback: Callable[[AppConfig], None],
         on_close_callback: Callable[[], None],
         show_back_button: bool = False,
+        on_update_found: Optional[Callable[[UpdateInfo], None]] = None,
         **kwargs
     ):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -41,6 +44,7 @@ class SettingsView(ctk.CTkFrame):
         self.on_save = on_save_callback
         self.on_close = on_close_callback
         self.show_back_button = show_back_button
+        self.on_update_found = on_update_found
         self._show_key = False
         self.key_var: Optional[ctk.StringVar] = None
         self.model_var: Optional[ctk.StringVar] = None
@@ -50,6 +54,10 @@ class SettingsView(ctk.CTkFrame):
         self._fetch_after_id = None
         self._fetch_request_id = 0
         self._test_conn_request_id = 0
+        self._update_check_request_id = 0
+        self._latest_update_info: Optional[UpdateInfo] = None
+        self._update_status_state: Optional[str] = None
+        self._update_status_error: str = ""
         self._has_auto_fetched_on_open = False
 
         self._setup_ui()
@@ -364,6 +372,91 @@ class SettingsView(ctk.CTkFrame):
         )
         self.theme_dropdown.grid(row=1, column=1, sticky="ew", padx=(8, 0))
 
+        # --------------------------------------------------------------------
+        # 5. Application Version & Updates
+        # --------------------------------------------------------------------
+        self.updates_group = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.updates_group.pack(fill="x", pady=(0, 15), padx=2)
+
+        self.updates_title_label = ctk.CTkLabel(
+            self.updates_group,
+            text=self.t("updates_section_title"),
+            font=ctk.CTkFont(size=14, weight="bold")
+        )
+        self.updates_title_label.pack(anchor="w", padx=4, pady=(8, 6))
+
+        updates_card = ctk.CTkFrame(
+            self.updates_group,
+            fg_color=("#F4F4F5", "#18181B"),
+            border_width=1,
+            border_color=("#E4E4E7", "#27272A"),
+            corner_radius=8
+        )
+        updates_card.pack(fill="x", padx=4, pady=(0, 8))
+
+        updates_top_row = ctk.CTkFrame(updates_card, fg_color="transparent")
+        updates_top_row.pack(fill="x", padx=12, pady=(10, 6))
+
+        self.version_label = ctk.CTkLabel(
+            updates_top_row,
+            text=self.t("current_version_label", version=APP_VERSION),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w"
+        )
+        self.version_label.pack(side="left")
+
+        self.check_updates_btn = CustomButton(
+            updates_top_row,
+            text=self.t("check_updates_btn"),
+            variant="secondary",
+            size="sm",
+            width=150,
+            icon_name="refresh",
+            icon_size=14,
+            command=self._check_for_updates
+        )
+        self.check_updates_btn.pack(side="right")
+
+        self.download_update_btn = CustomButton(
+            updates_top_row,
+            text=self.t("update_details_btn"),
+            variant="primary",
+            size="sm",
+            icon_name="download",
+            icon_size=14,
+            command=self._open_update_modal
+        )
+        # Shown only when an update is available
+
+        self.update_status_label = ctk.CTkLabel(
+            updates_card,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color="gray",
+            wraplength=500,
+            justify="left",
+            anchor="w"
+        )
+        self.update_status_label.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.auto_update_var = ctk.BooleanVar(value=self.config.auto_check_updates)
+        self.auto_update_cb = ctk.CTkCheckBox(
+            updates_card,
+            text=self.t("auto_check_updates_label"),
+            variable=self.auto_update_var,
+            command=self._on_auto_update_toggled,
+            font=ctk.CTkFont(size=12),
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=4,
+            border_width=2,
+            fg_color=("#18181B", "#FAFAFA"),
+            hover_color=("#27272A", "#E4E4E7"),
+            checkmark_color=("#FFFFFF", "#18181B"),
+            border_color=("#D4D4D8", "#52525B")
+        )
+        self.auto_update_cb.pack(anchor="w", padx=12, pady=(0, 10))
+
     def _schedule_model_autofetch(self, delay_ms: int = 150) -> None:
         if getattr(self, "_fetch_after_id", None):
             try:
@@ -444,6 +537,7 @@ class SettingsView(ctk.CTkFrame):
         self.guide_text_label.configure(text=self._get_guide_text(current_prov))
         self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
         self.theme_var.set(self._get_current_theme_display())
+        self.auto_update_var.set(bool(self.config.auto_check_updates))
         if not self._has_auto_fetched_on_open:
             self._has_auto_fetched_on_open = True
             self._schedule_model_autofetch(150)
@@ -468,6 +562,12 @@ class SettingsView(ctk.CTkFrame):
         self.theme_label_elem.configure(text=self.t("theme_mode"))
         self.theme_dropdown.configure(values=self._get_theme_display_names())
         self.theme_var.set(self._get_current_theme_display())
+        self.updates_title_label.configure(text=self.t("updates_section_title"))
+        self.version_label.configure(text=self.t("current_version_label", version=APP_VERSION))
+        self.check_updates_btn.set_text(self.t("check_updates_btn"))
+        self.download_update_btn.set_text(self.t("update_details_btn"))
+        self.auto_update_cb.configure(text=self.t("auto_check_updates_label"))
+        self._render_update_status()
         for i in range(len(list(AI_PROVIDERS.keys()))):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
         self._apply_provider_icons()
@@ -714,9 +814,93 @@ class SettingsView(ctk.CTkFrame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _on_auto_update_toggled(self):
+        self.config.auto_check_updates = bool(self.auto_update_var.get())
+        self.config.save()
+        self.on_save(self.config)
+
+    def _render_update_status(self):
+        if self._update_status_state == "checking":
+            self.update_status_label.configure(
+                text=self.t("checking_updates"),
+                text_color="#3B8ED0"
+            )
+        elif self._update_status_state == "update_available" and self._latest_update_info:
+            self.update_status_label.configure(
+                text=self.t("update_available_short", version=self._latest_update_info.latest_version),
+                text_color="#3B8ED0"
+            )
+        elif self._update_status_state == "up_to_date":
+            self.update_status_label.configure(
+                text=self.t("update_up_to_date", version=APP_VERSION),
+                text_color="#10B981"
+            )
+        elif self._update_status_state == "error":
+            self.update_status_label.configure(
+                text=self.t("update_check_failed", error=self._update_status_error),
+                text_color="#EF4444"
+            )
+
+    def _check_for_updates(self):
+        self._update_check_request_id += 1
+        req_id = self._update_check_request_id
+        self._update_status_state = "checking"
+        self._update_status_error = ""
+        self.check_updates_btn.start_loading(self.t("checking_updates"))
+        self.download_update_btn.pack_forget()
+        self._render_update_status()
+
+        def on_done(result: UpdateCheckResult):
+            def update_ui():
+                try:
+                    if not self.winfo_exists():
+                        return
+                except Exception:
+                    return
+                if req_id != self._update_check_request_id:
+                    return
+                self.check_updates_btn.stop_loading(self.t("check_updates_btn"))
+                if result.status == "update_available" and result.info:
+                    self._latest_update_info = result.info
+                    self._update_status_state = "update_available"
+                    self.download_update_btn.pack(side="right", padx=(0, 8))
+                    self._render_update_status()
+                    if self.on_update_found:
+                        self.on_update_found(result.info)
+                elif result.status == "up_to_date":
+                    self._latest_update_info = result.info
+                    self._update_status_state = "up_to_date"
+                    self.download_update_btn.pack_forget()
+                    self._render_update_status()
+                else:
+                    self._update_status_state = "error"
+                    self._update_status_error = result.error_message
+                    self.download_update_btn.pack_forget()
+                    self._render_update_status()
+
+            self.after(0, update_ui)
+
+        check_for_updates_async(on_done, current_version=APP_VERSION)
+
+    def _open_update_modal(self):
+        if not self._latest_update_info:
+            return
+        UpdateModal(
+            self.winfo_toplevel(),
+            update_info=self._latest_update_info,
+            on_skip_version=self._on_skip_version,
+            get_translation=self.t,
+        )
+
+    def _on_skip_version(self, version: str):
+        self.config.skipped_update_version = version
+        self.config.save()
+        self.on_save(self.config)
+
     def destroy(self):
         self._fetch_request_id += 1
         self._test_conn_request_id += 1
+        self._update_check_request_id += 1
         for attr in ("_fetch_after_id", "_key_save_after_id"):
             after_id = getattr(self, attr, None)
             if after_id:

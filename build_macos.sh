@@ -30,15 +30,20 @@ fi
 echo "Cleaning previous builds..."
 rm -rf build dist
 
-echo "Compiling standalone application bundle via RakuTrans.spec..."
+APP_VERSION="$("$VENV_PY" -c "import config; print(config.APP_VERSION)" 2>/dev/null || echo "1.0.0")"
+echo "Compiling standalone application bundle (v$APP_VERSION) via RakuTrans.spec..."
 "$PYINSTALLER" --noconfirm --clean "$SCRIPT_DIR/RakuTrans.spec"
 
 echo ""
-echo "✓ Standalone macOS Application created:"
+echo "✓ Standalone macOS Application created (v$APP_VERSION):"
 echo "  -> dist/RakuTrans.app"
 
-# Remove quarantine attribute so macOS doesn't block the app
-xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
+# Remove quarantine attribute so macOS doesn't block the app locally
+if [ -x /usr/bin/xattr ]; then
+    /usr/bin/xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
+else
+    xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
+fi
 
 # Package into drag-and-drop .dmg installer with /Applications shortcut
 if command -v hdiutil >/dev/null 2>&1; then

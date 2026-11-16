@@ -16,8 +16,15 @@ REM ============================================================================
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
+set "NO_PAUSE=0"
+if defined CI set "NO_PAUSE=1"
+if "%RAKUTRANS_NO_PAUSE%"=="1" set "NO_PAUSE=1"
+
 set "WITH_BUILD=0"
 if /I "%~1"=="--with-build" set "WITH_BUILD=1"
+if /I "%~2"=="--with-build" set "WITH_BUILD=1"
+if /I "%~1"=="--no-pause" set "NO_PAUSE=1"
+if /I "%~2"=="--no-pause" set "NO_PAUSE=1"
 if "%RAKUTRANS_WITH_BUILD%"=="1" set "WITH_BUILD=1"
 
 echo =============================================
@@ -36,7 +43,7 @@ if defined OVERRIDE_PY (
     if errorlevel 1 (
         echo.
         echo [Error] Specified RAKUTRANS_PYTHON "%OVERRIDE_PY%" was not found or is ^< 3.10.
-        pause
+        if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
     set "PY_EXE=%OVERRIDE_PY%"
@@ -84,7 +91,7 @@ if not defined PY_EXE (
     echo Tip: If Python 3.10+ is installed in a custom location, set:
     echo   set RAKUTRANS_PYTHON=C:\Path\To\python.exe
     echo.
-    pause
+    if "%NO_PAUSE%"=="0" pause
     exit /b 1
 )
 
@@ -133,13 +140,13 @@ if "!RECREATE_VENV!"=="1" (
         echo.
         echo [Error] Failed to remove existing "%VENV_DIR%" because a file inside it is in use.
         echo         Close open terminals, IDE interpreters, or RakuTrans windows using .venv and retry.
-        pause
+        if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
     "!PY_EXE!" !PY_ARGS! -m venv "%VENV_DIR%"
     if errorlevel 1 (
         echo [Error] Failed to create virtual environment.
-        pause
+        if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
 )
@@ -153,7 +160,7 @@ if exist "%SCRIPT_DIR%requirements.txt" (
     "%VENV_PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt"
     if errorlevel 1 (
         echo [Error] Failed to install dependencies.
-        pause
+        if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
     "%VENV_PY%" -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.venv/.req_stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest())"
@@ -164,7 +171,7 @@ if "!WITH_BUILD!"=="1" (
     "%VENV_PY%" -m pip install -q pyinstaller
     if errorlevel 1 (
         echo [Error] Failed to install PyInstaller.
-        pause
+        if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
 )

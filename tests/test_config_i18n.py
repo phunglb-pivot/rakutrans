@@ -233,6 +233,8 @@ class TestConfigAndI18n(unittest.TestCase):
                         "batch_size": "not-an-int",
                         "max_concurrent_requests": "bad",
                         "translation_options": "bad-type",
+                        "auto_check_updates": "invalid-bool",
+                        "skipped_update_version": 123,
                     }),
                     encoding="utf-8",
                 )
@@ -242,8 +244,17 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertEqual(recovered.theme_mode, "dark")
                 self.assertEqual(recovered.batch_size, 60)
                 self.assertEqual(recovered.max_concurrent_requests, 2)
+                self.assertTrue(recovered.auto_check_updates)
+                self.assertEqual(recovered.skipped_update_version, "")
                 self.assertEqual(recovered.get_effective_api_key("Gemini"), "k1")
                 self.assertEqual(recovered.get_effective_api_key("OpenAI"), "")
+
+                recovered.auto_check_updates = False
+                recovered.skipped_update_version = "1.2.0"
+                recovered.save()
+                reloaded_upd = AppConfig.load()
+                self.assertFalse(reloaded_upd.auto_check_updates)
+                self.assertEqual(reloaded_upd.skipped_update_version, "1.2.0")
 
                 # Concurrent saves + loads never produce truncated JSON
                 errors = []

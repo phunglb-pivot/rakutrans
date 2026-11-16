@@ -50,6 +50,11 @@ Name: "vietnamese"; MessagesFile: "assets\Vietnamese.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
+[InstallDelete]
+; Clean stale PyInstaller runtime files from previous releases while keeping user data (~/.rakutrans) untouched
+Type: filesandordirs; Name: "{app}\_internal"
+Type: files; Name: "{app}\{#MyAppExeName}"
+
 [Files]
 ; Copy the entire PyInstaller --onedir output including _internal\
 Source: "dist\RakuTrans\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

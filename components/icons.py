@@ -268,6 +268,11 @@ def _render_vector_icon(name: str, color_hex: str, px_size: int) -> Image.Image:
         _draw_thick_line(draw, [p(19.0, 12.0), p(5.0, 12.0)], col, sw)
         _draw_thick_line(draw, [p(11.2, 5.8), p(5.0, 12.0), p(11.2, 18.2)], col, sw)
 
+    elif name == "download":
+        _draw_thick_line(draw, [p(12.0, 3.6), p(12.0, 14.8)], col, sw)
+        _draw_thick_line(draw, [p(7.2, 10.2), p(12.0, 15.0), p(16.8, 10.2)], col, sw)
+        draw.line([p(4.0, 15.6), p(4.0, 19.6), p(20.0, 19.6), p(20.0, 15.6)], fill=col, width=sw, joint="curve")
+
     elif name == "zap":
         pts = [p(13.2, 2.5), p(4.5, 13.6), p(11.6, 13.6), p(10.6, 21.5), p(19.5, 10.4), p(12.4, 10.4), p(13.2, 2.5)]
         draw.line(pts, fill=col, width=sw, joint="curve")

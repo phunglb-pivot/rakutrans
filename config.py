@@ -19,6 +19,9 @@ _CONFIG_IO_LOCK = threading.RLock()
 
 APP_NAME = "RakuTrans AI"
 APP_VERSION = "1.0.0"
+GITHUB_REPO = "phunglb-pivot/rakutrans"
+RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
+LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 CONFIG_DIR = Path.home() / ".rakutrans"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
@@ -231,6 +234,8 @@ class AppConfig:
     recent_target_languages: list[str] = field(default_factory=lambda: list(DEFAULT_RECENT_TARGET_LANGUAGES))
     source_language: Optional[str] = None
     translation_options: TranslationOptions = field(default_factory=TranslationOptions)
+    auto_check_updates: bool = True
+    skipped_update_version: str = ""
 
     def record_recent_target_language(self, lang_name: str) -> None:
         """Adds a language to the top of recent_target_languages (MRU, max 3)."""
@@ -292,7 +297,9 @@ class AppConfig:
                     "max_concurrent_requests": self.max_concurrent_requests,
                     "target_language": self.target_language,
                     "recent_target_languages": self.recent_target_languages,
-                    "translation_options": asdict(self.translation_options)
+                    "translation_options": asdict(self.translation_options),
+                    "auto_check_updates": bool(self.auto_check_updates),
+                    "skipped_update_version": str(self.skipped_update_version or "").strip(),
                 }
                 if self.source_language:
                     data["source_language"] = self.source_language
@@ -407,6 +414,12 @@ class AppConfig:
                 raw_source = data.get("source_language", None)
                 source_language = str(raw_source).strip() if isinstance(raw_source, str) and raw_source.strip() else None
 
+                raw_auto_update = data.get("auto_check_updates", True)
+                auto_check_updates = raw_auto_update if isinstance(raw_auto_update, bool) else True
+
+                raw_skipped = data.get("skipped_update_version", "")
+                skipped_update_version = raw_skipped.strip() if isinstance(raw_skipped, str) else ""
+
                 config = cls(
                     ui_language=ui_language,
                     theme_mode=theme_mode,
@@ -418,7 +431,9 @@ class AppConfig:
                     target_language=normalized_target,
                     recent_target_languages=recents,
                     source_language=source_language,
-                    translation_options=options
+                    translation_options=options,
+                    auto_check_updates=auto_check_updates,
+                    skipped_update_version=skipped_update_version,
                 )
                 return config
             except Exception as e:

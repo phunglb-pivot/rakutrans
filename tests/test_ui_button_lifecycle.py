@@ -430,6 +430,47 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._update_button_states("idle_no_file")
         self.app._refresh_status_text()
 
+    def test_update_banner_lifecycle_and_skip_version(self):
+        """Verify update banner shows for new unskipped versions, localizes, and hides when dismissed/skipped."""
+        from update_checker import UpdateCheckResult, UpdateInfo
+
+        info = UpdateInfo(
+            current_version="1.0.0",
+            latest_version="1.5.0",
+            has_update=True,
+            release_url="https://github.com/phunglb-pivot/rakutrans/releases/tag/v1.5.0",
+            download_url="https://github.com/phunglb-pivot/rakutrans/releases/download/v1.5.0/RakuTrans-Installer-macOS.dmg",
+        )
+
+        # Skipped version must NOT display banner on startup check
+        self.app.config.skipped_update_version = "1.5.0"
+        self.app._update_banner_dismissed = False
+        self.app._handle_startup_update_result(UpdateCheckResult(status="update_available", info=info))
+        self.assertEqual(self.app.update_banner.winfo_manager(), "")
+
+        # Unskipped version displays banner and refreshes text on language change
+        self.app.config.skipped_update_version = ""
+        self.app._handle_startup_update_result(UpdateCheckResult(status="update_available", info=info))
+        self.assertEqual(self.app.update_banner.winfo_manager(), "pack")
+        self.assertIn("1.5.0", self.app.update_banner_label.cget("text"))
+
+        self.app.config.ui_language = "vi"
+        self.app._on_settings_changed(self.app.config)
+        self.assertIn("1.5.0", self.app.update_banner_label.cget("text"))
+        self.assertEqual(self.app.update_banner_btn.cget("text"), self.app.i18n.t("update_details_btn"))
+
+        # Skipping version persists and dismisses banner
+        self.app._on_skip_update_version("1.5.0")
+        self.assertEqual(self.app.config.skipped_update_version, "1.5.0")
+        self.assertEqual(self.app.update_banner.winfo_manager(), "")
+
+        # Cleanup
+        self.app.config.skipped_update_version = ""
+        self.app.config.ui_language = "en"
+        self.app._available_update_info = None
+        self.app._update_banner_dismissed = False
+        self.app._on_settings_changed(self.app.config)
+
 
 if __name__ == "__main__":
     unittest.main()

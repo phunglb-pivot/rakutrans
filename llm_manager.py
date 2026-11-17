@@ -56,6 +56,14 @@ _CONSECUTIVE_OK_FOR_CONCURRENCY_INC = 8
 _PACE_DECAY_FACTOR = 0.90
 _BACKOFF_BASE_SCHEDULE = (8.0, 16.0, 32.0, 45.0)
 _MIN_SPLIT_RETRY_CHARS = 40
+_SMALL_MODEL_OUTPUT_TOKEN_CAP = 2048
+_SMALL_MODEL_CHAR_MULTIPLIER = 1.5
+_APPEND_ORIGINAL_CHAR_RATIO = 0.75
+_INLINE_TAG_CHAR_WEIGHT = 24
+_MIN_CHAR_BUDGET = int(NUMERIC_SETTING_SPECS["batch_max_chars"].min_val)
+_INLINE_TAG_TOKEN_RE = re.compile(r"</?s(\d+)>")
+_INLINE_SPAN_RE = re.compile(r"<s(\d+)>(.*?)</s\1>", flags=re.DOTALL)
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？；;])\s+|(?<=[。！？；])")
 _TOKEN_ASCII_BOUND = 127
 _TOKEN_ASCII_CHARS_PER_TOK = 3.5
 _TOKEN_NON_ASCII_WEIGHT = 1.2
@@ -589,6 +597,9 @@ class GeminiClient(BaseLLMClient):
             self._genai_client = genai.Client(api_key=self.api_key, http_options=http_options)
             return self._genai_client
 
+    def _get_client(self):
+        return self._get_genai_client()
+
     def _resolve_temperature(self, model_name: str) -> Optional[float]:
         """Returns explicitly configured temperature clamped to API-reported max_temperature if known."""
         if self.temperature is None:
@@ -636,12 +647,13 @@ class GeminiClient(BaseLLMClient):
     ) -> str:
         from google.genai import types
 
-        client = self._get_genai_client()
+        client = self._get_client()
         cfg_kwargs: Dict[str, Any] = {
             "system_instruction": system_prompt,
-            "response_mime_type": "application/json" if (is_json and self.strict_json_mode) else "text/plain",
             "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
         }
+        if is_json and self.strict_json_mode:
+            cfg_kwargs["response_mime_type"] = "application/json"
         resolved_temp = self._resolve_temperature(model_name)
         if resolved_temp is not None:
             cfg_kwargs["temperature"] = resolved_temp
@@ -1408,6 +1420,110 @@ class LLMManager:
             out.append(str(item))
         return out
 
+    def _resolve_effective_batch_char_limit(
+        self,
+        options: Optional[TranslationOptions] = None,
+    ) -> int:
+        """Computes effective batch character limit factoring in small model caps and option expansion."""
+        char_limit = resolve_config_int(self.config, "batch_max_chars")
+        provider = getattr(self.config, "active_provider", "") or ""
+        model = self.config.get_active_model() if hasattr(self.config, "get_active_model") else ""
+        if provider and model:
+            meta = get_model_metadata(provider, model)
+            out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
+            if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
+                char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
+
+        effective_options = options if options is not None else getattr(self.config, "translation_options", None)
+        if effective_options is not None and getattr(effective_options, "append_original_words", False):
+            char_limit = max(_MIN_CHAR_BUDGET, int(char_limit * _APPEND_ORIGINAL_CHAR_RATIO))
+
+        return max(_MIN_CHAR_BUDGET, char_limit)
+
+    @staticmethod
+    def _estimate_batch_item_chars(text: str) -> int:
+        if not text:
+            return 0
+        return len(text) + (len(_INLINE_TAG_TOKEN_RE.findall(text)) * _INLINE_TAG_CHAR_WEIGHT)
+
+    @classmethod
+    def _split_single_batch_item_for_retry(
+        cls, text: str
+    ) -> Optional[Tuple[str, str, str, int]]:
+        """
+        Attempts to split a single oversized batch item that failed with a format/truncation error.
+        Returns (left_text, join_sep, right_text, right_tag_offset):
+        - If right_tag_offset > 0, the item was split across <sN>...</sN> inline tag groups and
+          translated <sK> tags in the right half must be shifted by +right_tag_offset.
+        - If right_tag_offset == 0, the item is plain text and should be joined as left + join_sep + right.
+        """
+        if not text:
+            return None
+
+        # Case 1: Inline-tagged paragraph (<s0>...</s0><s1>...</s1>...)
+        if _INLINE_TAG_TOKEN_RE.search(text):
+            matches = list(_INLINE_SPAN_RE.finditer(text))
+            if (
+                len(matches) >= 2
+                and [int(m.group(1)) for m in matches] == list(range(len(matches)))
+                and "".join(m.group(0) for m in matches) == text
+            ):
+                mid_group = len(matches) // 2
+                left_tagged = "".join(
+                    f"<s{idx}>{m.group(2)}</s{idx}>" for idx, m in enumerate(matches[:mid_group])
+                )
+                right_tagged = "".join(
+                    f"<s{idx}>{m.group(2)}</s{idx}>" for idx, m in enumerate(matches[mid_group:])
+                )
+                return left_tagged, "", right_tagged, mid_group
+            return None
+
+        # Case 2: Untagged text >= _MIN_SPLIT_RETRY_CHARS
+        if len(text) < _MIN_SPLIT_RETRY_CHARS:
+            return None
+
+        if "\n" in text:
+            md_split = cls._split_markdown_for_retry(text, plain_text=True)
+            if md_split is not None:
+                left_part, sep, right_part = md_split
+                if left_part.strip() and right_part.strip():
+                    return left_part, sep, right_part, 0
+
+        mid = len(text) // 2
+        low_bound = len(text) // 5
+        high_bound = len(text) - low_bound
+
+        # Sentence boundary near midpoint (keep inter-sentence whitespace in sep)
+        best_sent_match: Optional[re.Match] = None
+        for m in _SENTENCE_SPLIT_RE.finditer(text):
+            pos = m.end()
+            if low_bound <= pos <= high_bound:
+                if best_sent_match is None or abs(pos - mid) < abs(best_sent_match.end() - mid):
+                    best_sent_match = m
+        if best_sent_match is not None:
+            left_s = text[: best_sent_match.start()]
+            sep_s = best_sent_match.group(0)
+            right_s = text[best_sent_match.end() :]
+            if left_s.strip() and right_s.strip():
+                return left_s, sep_s, right_s, 0
+
+        # Whitespace boundary near midpoint (keep space in sep so trimmed LLM outputs join cleanly)
+        left_ws = text.rfind(" ", low_bound, mid + 1)
+        right_ws = text.find(" ", mid, high_bound)
+        ws_candidates = [p for p in (left_ws, right_ws) if p != -1 and 0 < p < len(text) - 1]
+        if ws_candidates:
+            split_idx = min(ws_candidates, key=lambda p: abs(p - mid))
+            left_w = text[:split_idx]
+            right_w = text[split_idx + 1 :]
+            if left_w.strip() and right_w.strip():
+                return left_w, " ", right_w, 0
+
+        # Unspaced CJK / continuous text fallback at midpoint
+        if text[:mid].strip() and text[mid:].strip():
+            return text[:mid], "", text[mid:], 0
+
+        return None
+
     def translate_batch(
         self,
         texts: List[str],
@@ -1427,16 +1543,16 @@ class LLMManager:
         options = options or self.config.translation_options
 
         max_batch_items = resolve_config_int(self.config, "batch_size")
-        max_batch_chars = resolve_config_int(self.config, "batch_max_chars")
+        max_batch_chars = self._resolve_effective_batch_char_limit(options)
 
-        total_chars = sum(len(t) for t in texts)
+        total_chars = sum(self._estimate_batch_item_chars(t) for t in texts)
         if len(texts) > max_batch_items or total_chars > max_batch_chars:
             if len(texts) > 1:
                 sub_batches: List[List[str]] = []
                 curr_sub: List[str] = []
                 curr_chars = 0
                 for t in texts:
-                    t_len = len(t)
+                    t_len = self._estimate_batch_item_chars(t)
                     if curr_sub and (len(curr_sub) >= max_batch_items or (curr_chars + t_len > max_batch_chars)):
                         sub_batches.append(curr_sub)
                         curr_sub = [t]
@@ -1487,25 +1603,54 @@ class LLMManager:
                 estimated_tokens=est_tokens,
             )
         except LLMError as err:
-            if err.is_format_error and len(texts) > 1:
-                mid = len(texts) // 2
-                left = self.translate_batch(
-                    texts=texts[:mid],
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    max_retries=max_retries,
-                    cancel_check=cancel_check,
-                )
-                right = self.translate_batch(
-                    texts=texts[mid:],
-                    target_lang=target_lang,
-                    options=options,
-                    source_lang=source_lang,
-                    max_retries=max_retries,
-                    cancel_check=cancel_check,
-                )
-                return left + right
+            if err.is_format_error:
+                if len(texts) > 1:
+                    mid = len(texts) // 2
+                    left = self.translate_batch(
+                        texts=texts[:mid],
+                        target_lang=target_lang,
+                        options=options,
+                        source_lang=source_lang,
+                        max_retries=max_retries,
+                        cancel_check=cancel_check,
+                    )
+                    right = self.translate_batch(
+                        texts=texts[mid:],
+                        target_lang=target_lang,
+                        options=options,
+                        source_lang=source_lang,
+                        max_retries=max_retries,
+                        cancel_check=cancel_check,
+                    )
+                    return left + right
+
+                if len(texts) == 1:
+                    single_split = self._split_single_batch_item_for_retry(texts[0])
+                    if single_split is not None:
+                        left_part, sep, right_part, right_tag_offset = single_split
+                        left_tr = self.translate_batch(
+                            texts=[left_part],
+                            target_lang=target_lang,
+                            options=options,
+                            source_lang=source_lang,
+                            max_retries=max_retries,
+                            cancel_check=cancel_check,
+                        )[0]
+                        right_tr = self.translate_batch(
+                            texts=[right_part],
+                            target_lang=target_lang,
+                            options=options,
+                            source_lang=source_lang,
+                            max_retries=max_retries,
+                            cancel_check=cancel_check,
+                        )[0]
+                        if right_tag_offset > 0:
+                            right_tr = re.sub(
+                                r"<(/?)s(\d+)>",
+                                lambda m: f"<{m.group(1)}s{int(m.group(2)) + right_tag_offset}>",
+                                right_tr,
+                            )
+                        return [f"{left_tr}{sep}{right_tr}"]
             raise
 
     def translate_markdown_text(

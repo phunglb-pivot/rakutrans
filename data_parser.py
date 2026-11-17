@@ -106,6 +106,7 @@ class CsvTranslator(BaseTranslator):
             row_count = 0
             max_cols = 0
             translatable_cells = 0
+            total_chars = 0
             unique_texts: Set[str] = set()
 
             with open(path, "r", encoding=enc, errors="replace") as f:
@@ -117,8 +118,10 @@ class CsvTranslator(BaseTranslator):
                     max_cols = max(max_cols, len(row))
                     for cell in row:
                         if should_translate_text(cell, ignore_formulas=True):
+                            trimmed = cell.strip()
                             translatable_cells += 1
-                            unique_texts.add(cell.strip())
+                            total_chars += len(trimmed)
+                            unique_texts.add(trimmed)
 
             return {
                 "type": "csv",
@@ -126,6 +129,8 @@ class CsvTranslator(BaseTranslator):
                 "columns": max_cols,
                 "translatable_cells": translatable_cells,
                 "unique_texts": len(unique_texts),
+                "char_count": total_chars,
+                "unique_char_count": sum(len(t) for t in unique_texts),
                 "delimiter": delimiter,
             }
         except Exception as e:
@@ -262,6 +267,7 @@ class JsonTranslator(BaseTranslator):
 
             key_count = 0
             string_count = 0
+            total_chars = 0
             unique_texts: Set[str] = set()
 
             stack = [data]
@@ -274,14 +280,18 @@ class JsonTranslator(BaseTranslator):
                     stack.extend(reversed(node))
                 elif isinstance(node, str):
                     if should_translate_text(node, ignore_formulas=True):
+                        trimmed = node.strip()
                         string_count += 1
-                        unique_texts.add(node.strip())
+                        total_chars += len(trimmed)
+                        unique_texts.add(trimmed)
 
             return {
                 "type": "json",
                 "total_keys": key_count,
                 "translatable_strings": string_count,
                 "unique_texts": len(unique_texts),
+                "char_count": total_chars,
+                "unique_char_count": sum(len(t) for t in unique_texts),
             }
         except Exception as e:
             return {"type": "json", "error": str(e)}

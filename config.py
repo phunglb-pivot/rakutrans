@@ -35,7 +35,7 @@ def get_config_dir() -> Path:
     """Returns the application data/config directory, honoring RAKUTRANS_HOME when set."""
     env_home = (os.getenv("RAKUTRANS_HOME") or "").strip()
     if env_home:
-        return Path(env_home).expanduser()
+        return Path(env_home).expanduser().resolve()
     return Path.home() / CONFIG_DIR_NAME
 
 

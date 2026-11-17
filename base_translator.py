@@ -26,6 +26,8 @@ from model_fetcher import get_model_metadata
 from translation_cache import TranslationCache
 
 _ESTIMATE_CHAR_RATIO = 0.7
+_APPEND_ORIGINAL_CHAR_RATIO = 0.75
+_INLINE_TAG_CHAR_WEIGHT = 24
 _ENCODING_SNIFF_BYTES = 65536
 _LEGACY_FALLBACK_ENCODINGS = ("cp932", "shift_jis", "euc_jp", "gbk", "cp1252", "latin-1")
 _WIN_LOCK_ERRNOS = frozenset({32, 33})
@@ -39,6 +41,47 @@ _DEFAULT_PROGRESS_BATCH_SPAN = 75
 _DEFAULT_PROGRESS_SECTION_SPAN = 80
 
 
+def compute_effective_batch_char_limit(
+    config: Optional[AppConfig],
+    options: Optional[TranslationOptions] = None,
+    max_chars: Optional[int] = None,
+) -> int:
+    """
+    Computes the effective per-batch character budget honoring configured batch_max_chars,
+    small model output token limits, and output expansion when append_original_words is enabled.
+    """
+    configured_chars = resolve_config_int(config, "batch_max_chars")
+    if max_chars is not None:
+        return max(_MIN_CHAR_BUDGET, min(configured_chars, max_chars))
+
+    char_limit = configured_chars
+    if config is not None:
+        provider = getattr(config, "active_provider", "") or ""
+        model = config.get_active_model() if hasattr(config, "get_active_model") else ""
+        if provider and model:
+            meta = get_model_metadata(provider, model)
+            out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
+            if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
+                char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
+
+    effective_options = options if options is not None else getattr(config, "translation_options", None)
+    if effective_options is not None and getattr(effective_options, "append_original_words", False):
+        char_limit = max(_MIN_CHAR_BUDGET, int(char_limit * _APPEND_ORIGINAL_CHAR_RATIO))
+
+    return max(_MIN_CHAR_BUDGET, char_limit)
+
+
+def estimate_batch_item_chars(text: str) -> int:
+    """
+    Estimates effective character budget consumed by a batch item, accounting for
+    synthetic inline style tags (<s0>...</s0>) that require strict structural preservation.
+    """
+    if not text:
+        return 0
+    tag_count = len(_INLINE_TAG_TOKEN_RE.findall(text))
+    return len(text) + (tag_count * _INLINE_TAG_CHAR_WEIGHT)
+
+
 def estimate_translation_requests(
     inspect_info: Optional[Dict[str, Any]],
     config: Optional[AppConfig],
@@ -48,12 +91,19 @@ def estimate_translation_requests(
         return 0
 
     batch_size = resolve_config_int(config, "batch_size")
-    batch_max_chars = resolve_config_int(config, "batch_max_chars")
+    batch_max_chars = compute_effective_batch_char_limit(config)
     section_max_chars = resolve_config_int(config, "section_max_chars")
+    opts = getattr(config, "translation_options", None) if config is not None else None
+    if opts is not None and getattr(opts, "append_original_words", False):
+        section_max_chars = max(_MIN_CHAR_BUDGET, int(section_max_chars * _APPEND_ORIGINAL_CHAR_RATIO))
 
     doc_type = str(inspect_info.get("type", "") or "").lower()
     if doc_type in ("markdown", "txt"):
-        chars = max(0, int(inspect_info.get("char_count", 0) or 0))
+        raw_trans_chars = inspect_info.get("translatable_char_count")
+        chars = max(
+            0,
+            int(raw_trans_chars if raw_trans_chars is not None else (inspect_info.get("char_count", 0) or 0)),
+        )
         if chars == 0:
             return 0
         return max(1, math.ceil(chars / section_max_chars))
@@ -66,6 +116,10 @@ def estimate_translation_requests(
     if items <= 0:
         return 0
     by_items = math.ceil(items / batch_size)
+    unique_chars = int(inspect_info.get("unique_char_count", 0) or 0)
+    if unique_chars > 0:
+        by_chars = math.ceil(unique_chars / batch_max_chars)
+        return max(1, by_items, by_chars)
     chars = int(inspect_info.get("char_count", 0) or 0)
     if chars > 0:
         by_chars = math.ceil((chars * _ESTIMATE_CHAR_RATIO) / batch_max_chars)
@@ -368,6 +422,7 @@ class BaseTranslator(ABC):
         text_fn: Callable[[T], str] = lambda x: str(x),
         max_items: Optional[int] = None,
         max_chars: Optional[int] = None,
+        options: Optional[TranslationOptions] = None,
     ) -> List[List[T]]:
         """Partitions uncached items into batches bounded by configured item count and character budget."""
         if not items:
@@ -375,26 +430,18 @@ class BaseTranslator(ABC):
 
         configured_items = resolve_config_int(self.config, "batch_size")
         item_limit = max(1, min(configured_items, max_items)) if max_items is not None else configured_items
-
-        configured_chars = resolve_config_int(self.config, "batch_max_chars")
-        char_limit = max(_MIN_CHAR_BUDGET, min(configured_chars, max_chars)) if max_chars is not None else configured_chars
-
-        # Respect small provider-reported model output limits to avoid predictable MAX_TOKENS splits
-        if max_chars is None:
-            provider = getattr(self.config, "active_provider", "") or ""
-            model = self.config.get_active_model() if hasattr(self.config, "get_active_model") else ""
-            if provider and model:
-                meta = get_model_metadata(provider, model)
-                out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
-                if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
-                    char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
+        char_limit = compute_effective_batch_char_limit(
+            self.config,
+            options=options,
+            max_chars=max_chars,
+        )
 
         batches: List[List[T]] = []
         curr_batch: List[T] = []
         curr_chars = 0
 
         for item in items:
-            item_chars = len(text_fn(item))
+            item_chars = estimate_batch_item_chars(text_fn(item))
             if curr_batch and (len(curr_batch) >= item_limit or (curr_chars + item_chars > char_limit)):
                 batches.append(curr_batch)
                 curr_batch = [item]
@@ -519,7 +566,7 @@ class BaseTranslator(ABC):
         if not uncached_items:
             return translation_map
 
-        batches = self.pack_batches(uncached_items, text_fn=lambda item: item[1])
+        batches = self.pack_batches(uncached_items, text_fn=lambda item: item[1], options=options)
         total_batches = len(batches)
         completed_batches = 0
 

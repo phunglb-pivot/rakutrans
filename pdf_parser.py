@@ -238,6 +238,7 @@ class PdfTranslator(BaseTranslator):
                 "page_count": page_count,
                 "word_count": total_words,
                 "char_count": total_chars,
+                "unique_char_count": sum(len(t) for t in unique_texts),
                 "translatable_segments": len(unique_texts),
             }
         except Exception as e:

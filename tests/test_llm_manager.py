@@ -1049,6 +1049,73 @@ class TestLLMManager(unittest.TestCase):
             self.assertEqual(resumed[items[0]], f"VI:{items[0]}")
             self.assertEqual(calls_during_resume, 120 - (cached_after_abort // 20))
 
+    def test_single_oversized_batch_item_splits_on_format_error_plain_and_inline_tags(self):
+        import json
+        from base_translator import compute_effective_batch_char_limit, estimate_translation_requests
+
+        cfg = _configured_config()
+        mgr = LLMManager(cfg)
+        mgr._min_interval = 0.0
+
+        # 1. Plain single item > _MIN_SPLIT_RETRY_CHARS splits at sentence/line boundary on MAX_TOKENS
+        def _complete_plain(sys_p, usr_p, model_name, is_json=True):
+            items = json.loads(usr_p.split(":\n", 1)[1])
+            text_val = items[0]["t"]
+            if len(text_val) > 95:
+                raise LLMError("Response truncated (MAX_TOKENS)", is_format_error=True)
+            return json.dumps({"translations": [{"i": 0, "t": f"VI[{text_val.strip()}]"}]})
+
+        mgr._get_client = lambda: SimpleNamespace(generate_completion=_complete_plain)
+        long_single = (
+            "First sentence is quite long so that the combined single cell exceeds ninety chars. "
+            "Second sentence is also long enough to stand on its own."
+        )
+        res_plain = mgr.translate_batch([long_single], target_lang="Vietnamese")
+        self.assertEqual(
+            res_plain,
+            [
+                "VI[First sentence is quite long so that the combined single cell exceeds ninety chars.] "
+                "VI[Second sentence is also long enough to stand on its own.]"
+            ],
+        )
+
+        # 2. Inline-tagged single item (<s0>...</s0><s1>...</s1>...) splits across tag boundaries and re-shifts indices
+        def _complete_tagged(sys_p, usr_p, model_name, is_json=True):
+            items = json.loads(usr_p.split(":\n", 1)[1])
+            text_val = items[0]["t"]
+            if "<s2>" in text_val:
+                raise LLMError("Truncated inline tags", is_format_error=True)
+            # Translate each <sK>...</sK> segment preserving local indices
+            import re
+            translated_val = re.sub(
+                r"<s(\d+)>(.*?)</s\1>",
+                lambda m: f"<s{m.group(1)}>VI:{m.group(2)}</s{m.group(1)}>",
+                text_val,
+            )
+            return json.dumps({"translations": [{"i": 0, "t": translated_val}]})
+
+        mgr._get_client = lambda: SimpleNamespace(generate_completion=_complete_tagged)
+        tagged_single = "<s0>Alpha</s0><s1>Beta</s1><s2>Gamma</s2><s3>Delta</s3>"
+        res_tagged = mgr.translate_batch([tagged_single], target_lang="Vietnamese")
+        self.assertEqual(
+            res_tagged,
+            ["<s0>VI:Alpha</s0><s1>VI:Beta</s1><s2>VI:Gamma</s2><s3>VI:Delta</s3>"],
+        )
+
+        # 3. Effective batch char budget adapts when append_original_words is enabled or inline tags are dense
+        cfg_budget = AppConfig(batch_size=25, batch_max_chars=1000)
+        base_limit = compute_effective_batch_char_limit(cfg_budget, TranslationOptions(append_original_words=False))
+        expanded_limit = compute_effective_batch_char_limit(cfg_budget, TranslationOptions(append_original_words=True))
+        self.assertEqual(base_limit, 1000)
+        self.assertEqual(expanded_limit, 750)
+
+        # 4. Request estimation uses unique_char_count and translatable_char_count accurately
+        excel_info = {"type": "excel", "unique_texts": 10, "char_count": 50000, "unique_char_count": 3000}
+        self.assertEqual(estimate_translation_requests(excel_info, cfg_budget), 3)
+        md_info = {"type": "markdown", "char_count": 20000, "translatable_char_count": 1500}
+        cfg_md = AppConfig(section_max_chars=1000)
+        self.assertEqual(estimate_translation_requests(md_info, cfg_md), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

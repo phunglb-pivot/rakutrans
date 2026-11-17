@@ -470,6 +470,7 @@ class DocxTranslator(BaseTranslator):
             p_count = len(doc.paragraphs)
             t_count = len(doc.tables)
             total_words = 0
+            total_chars = 0
             unique_texts: Set[str] = set()
 
             for p in _iter_all_paragraphs(doc):
@@ -477,13 +478,17 @@ class DocxTranslator(BaseTranslator):
                 if text:
                     total_words += count_words_multilingual(text)
                     if should_translate_text(text, ignore_formulas=False):
-                        unique_texts.add(text.strip())
+                        trimmed = text.strip()
+                        total_chars += len(trimmed)
+                        unique_texts.add(trimmed)
 
             return {
                 "type": "docx",
                 "paragraphs": p_count,
                 "tables": t_count,
                 "word_count": total_words,
+                "char_count": total_chars,
+                "unique_char_count": sum(len(t) for t in unique_texts),
                 "translatable_segments": len(unique_texts),
             }
         except Exception as e:

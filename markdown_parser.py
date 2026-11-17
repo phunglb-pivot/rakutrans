@@ -20,6 +20,7 @@ from llm_manager import LLMManager
 from translation_cache import TranslationCache
 
 _DEFAULT_MD_CHUNK_CHARS = 3500
+_STANDALONE_CODE_FENCE_MIN_CHARS = 150
 
 # Backtick fence info strings cannot contain backticks (CommonMark spec),
 # preventing lines starting with inline ```code``` spans from hijacking tokenization.
@@ -164,11 +165,18 @@ class MarkdownTranslator(BaseTranslator):
 
             lines = content.splitlines()
             words = count_words_multilingual(content)
-            sections = [b for _, b, _ in _tokenize_markdown_blocks(content) if b.strip()]
+            blocks = _tokenize_markdown_blocks(content)
+            sections = [b for _, b, _ in blocks if b.strip()]
+            translatable_chars = sum(
+                len(b) + len(sep)
+                for kind, b, sep in blocks
+                if b.strip() and not (kind == "code_fence" and len(b) >= _STANDALONE_CODE_FENCE_MIN_CHARS)
+            )
 
             return {
                 "type": "markdown",
                 "char_count": len(content),
+                "translatable_char_count": translatable_chars,
                 "word_count": words,
                 "line_count": len(lines),
                 "section_count": len(sections),
@@ -176,52 +184,94 @@ class MarkdownTranslator(BaseTranslator):
         except Exception as e:
             return {"type": "markdown", "error": str(e)}
 
+    @staticmethod
+    def _split_long_prose_line(line: str, max_chars: int) -> List[str]:
+        """Splits an oversized single prose line (> max_chars) along whitespace without dropping chars."""
+        if len(line) <= max_chars:
+            return [line]
+        parts: List[str] = []
+        start = 0
+        n = len(line)
+        while start < n:
+            if n - start <= max_chars:
+                parts.append(line[start:])
+                break
+            split_at = line.rfind(" ", start, start + max_chars + 1)
+            if split_at <= start:
+                split_at = start + max_chars
+            else:
+                split_at += 1  # Keep trailing space with left piece so exact join == original
+            parts.append(line[start:split_at])
+            start = split_at
+        return parts
+
     def _split_into_chunk_specs(
         self, text: str, max_chars: int = _DEFAULT_MD_CHUNK_CHARS
     ) -> List[Tuple[str, str]]:
         """
         Splits Markdown into (chunk_text, sep_after_chunk) specs respecting fenced code blocks
-        and table row boundaries.
+        and table row boundaries, while isolating large fenced code blocks so they bypass LLM calls.
         """
         if not text:
             return [("", "")]
 
         trailing_nl = "\n" if text.endswith("\n") else ""
-        if len(text) <= max_chars:
+        standalone_fence_min = min(_STANDALONE_CODE_FENCE_MIN_CHARS, max(60, max_chars // 4))
+        blocks = _tokenize_markdown_blocks(text)
+        has_standalone_fence = any(
+            kind == "code_fence" and len(block_text) >= standalone_fence_min
+            for kind, block_text, _ in blocks
+        )
+        if len(text) <= max_chars and not has_standalone_fence:
             return [(text, "")]
 
-        blocks = _tokenize_markdown_blocks(text)
-
         # Expand oversized blocks safely without ever breaking a fenced code block
-        atomic_units: List[Tuple[str, str]] = []
+        atomic_units: List[Tuple[str, str, str]] = []
         for kind, block_text, sep_after in blocks:
             if len(block_text) <= max_chars or kind == "code_fence":
-                atomic_units.append((block_text, sep_after))
+                atomic_units.append((kind, block_text, sep_after))
             else:
-                # Split oversized table or prose block along line boundaries
+                # Split oversized table or prose block along line (and sub-line whitespace) boundaries
                 b_lines = block_text.splitlines()
                 cur_lines: List[str] = []
                 cur_len = 0
-                for ln in b_lines:
+                for l_idx, ln in enumerate(b_lines):
+                    is_last_line = l_idx == len(b_lines) - 1
+                    line_sep = sep_after if is_last_line else "\n"
+                    if len(ln) > max_chars and kind == "prose":
+                        if cur_lines:
+                            atomic_units.append((kind, "\n".join(cur_lines), "\n"))
+                            cur_lines = []
+                            cur_len = 0
+                        sub_parts = self._split_long_prose_line(ln, max_chars)
+                        for s_idx, sub in enumerate(sub_parts):
+                            s_sep = "" if s_idx < len(sub_parts) - 1 else line_sep
+                            atomic_units.append((kind, sub, s_sep))
+                        continue
+
                     ln_len = len(ln) + (1 if cur_lines else 0)
                     if cur_lines and cur_len + ln_len > max_chars:
-                        atomic_units.append(("\n".join(cur_lines), "\n"))
+                        atomic_units.append((kind, "\n".join(cur_lines), "\n"))
                         cur_lines = [ln]
                         cur_len = len(ln)
                     else:
                         cur_lines.append(ln)
                         cur_len += ln_len
                 if cur_lines:
-                    atomic_units.append(("\n".join(cur_lines), sep_after))
+                    atomic_units.append((kind, "\n".join(cur_lines), sep_after))
 
         chunks: List[Tuple[str, str]] = []
         buf_text = ""
         pending_sep = ""
+        buf_is_isolated = False
 
-        for unit_text, unit_sep in atomic_units:
+        for unit_kind, unit_text, unit_sep in atomic_units:
+            is_isolated_fence = unit_kind == "code_fence" and len(unit_text) >= standalone_fence_min
+
             if not buf_text and not pending_sep:
                 buf_text = unit_text
                 pending_sep = unit_sep
+                buf_is_isolated = is_isolated_fence
                 continue
 
             if not buf_text and pending_sep:
@@ -229,13 +279,15 @@ class MarkdownTranslator(BaseTranslator):
                 chunks.append(("", pending_sep))
                 buf_text = unit_text
                 pending_sep = unit_sep
+                buf_is_isolated = is_isolated_fence
                 continue
 
             candidate_len = len(buf_text) + len(pending_sep) + len(unit_text)
-            if candidate_len > max_chars:
+            if buf_is_isolated or is_isolated_fence or candidate_len > max_chars:
                 chunks.append((buf_text, pending_sep))
                 buf_text = unit_text
                 pending_sep = unit_sep
+                buf_is_isolated = is_isolated_fence
             else:
                 buf_text = f"{buf_text}{pending_sep}{unit_text}"
                 pending_sep = unit_sep

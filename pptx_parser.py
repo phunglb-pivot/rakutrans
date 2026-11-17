@@ -394,6 +394,7 @@ class PptxTranslator(BaseTranslator):
             slide_count = len(prs.slides)
             shape_count = sum(len(s.shapes) for s in prs.slides)
             total_words = 0
+            total_chars = 0
             unique_texts: Set[str] = set()
 
             for p in cls._iterate_paragraphs(prs):
@@ -403,14 +404,18 @@ class PptxTranslator(BaseTranslator):
                     if cls._has_translatable_content(p):
                         raw_runs_text, run_entries = _extract_pptx_paragraph_units(p)
                         clean = raw_runs_text if run_entries else text
-                        if clean.strip():
-                            unique_texts.add(clean.strip())
+                        trimmed = clean.strip()
+                        if trimmed:
+                            total_chars += len(trimmed)
+                            unique_texts.add(trimmed)
 
             return {
                 "type": "pptx",
                 "slides": slide_count,
                 "shapes": shape_count,
                 "word_count": total_words,
+                "char_count": total_chars,
+                "unique_char_count": sum(len(t) for t in unique_texts),
                 "translatable_segments": len(unique_texts),
             }
         except Exception as e:

@@ -112,6 +112,7 @@ class ExcelTranslator(BaseTranslator):
                 sheet_names = [ws.title for ws in worksheets]
                 translatable_cells = 0
                 formula_count = 0
+                total_chars = 0
                 unique_set = set()
 
                 for ws in worksheets:
@@ -124,8 +125,10 @@ class ExcelTranslator(BaseTranslator):
                             else:
                                 text_val = _extract_cell_str(val)
                                 if should_translate_text(text_val, ignore_formulas=True):
+                                    trimmed = text_val.strip()
                                     translatable_cells += 1
-                                    unique_set.add(text_val.strip())
+                                    total_chars += len(trimmed)
+                                    unique_set.add(trimmed)
 
                 return {
                     "type": "excel",
@@ -133,6 +136,8 @@ class ExcelTranslator(BaseTranslator):
                     "sheet_names": sheet_names,
                     "translatable_cells": translatable_cells,
                     "unique_texts": len(unique_set),
+                    "char_count": total_chars,
+                    "unique_char_count": sum(len(t) for t in unique_set),
                     "formula_count": formula_count,
                 }
             finally:

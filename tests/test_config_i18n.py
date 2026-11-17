@@ -295,6 +295,7 @@ class TestConfigAndI18n(unittest.TestCase):
         buf = io.StringIO()
         with patch.object(sys, "argv", ["main.py", "--convert", "docx"]), \
              patch("sys.stdout", buf), \
+             patch.object(main_mod.AppConfig, "load", return_value=AppConfig(ui_language="en")), \
              patch.object(main_mod, "launch_gui") as mock_gui:
             with self.assertRaises(SystemExit) as cm:
                 main_mod.main()

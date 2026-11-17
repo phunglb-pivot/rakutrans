@@ -226,6 +226,42 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertFalse(any(c.strip().startswith("```python") and "only_code" in c and "Paragraph" not in c and "Closing" not in c for c in seen_chunks))
         self.assertIn("def only_code():", out_text)
 
+    def test_large_code_fence_isolated_even_in_short_doc_and_long_prose_line_splits(self):
+        from translation_cache import TranslationCache
+
+        large_code = "```python\n" + "\n".join(f"def helper_{i}(x):\n    return x + {i}" for i in range(15)) + "\n```"
+        short_doc_with_big_code = f"# Intro\n\nPlease review the snippet below.\n\n{large_code}\n\nConclusion text.\n"
+        md_path = Path(self.temp_dir.name) / "isolated_code.md"
+        md_path.write_text(short_doc_with_big_code, encoding="utf-8")
+
+        seen_chunks = []
+
+        class _SpyLLM:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                seen_chunks.append(markdown_text)
+                return f"[VI] {markdown_text}"
+
+        tr = MarkdownTranslator(
+            AppConfig(section_max_chars=6000),
+            _SpyLLM(),
+            cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_iso.db"),
+        )
+        out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+
+        # Large code fence must NOT be sent to LLM at all, yet preserved verbatim in output
+        self.assertTrue(all("def helper_0" not in c for c in seen_chunks))
+        self.assertIn(large_code, out_text)
+        self.assertIn("[VI] # Intro", out_text)
+        self.assertIn("[VI] Conclusion text.", out_text)
+
+        # Single unwrapped prose line > max_chars splits cleanly along whitespace
+        long_line_md = "word " * 300
+        line_specs = tr._split_into_chunk_specs(long_line_md, max_chars=400)
+        self.assertGreater(len(line_specs), 1)
+        self.assertTrue(all(len(c) <= 400 for c, _ in line_specs))
+        self.assertEqual("".join(c + s for c, s in line_specs), long_line_md)
+
 
 if __name__ == "__main__":
     unittest.main()

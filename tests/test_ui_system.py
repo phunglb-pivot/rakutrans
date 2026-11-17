@@ -11,8 +11,11 @@ try:
     from components.ui_system import (
         BUTTON_SIZES,
         BUTTON_VARIANTS,
+        BUTTON_DISABLED_STYLES,
+        SEGMENTED_BUTTON_TOKENS,
         SPINNER_FRAMES,
         CustomButton,
+        CustomSegmentedButton,
         BaseModal
     )
     from components.confirm_modal import ConfirmModal
@@ -271,6 +274,44 @@ class TestUISystem(unittest.TestCase):
 
                 sv.destroy()
                 root.destroy()
+
+    def test_custom_button_disabled_and_segmented_active_contrast(self):
+        """Verify disabled primary CustomButton uses muted surface and CustomSegmentedButton syncs active/inactive styles."""
+        import customtkinter as ctk
+
+        ctk.set_appearance_mode("Dark")
+        root = ctk.CTk()
+
+        btn = CustomButton(root, text="Translate", variant="primary", icon_name="refresh", state="disabled")
+        self.assertEqual(btn.cget("fg_color"), BUTTON_DISABLED_STYLES["filled"]["fg_color"])
+        self.assertEqual(btn.cget("text_color_disabled"), BUTTON_DISABLED_STYLES["filled"]["text_color_disabled"])
+
+        btn.configure(state="normal")
+        self.assertEqual(btn.cget("fg_color"), BUTTON_VARIANTS["primary"]["fg_color"])
+        self.assertEqual(btn.cget("text_color"), BUTTON_VARIANTS["primary"]["text_color"])
+
+        seg = CustomSegmentedButton(
+            root,
+            values=["Translate", "Convert"],
+            icons={"Translate": ("globe", 16), "Convert": ("refresh", 16)},
+        )
+        seg.set("Translate")
+        tr_btn = seg._buttons_dict["Translate"]
+        cv_btn = seg._buttons_dict["Convert"]
+        self.assertEqual(tr_btn.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["selected_color"])
+        self.assertEqual(tr_btn.cget("text_color"), SEGMENTED_BUTTON_TOKENS["selected_text_color"])
+        self.assertEqual(cv_btn.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["unselected_color"])
+        self.assertEqual(cv_btn.cget("text_color"), SEGMENTED_BUTTON_TOKENS["unselected_text_color"])
+        tr_img_selected = tr_btn.cget("image")
+
+        seg.set("Convert")
+        self.assertEqual(cv_btn.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["selected_color"])
+        self.assertEqual(cv_btn.cget("text_color"), SEGMENTED_BUTTON_TOKENS["selected_text_color"])
+        self.assertEqual(tr_btn.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["unselected_color"])
+        self.assertEqual(tr_btn.cget("text_color"), SEGMENTED_BUTTON_TOKENS["unselected_text_color"])
+        self.assertNotEqual(tr_btn.cget("image"), tr_img_selected)
+
+        root.destroy()
 
 
 if __name__ == "__main__":

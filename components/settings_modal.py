@@ -15,8 +15,8 @@ import customtkinter as ctk
 from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES, APP_VERSION
 from model_fetcher import fetch_live_models, fetch_models_async
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
-from components.ui_system import CustomButton
-from components.icons import get_icon, get_provider_icon
+from components.ui_system import CustomButton, CustomSegmentedButton
+from components.icons import get_icon, get_provider_icon, get_provider_icon_name
 from components.update_modal import UpdateModal
 
 
@@ -128,18 +128,13 @@ class SettingsView(ctk.CTkFrame):
 
         self.provider_var = ctk.StringVar(value=self.config.active_provider)
         providers_list = list(AI_PROVIDERS.keys())
-        self.provider_selector = ctk.CTkSegmentedButton(
+        self.provider_selector = CustomSegmentedButton(
             self.provider_group,
             values=providers_list,
             variable=self.provider_var,
             command=self._on_provider_changed,
             height=35,
             border_width=1,
-            selected_color=("#D4D4D8", "#3F3F46"),
-            selected_hover_color=("#C4C4C8", "#52525B"),
-            unselected_color=("#F4F4F5", "#18181B"),
-            unselected_hover_color=("#E4E4E7", "#27272A"),
-            text_color=("#18181B", "#FAFAFA")
         )
         for i in range(len(providers_list)):
             self.provider_selector.grid_columnconfigure(i, weight=1, uniform="prov_tabs")
@@ -480,13 +475,10 @@ class SettingsView(ctk.CTkFrame):
     def _apply_provider_icons(self) -> None:
         """Attaches crisp provider logo icons alongside provider names in the selector."""
         try:
-            btns = getattr(self.provider_selector, "_buttons_dict", {})
-            for prov in AI_PROVIDERS:
-                if prov in btns:
-                    btns[prov].configure(
-                        image=get_provider_icon(prov, "secondary", 15),
-                        compound="left",
-                    )
+            self.provider_selector.set_icons({
+                prov: (get_provider_icon_name(prov), 15)
+                for prov in AI_PROVIDERS
+            })
         except Exception:
             pass
 

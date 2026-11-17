@@ -95,6 +95,40 @@ BUTTON_VARIANTS = {
     }
 }
 
+# Muted surfaces for disabled CustomButton states so disabled primary/accent
+# buttons do not stay bright white in Dark Mode or solid black in Light Mode.
+BUTTON_DISABLED_STYLES = {
+    "filled": {
+        "fg_color": ("#E4E4E7", "#27272A"),
+        "text_color_disabled": ("#A1A1AA", "#71717A"),
+        "icon_color": ("#A1A1AA", "#71717A"),
+    },
+    "loading": {
+        "fg_color": ("#E4E4E7", "#27272A"),
+        "text_color_disabled": ("#52525B", "#A1A1AA"),
+        "icon_color": ("#52525B", "#A1A1AA"),
+    },
+    "transparent": {
+        "fg_color": "transparent",
+        "border_color": ("#E4E4E7", "#27272A"),
+        "text_color_disabled": ("#A1A1AA", "#71717A"),
+        "icon_color": ("#A1A1AA", "#71717A"),
+    },
+}
+
+SEGMENTED_BUTTON_TOKENS = {
+    "fg_color": ("#D4D4D8", "#27272A"),
+    "selected_color": ("#18181B", "#FAFAFA"),
+    "selected_hover_color": ("#27272A", "#E4E4E7"),
+    "unselected_color": ("#F4F4F5", "#18181B"),
+    "unselected_hover_color": ("#E4E4E7", "#27272A"),
+    "selected_text_color": ("#FFFFFF", "#18181B"),
+    "unselected_text_color": ("#71717A", "#A1A1AA"),
+    "text_color_disabled": ("#A1A1AA", "#71717A"),
+    "selected_icon_color": "primary",
+    "unselected_icon_color": "muted",
+}
+
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
@@ -110,6 +144,7 @@ class CustomButton(ctk.CTkButton):
     - Standardized sizes ('sm', 'md', 'lg')
     - Native hand cursor (cursor='hand2')
     - Built-in loading state with animated spinner
+    - Distinct muted visual styling when disabled across Light and Dark modes
     """
 
     def __init__(
@@ -132,6 +167,9 @@ class CustomButton(ctk.CTkButton):
         self._spinner_idx = 0
         self._loading_after_id = None
         self._orig_command = command
+        self._custom_fg_color = kwargs.get("fg_color")
+        self._custom_border_color = kwargs.get("border_color")
+        self._custom_text_color_disabled = kwargs.get("text_color_disabled")
 
         size_cfg = BUTTON_SIZES.get(size, BUTTON_SIZES["md"])
         var_cfg = BUTTON_VARIANTS.get(variant, BUTTON_VARIANTS["primary"])
@@ -145,13 +183,9 @@ class CustomButton(ctk.CTkButton):
             "corner_radius": size_cfg["corner_radius"],
             "font": default_font,
             "cursor": "hand2",
-            "text_color_disabled": ("gray50", "gray50"),
+            "text_color_disabled": BUTTON_DISABLED_STYLES["filled"]["text_color_disabled"],
             "command": command
         }
-
-        if icon_name and "image" not in kwargs:
-            btn_kwargs["image"] = get_icon(icon_name, color=variant, size=self._icon_size)
-            btn_kwargs.setdefault("compound", "left")
 
         # Apply variant styles if not explicitly passed
         for key, val in var_cfg.items():
@@ -159,19 +193,63 @@ class CustomButton(ctk.CTkButton):
                 btn_kwargs[key] = val
 
         btn_kwargs.update(kwargs)
+
+        initial_state = btn_kwargs.get("state", "normal")
+        if initial_state == "disabled":
+            self._inject_state_visuals("disabled", btn_kwargs, respect_existing=False)
+        elif icon_name and "image" not in kwargs:
+            btn_kwargs["image"] = get_icon(icon_name, color=variant, size=self._icon_size)
+            btn_kwargs.setdefault("compound", "left")
+
         self._current_image = btn_kwargs.get("image")
-        if btn_kwargs.get("state") == "disabled":
-            btn_kwargs["cursor"] = "arrow"
 
         super().__init__(master, text=text, **btn_kwargs)
 
+    def _disabled_style_key(self) -> str:
+        var_cfg = BUTTON_VARIANTS.get(self.variant, BUTTON_VARIANTS["primary"])
+        if self._is_loading:
+            return "loading"
+        if var_cfg["fg_color"] == "transparent" and self._custom_fg_color in (None, "transparent"):
+            return "transparent"
+        return "filled"
+
+    def _inject_state_visuals(self, state_val: str, cfg: dict, respect_existing: bool = True):
+        var_cfg = BUTTON_VARIANTS.get(self.variant, BUTTON_VARIANTS["primary"])
+        if state_val == "disabled":
+            dstyle = BUTTON_DISABLED_STYLES[self._disabled_style_key()]
+            cfg.setdefault("cursor", "arrow")
+            if self._custom_fg_color is None and ("fg_color" not in cfg or not respect_existing):
+                cfg["fg_color"] = dstyle["fg_color"]
+            if self._custom_text_color_disabled is None and ("text_color_disabled" not in cfg or not respect_existing):
+                cfg["text_color_disabled"] = dstyle["text_color_disabled"]
+            if var_cfg.get("border_width", 0) > 0 and self._custom_border_color is None:
+                if "border_color" in dstyle and ("border_color" not in cfg or not respect_existing):
+                    cfg["border_color"] = dstyle["border_color"]
+            if self._icon_name and not self._is_loading and ("image" not in cfg or not respect_existing):
+                img = get_icon(self._icon_name, color=dstyle["icon_color"], size=self._icon_size)
+                self._current_image = img
+                cfg["image"] = img
+                cfg.setdefault("compound", "left")
+        else:
+            cfg.setdefault("cursor", "hand2")
+            if self._custom_fg_color is None and ("fg_color" not in cfg or not respect_existing):
+                cfg["fg_color"] = var_cfg["fg_color"]
+            if "hover_color" not in cfg or not respect_existing:
+                cfg["hover_color"] = var_cfg["hover_color"]
+            if "text_color" not in cfg or not respect_existing:
+                cfg["text_color"] = var_cfg["text_color"]
+            if var_cfg.get("border_color") is not None and var_cfg.get("border_width", 0) > 0 and self._custom_border_color is None:
+                if "border_color" not in cfg or not respect_existing:
+                    cfg["border_color"] = var_cfg["border_color"]
+            if self._icon_name and not self._is_loading and ("image" not in cfg or not respect_existing):
+                img = get_icon(self._icon_name, color=self.variant, size=self._icon_size)
+                self._current_image = img
+                cfg["image"] = img
+                cfg.setdefault("compound", "left")
+
     def configure(self, require_redraw=False, **kwargs):
         if "state" in kwargs:
-            st = kwargs["state"]
-            if st == "disabled":
-                kwargs.setdefault("cursor", "arrow")
-            elif st == "normal":
-                kwargs.setdefault("cursor", "hand2")
+            self._inject_state_visuals(kwargs["state"], kwargs, respect_existing=True)
         if "image" in kwargs and not self._is_loading:
             self._current_image = kwargs["image"]
         if "text" in kwargs and not self._is_loading:
@@ -184,7 +262,12 @@ class CustomButton(ctk.CTkButton):
         if icon_size is not None:
             self._icon_size = icon_size
         if icon_name:
-            img = get_icon(icon_name, color=self.variant, size=self._icon_size)
+            cur_state = getattr(self, "_state", "normal")
+            if cur_state == "disabled":
+                icon_color = BUTTON_DISABLED_STYLES[self._disabled_style_key()]["icon_color"]
+            else:
+                icon_color = self.variant
+            img = get_icon(icon_name, color=icon_color, size=self._icon_size)
             self._current_image = img
             if not self._is_loading:
                 self.configure(image=img, compound="left")
@@ -198,19 +281,9 @@ class CustomButton(ctk.CTkButton):
         if variant in BUTTON_VARIANTS:
             self.variant = variant
             var_cfg = BUTTON_VARIANTS[variant]
-            cfg = {
-                "fg_color": var_cfg["fg_color"],
-                "hover_color": var_cfg["hover_color"],
-                "text_color": var_cfg["text_color"],
-                "border_width": var_cfg["border_width"],
-            }
-            if var_cfg.get("border_color") is not None and var_cfg.get("border_width", 0) > 0:
-                cfg["border_color"] = var_cfg["border_color"]
-            if self._icon_name:
-                img = get_icon(self._icon_name, color=variant, size=self._icon_size)
-                self._current_image = img
-                if not self._is_loading:
-                    cfg["image"] = img
+            cur_state = getattr(self, "_state", "normal")
+            cfg = {"border_width": var_cfg["border_width"]}
+            self._inject_state_visuals(cur_state, cfg, respect_existing=False)
             self.configure(**cfg)
 
     def start_loading(self, loading_text: Optional[str] = None):
@@ -290,6 +363,95 @@ class CustomButton(ctk.CTkButton):
                 pass
             self._loading_after_id = None
         super().destroy()
+
+
+# -----------------------------------------------------------------------------
+# 3. CustomSegmentedButton Component
+# -----------------------------------------------------------------------------
+
+class CustomSegmentedButton(ctk.CTkSegmentedButton):
+    """
+    Segmented control with high-contrast active vs. inactive segment styling
+    across Light and Dark modes, including automatic per-segment text and icon
+    color synchronization.
+    """
+
+    def __init__(
+        self,
+        master,
+        selected_text_color=None,
+        unselected_text_color=None,
+        icons: Optional[dict] = None,
+        **kwargs
+    ):
+        self._selected_text_color = (
+            selected_text_color or SEGMENTED_BUTTON_TOKENS["selected_text_color"]
+        )
+        self._unselected_text_color = (
+            unselected_text_color
+            or kwargs.get("text_color")
+            or SEGMENTED_BUTTON_TOKENS["unselected_text_color"]
+        )
+        self._segment_icons: dict = dict(icons or {})
+
+        kwargs.setdefault("fg_color", SEGMENTED_BUTTON_TOKENS["fg_color"])
+        kwargs.setdefault("selected_color", SEGMENTED_BUTTON_TOKENS["selected_color"])
+        kwargs.setdefault("selected_hover_color", SEGMENTED_BUTTON_TOKENS["selected_hover_color"])
+        kwargs.setdefault("unselected_color", SEGMENTED_BUTTON_TOKENS["unselected_color"])
+        kwargs.setdefault("unselected_hover_color", SEGMENTED_BUTTON_TOKENS["unselected_hover_color"])
+        kwargs.setdefault("text_color", self._unselected_text_color)
+        kwargs.setdefault("text_color_disabled", SEGMENTED_BUTTON_TOKENS["text_color_disabled"])
+
+        super().__init__(master, **kwargs)
+        self._sync_segment_styles()
+
+    def set_icons(self, icons: dict):
+        """Register (icon_name, size) per segment value and refresh active/inactive icon colors."""
+        self._segment_icons = dict(icons or {})
+        self._sync_segment_styles()
+
+    def _apply_segment_button_style(self, value: str, is_selected: bool):
+        btn = self._buttons_dict.get(value)
+        if btn is None:
+            return
+        cfg = {
+            "text_color": self._selected_text_color if is_selected else self._unselected_text_color
+        }
+        if value in self._segment_icons:
+            icon_name, icon_size = self._segment_icons[value]
+            icon_color = (
+                SEGMENTED_BUTTON_TOKENS["selected_icon_color"]
+                if is_selected
+                else SEGMENTED_BUTTON_TOKENS["unselected_icon_color"]
+            )
+            cfg["image"] = get_icon(icon_name, color=icon_color, size=icon_size)
+            cfg["compound"] = "left"
+        btn.configure(**cfg)
+
+    def _sync_segment_styles(self):
+        for value in list(self._buttons_dict.keys()):
+            self._apply_segment_button_style(value, value == self._current_value)
+
+    def _select_button_by_value(self, value: str):
+        super()._select_button_by_value(value)
+        self._apply_segment_button_style(value, True)
+
+    def _unselect_button_by_value(self, value: str):
+        super()._unselect_button_by_value(value)
+        self._apply_segment_button_style(value, False)
+
+    def configure(self, **kwargs):
+        if "selected_text_color" in kwargs:
+            self._selected_text_color = kwargs.pop("selected_text_color")
+        if "unselected_text_color" in kwargs:
+            self._unselected_text_color = kwargs.pop("unselected_text_color")
+        needs_sync = any(
+            k in kwargs for k in ("values", "text_color", "selected_text_color", "unselected_text_color")
+        )
+        res = super().configure(**kwargs)
+        if needs_sync:
+            self._sync_segment_styles()
+        return res
 
 
 # -----------------------------------------------------------------------------

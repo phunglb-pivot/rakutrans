@@ -407,10 +407,14 @@ _PROVIDER_ICON_MAP = {
 }
 
 
+def get_provider_icon_name(provider: str) -> str:
+    """Returns the vector icon name for a supported AI provider."""
+    return _PROVIDER_ICON_MAP.get(provider, "globe")
+
+
 def get_provider_icon(provider: str, color: ColorPair = "default", size: int = 16) -> ctk.CTkImage:
     """Returns the vector logo icon for a supported AI provider."""
-    icon_name = _PROVIDER_ICON_MAP.get(provider, "globe")
-    return get_icon(icon_name, color=color, size=size)
+    return get_icon(get_provider_icon_name(provider), color=color, size=size)
 
 
 # -----------------------------------------------------------------------------

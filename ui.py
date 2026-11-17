@@ -34,7 +34,7 @@ from components.settings_modal import SettingsView
 from components.error_modal import ErrorModal
 from components.update_modal import UpdateModal
 from components.searchable_select import SearchableLanguageSelect
-from components.ui_system import CustomButton
+from components.ui_system import CustomButton, CustomSegmentedButton
 from components.confirm_modal import ConfirmModal
 from components.icons import get_icon, get_provider_icon, get_assets_dir, init_windows_app_id, apply_windows_window_icon
 from error_handler import diagnose_error, DiagnosticInfo
@@ -339,18 +339,13 @@ class RakuTransApp(ctk.CTk):
         self.tab_translate_label = self.i18n.t("tab_translate")
         self.tab_convert_label = self.i18n.t("tab_convert")
 
-        self.mode_segmented = ctk.CTkSegmentedButton(
+        self.mode_segmented = CustomSegmentedButton(
             self.nav_frame,
             values=[self.tab_translate_label, self.tab_convert_label],
             command=self._on_mode_switched,
             height=36,
             border_width=1,
             font=ctk.CTkFont(size=13, weight="bold"),
-            selected_color=("#D4D4D8", "#3F3F46"),
-            selected_hover_color=("#C4C4C8", "#52525B"),
-            unselected_color=("#F4F4F5", "#18181B"),
-            unselected_hover_color=("#E4E4E7", "#27272A"),
-            text_color=("#18181B", "#FAFAFA")
         )
         self.mode_segmented.grid_columnconfigure(0, weight=1, uniform="mode_tabs")
         self.mode_segmented.grid_columnconfigure(1, weight=1, uniform="mode_tabs")
@@ -657,18 +652,13 @@ class RakuTransApp(ctk.CTk):
         )
         self.convert_desc_label.pack(side="right")
 
-        self.target_segmented = ctk.CTkSegmentedButton(
+        self.target_segmented = CustomSegmentedButton(
             self.convert_options_card,
             values=["--"],
             command=self._on_target_format_changed,
             height=34,
             border_width=1,
             font=ctk.CTkFont(size=12, weight="bold"),
-            selected_color=("#D4D4D8", "#3F3F46"),
-            selected_hover_color=("#C4C4C8", "#52525B"),
-            unselected_color=("#F4F4F5", "#18181B"),
-            unselected_hover_color=("#E4E4E7", "#27272A"),
-            text_color=("#18181B", "#FAFAFA")
         )
         self.target_segmented.pack(fill="x", pady=(0, 8))
 
@@ -679,17 +669,10 @@ class RakuTransApp(ctk.CTk):
     def _apply_mode_tab_icons(self):
         """Attach crisp vector icons to the Translate / Convert segmented tabs."""
         try:
-            btns = getattr(self.mode_segmented, "_buttons_dict", {})
-            if self.tab_translate_label in btns:
-                btns[self.tab_translate_label].configure(
-                    image=get_icon("globe", "secondary", 16),
-                    compound="left"
-                )
-            if self.tab_convert_label in btns:
-                btns[self.tab_convert_label].configure(
-                    image=get_icon("refresh", "secondary", 16),
-                    compound="left"
-                )
+            self.mode_segmented.set_icons({
+                self.tab_translate_label: ("globe", 16),
+                self.tab_convert_label: ("refresh", 16),
+            })
         except Exception:
             pass
 

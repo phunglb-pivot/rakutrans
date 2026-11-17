@@ -471,6 +471,63 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._update_banner_dismissed = False
         self.app._on_settings_changed(self.app.config)
 
+    def test_dark_mode_translate_convert_active_and_disabled_clarity(self):
+        """In Dark mode, active mode tab and enabled/disabled translate & convert action buttons have unambiguous contrast."""
+        from components.ui_system import BUTTON_DISABLED_STYLES, SEGMENTED_BUTTON_TOKENS
+
+        ctk.set_appearance_mode("Dark")
+
+        # 1. Mode segmented tabs: Translate active vs Convert inactive
+        self.app.mode_segmented.set(self.app.tab_translate_label)
+        self.app._on_mode_switched(self.app.tab_translate_label)
+        tr_tab = self.app.mode_segmented._buttons_dict[self.app.tab_translate_label]
+        cv_tab = self.app.mode_segmented._buttons_dict[self.app.tab_convert_label]
+
+        self.assertEqual(tr_tab.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["selected_color"])
+        self.assertEqual(tr_tab.cget("text_color"), SEGMENTED_BUTTON_TOKENS["selected_text_color"])
+        self.assertEqual(cv_tab.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["unselected_color"])
+        self.assertEqual(cv_tab.cget("text_color"), SEGMENTED_BUTTON_TOKENS["unselected_text_color"])
+
+        # Switch to Convert Format tab
+        self.app.mode_segmented.set(self.app.tab_convert_label)
+        self.app._on_mode_switched(self.app.tab_convert_label)
+        self.assertEqual(cv_tab.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["selected_color"])
+        self.assertEqual(cv_tab.cget("text_color"), SEGMENTED_BUTTON_TOKENS["selected_text_color"])
+        self.assertEqual(tr_tab.cget("fg_color"), SEGMENTED_BUTTON_TOKENS["unselected_color"])
+        self.assertEqual(tr_tab.cget("text_color"), SEGMENTED_BUTTON_TOKENS["unselected_text_color"])
+
+        # 2. Action buttons: disabled state must use muted surface, ready state restores primary surface
+        self.app.selected_convert_file = None
+        self.app.selected_target_format = None
+        self.app._update_button_states("idle_no_file")
+        self.assertEqual(self.app.convert_btn.cget("state"), "disabled")
+        self.assertEqual(self.app.convert_btn.cget("fg_color"), BUTTON_DISABLED_STYLES["filled"]["fg_color"])
+
+        self.app.selected_convert_file = "/fake/sample.pdf"
+        self.app.selected_target_format = "docx"
+        self.app._update_button_states("file_ready")
+        self.assertEqual(self.app.convert_btn.cget("state"), "normal")
+        self.assertEqual(self.app.convert_btn.cget("fg_color"), BUTTON_VARIANTS["primary"]["fg_color"])
+
+        self.app.mode_segmented.set(self.app.tab_translate_label)
+        self.app._on_mode_switched(self.app.tab_translate_label)
+        self.app.selected_file = None
+        self.app._update_button_states("idle_no_file")
+        self.assertEqual(self.app.translate_btn.cget("state"), "disabled")
+        self.assertEqual(self.app.translate_btn.cget("fg_color"), BUTTON_DISABLED_STYLES["filled"]["fg_color"])
+
+        self.app.selected_file = "/fake/sample.docx"
+        self.app._update_button_states("file_ready")
+        self.assertEqual(self.app.translate_btn.cget("state"), "normal")
+        self.assertEqual(self.app.translate_btn.cget("fg_color"), BUTTON_VARIANTS["primary"]["fg_color"])
+
+        # Cleanup
+        self.app.selected_file = None
+        self.app.selected_convert_file = None
+        self.app.selected_target_format = None
+        self.app._update_button_states("idle_no_file")
+        self.app._refresh_status_text()
+
 
 if __name__ == "__main__":
     unittest.main()

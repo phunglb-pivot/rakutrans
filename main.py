@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import AI_PROVIDERS, APP_NAME, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
+from i18n import I18nManager
 
 
 def run_cli_translation(
@@ -37,17 +38,24 @@ def run_cli_translation(
     from translator_registry import TranslatorRegistry
 
     config = AppConfig.load()
+    i18n = I18nManager(config.ui_language)
     tgt_lang = tgt_lang or config.target_language
 
     clean_model = (model or "").strip()
     clean_provider = (provider or "").strip()
     if clean_model and not clean_provider:
-        print("Error: --model requires --provider to be specified explicitly.")
+        print(i18n.t("cli_err_model_requires_provider"))
         sys.exit(1)
 
     if clean_provider:
         if clean_provider not in AI_PROVIDERS:
-            print(f"Error: Unsupported AI provider '{clean_provider}'.")
+            print(
+                i18n.t(
+                    "cli_err_unknown_provider",
+                    provider=clean_provider,
+                    providers=", ".join(AI_PROVIDERS.keys()),
+                )
+            )
             sys.exit(1)
         config.active_provider = clean_provider
 
@@ -59,40 +67,55 @@ def run_cli_translation(
 
     active_provider = (config.active_provider or "").strip()
     if active_provider not in AI_PROVIDERS:
-        print("Error: No valid AI provider configured. Specify --provider or configure Settings.")
+        print(
+            i18n.t(
+                "cli_err_unknown_provider",
+                provider=active_provider or "(none)",
+                providers=", ".join(AI_PROVIDERS.keys()),
+            )
+        )
         sys.exit(1)
 
     active_model = (config.get_active_model() or "").strip()
     if not active_model:
-        print(
-            f"Error: No model selected for provider '{active_provider}'. "
-            f"Pass --provider {active_provider} --model <model_id> or select a model in Settings."
-        )
+        print(i18n.t("cli_err_no_model", provider=active_provider))
         sys.exit(1)
 
     active_key = (config.get_effective_api_key(active_provider) or "").strip()
     if not active_key:
         env_var = AI_PROVIDERS[active_provider].get("env_key", "")
         print(
-            f"Error: No API key configured for provider '{active_provider}'. "
-            f"Set {env_var} or configure it in Settings."
+            i18n.t(
+                "cli_err_no_api_key",
+                provider=active_provider,
+                env_var=env_var,
+            )
         )
         sys.exit(1)
 
     path = Path(file_path)
     if not path.exists():
-        print(f"Error: File '{file_path}' does not exist.")
+        print(i18n.t("cli_err_file_not_found", path=file_path))
         sys.exit(1)
 
     if not TranslatorRegistry.is_supported(path):
         supported = ", ".join(TranslatorRegistry.get_supported_extensions())
-        print(f"Error: Unsupported file format '{path.suffix}'. Supported formats: {supported}")
+        print(
+            i18n.t(
+                "cli_err_unsupported_file",
+                error=f"'{path.suffix}' ({supported})",
+            )
+        )
         sys.exit(1)
 
     if bilingual and not TranslatorRegistry.supports_bilingual(path):
+        bilingual_exts = ", ".join(TranslatorRegistry.get_bilingual_extensions()) or ".xlsx"
         print(
-            "Note: Bilingual mode is only supported for .xlsx files; "
-            "proceeding without bilingual output."
+            i18n.t(
+                "cli_warn_bilingual_ignored",
+                extensions=bilingual_exts,
+                suffix=path.suffix or "(none)",
+            )
         )
         bilingual = False
 
@@ -104,14 +127,18 @@ def run_cli_translation(
         bilingual_mode=bilingual,
     )
 
-    src_label = src_lang if src_lang else "Auto-detect mixed"
-    print(f"=== {APP_NAME} CLI ===")
-    print(f"File: {file_path}")
-    print(f"Provider: {active_provider} ({active_model})")
-    print(f"Target Language: {tgt_lang} (Source: {src_label})")
+    print(
+        i18n.t(
+            "cli_translating_header",
+            filename=path.name,
+            target_lang=tgt_lang,
+            provider=active_provider,
+            model=active_model,
+        )
+    )
 
-    def on_progress(current: int, total: int, msg: str):
-        print(f"[{current:3d}%] {msg}")
+    def on_progress(current: int, _total: int, msg: str):
+        print(i18n.t("cli_progress_line", pct=current, message=msg))
 
     try:
         translator = TranslatorRegistry.create_translator(path, config, llm_manager)
@@ -124,9 +151,12 @@ def run_cli_translation(
             custom_output_path=output_path,
         )
 
-        print(f"\nSuccess! Output saved to: {out_file}")
+        print(i18n.t("cli_success_saved", path=out_file))
+    except InterruptedError as e:
+        print(i18n.t("cli_cancelled", error=e))
+        sys.exit(1)
     except Exception as e:
-        print(f"\nTranslation failed: {e}")
+        print(i18n.t("cli_failed", message=e))
         sys.exit(1)
 
 
@@ -166,18 +196,25 @@ def launch_gui():
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
+    from format_converter import get_supported_conversion_targets
+    from translator_registry import TranslatorRegistry
+
+    supported_exts = ", ".join(TranslatorRegistry.get_supported_extensions())
+    convert_targets = ", ".join(get_supported_conversion_targets())
+    bilingual_exts = ", ".join(TranslatorRegistry.get_bilingual_extensions())
+
     parser = argparse.ArgumentParser(
-        description="RakuTrans AI - Professional Document & Data AI Translator"
+        description=f"{APP_NAME} - Professional Document & Data AI Translator"
     )
     parser.add_argument("--cli", action="store_true", help="Run translation in headless CLI mode")
-    parser.add_argument("--file", "-f", type=str, help="Path to document file (.xlsx, .docx, .pptx, .pdf, .csv, .tsv, .md, .json, .txt)")
+    parser.add_argument("--file", "-f", type=str, help=f"Path to document file ({supported_exts})")
     parser.add_argument("--tgt", "-t", type=str, default=None, help=f"Target language (default: saved config or {DEFAULT_TARGET_LANGUAGE})")
     parser.add_argument("--src", "-s", type=str, default=None, help="Optional source language filter (default: auto-detect mixed)")
     parser.add_argument("--keep-terms", "--keep-it", dest="keep_it", action=argparse.BooleanOptionalAction, default=True, help="Keep specialized/domain terms untranslated (use --no-keep-terms to disable)")
     parser.add_argument("--append-source", action="store_true", default=False, help="Append original words in parentheses for quoted terms")
-    parser.add_argument("--bilingual", action="store_true", default=False, help="Keep original sheets alongside translations (Excel)")
+    parser.add_argument("--bilingual", action="store_true", default=False, help=f"Keep original sheets alongside translations ({bilingual_exts})")
     parser.add_argument("--context", "-c", type=str, default="", help="Custom context or glossary rules")
-    parser.add_argument("--convert", "--convert-to", dest="convert_fmt", type=str, default=None, help="Directly convert document to target format without translation (e.g. docx, pdf, md, xlsx, csv, txt)")
+    parser.add_argument("--convert", "--convert-to", dest="convert_fmt", type=str, default=None, help=f"Directly convert document to target format without translation (e.g. {convert_targets})")
     parser.add_argument("--output", "-o", dest="output_path", type=str, default=None, help="Optional custom output file path")
     parser.add_argument("--model", "-m", type=str, default=None, help="AI model name")
     parser.add_argument("--provider", "-p", type=str, default=None, choices=list(AI_PROVIDERS.keys()), help="AI provider")
@@ -189,23 +226,26 @@ def main():
     args = parser.parse_args()
 
     if args.convert_fmt and not args.file:
-        print("[RakuTrans Converter] Error: --convert requires --file <path>.")
+        i18n = I18nManager(AppConfig.load().ui_language)
+        print(i18n.t("cli_err_convert_requires_file"))
         sys.exit(1)
 
     if args.file and args.convert_fmt:
         from format_converter import convert_file_direct
+        i18n = I18nManager(AppConfig.load().ui_language)
         try:
-            print(f"[RakuTrans Converter] Converting {args.file} -> {args.convert_fmt.upper()}...")
+            print(f"[{APP_NAME}] {args.file} -> {args.convert_fmt.upper()}...")
             out = convert_file_direct(args.file, args.convert_fmt, output_path=args.output_path)
-            print(f"[RakuTrans Converter] Conversion completed successfully! Output: {out}")
+            print(i18n.t("cli_converted_saved", path=out))
             sys.exit(0)
         except Exception as e:
-            print(f"[RakuTrans Converter] Error: {e}")
+            print(i18n.t("cli_conversion_failed", error=e))
             sys.exit(1)
 
     if args.cli or args.file:
         if not args.file:
-            print("Error: --file argument is required when using CLI mode.")
+            i18n = I18nManager(AppConfig.load().ui_language)
+            print(i18n.t("cli_err_file_not_found", path="--file"))
             parser.print_help()
             sys.exit(1)
         run_cli_translation(

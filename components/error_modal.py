@@ -7,7 +7,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from error_handler import DiagnosticInfo
-from components.ui_system import BaseModal, CustomButton
+from components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT, UI_TIMING
 from components.icons import get_icon
 
 
@@ -40,11 +40,12 @@ class ErrorModal(BaseModal):
         self.on_open_settings = on_open_settings
         self.t = get_translation or (lambda k, **kw: k)
 
+        modal_w, modal_h = UI_LAYOUT["error_modal_size"]
         super().__init__(
             parent=parent,
             title=self.t("error_modal_title"),
-            width=580,
-            height=540,
+            width=modal_w,
+            height=modal_h,
             resizable=False,
             on_confirm=self._handle_retry if (on_retry and diag.can_retry) else None
         )
@@ -74,7 +75,7 @@ class ErrorModal(BaseModal):
             title_box,
             text=self.diag.title,
             font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#EF4444",
+            text_color=COLORS["error_title"],
             anchor="w"
         )
         title_label.pack(fill="x")
@@ -93,9 +94,9 @@ class ErrorModal(BaseModal):
         # 2. Action Advice Box
         advice_box = ctk.CTkFrame(
             container,
-            fg_color=("#FEF2F2", "#2A1818"),
+            fg_color=COLORS["error_bg"],
             border_width=1,
-            border_color=("#FCA5A5", "#7F1D1D"),
+            border_color=COLORS["error_border"],
             corner_radius=8
         )
         advice_box.pack(fill="x", pady=(0, 12), padx=2)
@@ -103,10 +104,10 @@ class ErrorModal(BaseModal):
         advice_title = ctk.CTkLabel(
             advice_box,
             text="  " + self.t("err_how_to_fix"),
-            image=get_icon("lightbulb", ("#B91C1C", "#F87171"), 14),
+            image=get_icon("lightbulb", COLORS["error_advice_title"], 14),
             compound="left",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=("#B91C1C", "#F87171")
+            text_color=COLORS["error_advice_title"]
         )
         advice_title.pack(anchor="w", padx=12, pady=(10, 2))
 
@@ -208,7 +209,9 @@ class ErrorModal(BaseModal):
                     self.after_cancel(self._copy_after_id)
                 except Exception:
                     pass
-            self._copy_after_id = self.after(2000, self._reset_copy_btn)
+            self._copy_after_id = self.after(
+                UI_TIMING["copy_reset_delay_ms"], self._reset_copy_btn
+            )
         except Exception:
             pass
 

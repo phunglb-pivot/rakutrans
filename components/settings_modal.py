@@ -13,20 +13,33 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from config import (
-    AppConfig,
     AI_PROVIDERS,
-    RATE_LIMIT_PRESETS,
-    UI_LANGUAGES,
     APP_VERSION,
-    _coerce_float,
-    _coerce_int,
-    _coerce_optional_float,
+    AppConfig,
+    DEFAULT_UI_LANGUAGE,
+    RATE_LIMIT_PRESETS,
+    THEME_MODES,
+    UI_LANGUAGES,
+    coerce_setting_value,
 )
 from model_fetcher import fetch_models_async
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
-from components.ui_system import CustomButton, CustomSegmentedButton
-from components.icons import get_icon, get_provider_icon, get_provider_icon_name
+from components.ui_system import COLORS, CustomButton, CustomSegmentedButton, UI_TIMING
+from components.icons import get_icon, get_provider_icon_name
 from components.update_modal import UpdateModal
+
+_ADV_NUMERIC_BINDINGS = (
+    ("temperature_var", "temperature"),
+    ("request_timeout_var", "request_timeout"),
+    ("batch_size_var", "batch_size"),
+    ("max_concurrent_var", "max_concurrent_requests"),
+    ("batch_max_chars_var", "batch_max_chars"),
+    ("section_max_chars_var", "section_max_chars"),
+    ("min_interval_var", "min_request_interval"),
+    ("rate_retries_var", "max_retries_rate_limit"),
+    ("rpm_limit_var", "rpm_limit"),
+    ("tpm_limit_var", "tpm_limit"),
+)
 
 
 class SettingsView(ctk.CTkFrame):
@@ -43,7 +56,6 @@ class SettingsView(ctk.CTkFrame):
         get_translation: Callable[[str], str],
         on_save_callback: Callable[[AppConfig], None],
         on_close_callback: Callable[[], None],
-        show_back_button: bool = False,
         on_update_found: Optional[Callable[[UpdateInfo], None]] = None,
         **kwargs
     ):
@@ -52,7 +64,6 @@ class SettingsView(ctk.CTkFrame):
         self.t = get_translation
         self.on_save = on_save_callback
         self.on_close = on_close_callback
-        self.show_back_button = show_back_button
         self.on_update_found = on_update_found
         self._show_key = False
         self.key_var: Optional[ctk.StringVar] = None
@@ -76,25 +87,20 @@ class SettingsView(ctk.CTkFrame):
         self._setup_ui()
 
     def _get_guide_text(self, provider: str) -> str:
-        guide_key = AI_PROVIDERS.get(provider, {}).get("guide_key")
-        if guide_key:
-            return self.t(guide_key)
-        return AI_PROVIDERS.get(provider, {}).get("guide_text", "")
+        guide_key = AI_PROVIDERS.get(provider, {}).get("guide_key", "")
+        return self.t(guide_key) if guide_key else ""
 
     def _get_theme_display_names(self) -> list[str]:
-        return [self.t("theme_dark"), self.t("theme_light"), self.t("theme_system")]
+        return [self.t(f"theme_{mode}") for mode in THEME_MODES]
 
     def _get_current_theme_display(self) -> str:
-        mode = self.config.theme_mode.lower()
-        if mode == "dark":
-            return self.t("theme_dark")
-        elif mode == "light":
-            return self.t("theme_light")
-        return self.t("theme_system")
+        mode = (self.config.theme_mode or "").lower()
+        resolved = mode if mode in THEME_MODES else THEME_MODES[-1]
+        return self.t(f"theme_{resolved}")
 
     def _setup_ui(self):
         # --------------------------------------------------------------------
-        # Pinned Header with Title and Back Navigation
+        # Pinned Header with Title
         # --------------------------------------------------------------------
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
         self.header_frame.pack(fill="x", padx=20, pady=(14, 8))
@@ -107,18 +113,6 @@ class SettingsView(ctk.CTkFrame):
             font=ctk.CTkFont(size=18, weight="bold")
         )
         self.title_label.pack(side="left")
-
-        self.back_header_btn = CustomButton(
-            self.header_frame,
-            text=self.t("back"),
-            variant="outline",
-            size="sm",
-            icon_name="arrow_left",
-            icon_size=14,
-            command=self.on_close
-        )
-        if self.show_back_button:
-            self.back_header_btn.pack(side="right")
 
         # --------------------------------------------------------------------
         # Middle Scrollable Content Container (takes full height)
@@ -337,7 +331,9 @@ class SettingsView(ctk.CTkFrame):
 
         lang_codes = list(UI_LANGUAGES.keys())
         lang_names = [UI_LANGUAGES[c] for c in lang_codes]
-        current_lang_name = UI_LANGUAGES.get(self.config.ui_language, "English")
+        current_lang_name = UI_LANGUAGES.get(
+            self.config.ui_language, UI_LANGUAGES[DEFAULT_UI_LANGUAGE]
+        )
 
         self.lang_var = ctk.StringVar(value=current_lang_name)
         self.lang_dropdown = ctk.CTkOptionMenu(
@@ -696,7 +692,9 @@ class SettingsView(ctk.CTkFrame):
         )
         self.auto_update_cb.pack(anchor="w", padx=12, pady=(0, 10))
 
-    def _schedule_model_autofetch(self, delay_ms: int = 150) -> None:
+    def _schedule_model_autofetch(
+        self, delay_ms: int = UI_TIMING["autofetch_delay_ms"]
+    ) -> None:
         if getattr(self, "_fetch_after_id", None):
             try:
                 self.after_cancel(self._fetch_after_id)
@@ -760,10 +758,8 @@ class SettingsView(ctk.CTkFrame):
 
     def _get_rate_profile_pairs(self) -> list[tuple[str, str]]:
         return [
-            ("safe_free", self.t("rate_profile_safe_free")),
-            ("balanced", self.t("rate_profile_balanced")),
-            ("fast_paid", self.t("rate_profile_fast_paid")),
-            ("custom", self.t("rate_profile_custom")),
+            (code, self.t(f"rate_profile_{code}"))
+            for code in (*RATE_LIMIT_PRESETS.keys(), "custom")
         ]
 
     def _get_rate_profile_display_names(self) -> list[str]:
@@ -844,7 +840,9 @@ class SettingsView(ctk.CTkFrame):
             except Exception:
                 pass
         try:
-            self._adv_save_after_id = self.after(300, self._flush_adv_save)
+            self._adv_save_after_id = self.after(
+                UI_TIMING["debounce_save_ms"], self._flush_adv_save
+            )
         except Exception:
             self._adv_save_after_id = None
 
@@ -860,46 +858,10 @@ class SettingsView(ctk.CTkFrame):
         provider = self.provider_var.get()
         if getattr(self, "base_url_var", None) is not None:
             self.config.base_urls[provider] = self.base_url_var.get().strip()
-        if getattr(self, "temperature_var", None) is not None:
-            self.config.temperature = _coerce_optional_float(
-                self.temperature_var.get(), 0.0, 2.0
-            )
-        if getattr(self, "request_timeout_var", None) is not None:
-            self.config.request_timeout = _coerce_float(
-                self.request_timeout_var.get(), 120.0, 5.0, 600.0
-            )
-        if getattr(self, "batch_size_var", None) is not None:
-            self.config.batch_size = _coerce_int(
-                self.batch_size_var.get(), 25, 1, 500
-            )
-        if getattr(self, "max_concurrent_var", None) is not None:
-            self.config.max_concurrent_requests = _coerce_int(
-                self.max_concurrent_var.get(), 2, 1, 20
-            )
-        if getattr(self, "batch_max_chars_var", None) is not None:
-            self.config.batch_max_chars = _coerce_int(
-                self.batch_max_chars_var.get(), 6000, 200, 100000
-            )
-        if getattr(self, "section_max_chars_var", None) is not None:
-            self.config.section_max_chars = _coerce_int(
-                self.section_max_chars_var.get(), 6000, 200, 100000
-            )
-        if getattr(self, "min_interval_var", None) is not None:
-            self.config.min_request_interval = _coerce_float(
-                self.min_interval_var.get(), 0.5, 0.0, 60.0
-            )
-        if getattr(self, "rate_retries_var", None) is not None:
-            self.config.max_retries_rate_limit = _coerce_int(
-                self.rate_retries_var.get(), 5, 1, 15
-            )
-        if getattr(self, "rpm_limit_var", None) is not None:
-            self.config.rpm_limit = _coerce_int(
-                self.rpm_limit_var.get(), 45, 0, 10000
-            )
-        if getattr(self, "tpm_limit_var", None) is not None:
-            self.config.tpm_limit = _coerce_int(
-                self.tpm_limit_var.get(), 0, 0, 10000000
-            )
+        for var_attr, cfg_field in _ADV_NUMERIC_BINDINGS:
+            tk_var = getattr(self, var_attr, None)
+            if tk_var is not None:
+                setattr(self.config, cfg_field, coerce_setting_value(cfg_field, tk_var.get()))
         if getattr(self, "strict_json_var", None) is not None:
             self.config.strict_json_mode = bool(self.strict_json_var.get())
         self.config.rate_limit_preset = self.config.detect_rate_limit_preset()
@@ -946,19 +908,18 @@ class SettingsView(ctk.CTkFrame):
         self._apply_model_options(models, self.config.get_active_model())
         self._set_key_var_silently(self.config.api_keys.get(current_prov, ""))
         self.guide_text_label.configure(text=self._get_guide_text(current_prov))
-        self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
+        self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, UI_LANGUAGES[DEFAULT_UI_LANGUAGE]))
         self.theme_var.set(self._get_current_theme_display())
         self.auto_update_var.set(bool(self.config.auto_check_updates))
         self._sync_advanced_vars()
         if not self._has_auto_fetched_on_open:
             self._has_auto_fetched_on_open = True
-            self._schedule_model_autofetch(150)
+            self._schedule_model_autofetch(UI_TIMING["autofetch_delay_ms"])
 
     def refresh_i18n(self, get_translation: Callable[[str], str]):
         """Refreshes localized labels inside SettingsView."""
         self.t = get_translation
         self.title_label.configure(text="  " + self.t("settings_title"))
-        self.back_header_btn.set_text(self.t("back"))
         self.active_prov_label.configure(text=self.t("active_provider"))
         self.model_label_elem.configure(text=self.t("model_label"))
         current_prov = self.provider_var.get()
@@ -975,7 +936,7 @@ class SettingsView(ctk.CTkFrame):
         self.guide_text_label.configure(text=self._get_guide_text(self.provider_var.get()))
         self.pref_label_elem.configure(text=self.t("preferences_title"))
         self.ui_lang_label_elem.configure(text=self.t("ui_language"))
-        self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
+        self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, UI_LANGUAGES[DEFAULT_UI_LANGUAGE]))
         self.theme_label_elem.configure(text=self.t("theme_mode"))
         self.theme_dropdown.configure(values=self._get_theme_display_names())
         self.theme_var.set(self._get_current_theme_display())
@@ -1026,7 +987,7 @@ class SettingsView(ctk.CTkFrame):
             if is_manual:
                 self.model_hint_label.configure(
                     text=self.t("err_enter_api_key_models"),
-                    text_color="#EF4444"
+                    text_color=COLORS["error_title"]
                 )
             return
 
@@ -1061,7 +1022,7 @@ class SettingsView(ctk.CTkFrame):
                     if is_manual or not models:
                         self.model_hint_label.configure(
                             text=error_msg,
-                            text_color="#EF4444"
+                            text_color=COLORS["error_title"]
                         )
                     else:
                         self.model_hint_label.configure(
@@ -1075,14 +1036,14 @@ class SettingsView(ctk.CTkFrame):
                     msg = self.t(msg_key, count=len(models), provider=provider)
                     self.model_hint_label.configure(
                         text=msg,
-                        text_color="#10B981"
+                        text_color=COLORS["success"]
                     )
                 else:
                     self._apply_model_options([], self._get_selected_model_value(provider))
                     if is_manual:
                         self.model_hint_label.configure(
                             text=self.t("err_no_models_returned", provider=provider),
-                            text_color="#EF4444"
+                            text_color=COLORS["error_title"]
                         )
                     else:
                         self.model_hint_label.configure(
@@ -1143,7 +1104,7 @@ class SettingsView(ctk.CTkFrame):
         self.config.save()
         self.on_save(self.config)
 
-        self._schedule_model_autofetch(150)
+        self._schedule_model_autofetch(UI_TIMING["autofetch_delay_ms"])
 
     def _on_model_changed(self, new_model: str):
         clean_model = (new_model or "").strip()
@@ -1167,7 +1128,9 @@ class SettingsView(ctk.CTkFrame):
             except Exception:
                 pass
         try:
-            self._key_save_after_id = self.after(300, self._flush_key_save)
+            self._key_save_after_id = self.after(
+                UI_TIMING["debounce_save_ms"], self._flush_key_save
+            )
         except Exception:
             self._key_save_after_id = None
 
@@ -1177,12 +1140,8 @@ class SettingsView(ctk.CTkFrame):
         webbrowser.open_new_tab(url)
 
     def _on_theme_changed(self, selected_display: str):
-        if selected_display == self.t("theme_dark"):
-            mode = "dark"
-        elif selected_display == self.t("theme_light"):
-            mode = "light"
-        else:
-            mode = "system"
+        display_to_mode = {self.t(f"theme_{m}"): m for m in THEME_MODES}
+        mode = display_to_mode.get(selected_display, THEME_MODES[-1])
         self.config.theme_mode = mode
         self.config.save()
         ctk.set_appearance_mode(mode)
@@ -1204,14 +1163,14 @@ class SettingsView(ctk.CTkFrame):
         if not key:
             self.test_conn_status.configure(
                 text=self.t("err_enter_api_key"),
-                text_color="#EF4444"
+                text_color=COLORS["error_title"]
             )
             return
 
         if not selected_model:
             self.test_conn_status.configure(
                 text=self.t("err_select_model"),
-                text_color="#EF4444"
+                text_color=COLORS["error_title"]
             )
             return
 
@@ -1267,10 +1226,10 @@ class SettingsView(ctk.CTkFrame):
                 self.test_conn_btn.stop_loading(self.t("test_connection"))
                 if success:
                     msg = self.t("test_conn_success", model=selected_model, ms=elapsed_ms)
-                    self.test_conn_status.configure(text=msg, text_color="#10B981")
+                    self.test_conn_status.configure(text=msg, text_color=COLORS["success"])
                 else:
                     msg = self.t("test_conn_failed", error=err_msg)
-                    self.test_conn_status.configure(text=msg, text_color="#EF4444")
+                    self.test_conn_status.configure(text=msg, text_color=COLORS["error_title"])
 
             self.after(0, update_ui)
 
@@ -1295,12 +1254,12 @@ class SettingsView(ctk.CTkFrame):
         elif self._update_status_state == "up_to_date":
             self.update_status_label.configure(
                 text=self.t("update_up_to_date", version=APP_VERSION),
-                text_color="#10B981"
+                text_color=COLORS["success"]
             )
         elif self._update_status_state == "error":
             self.update_status_label.configure(
                 text=self.t("update_check_failed", error=self._update_status_error),
-                text_color="#EF4444"
+                text_color=COLORS["error_title"]
             )
 
     def _check_for_updates(self):
@@ -1342,7 +1301,11 @@ class SettingsView(ctk.CTkFrame):
 
             self.after(0, update_ui)
 
-        check_for_updates_async(on_done, current_version=APP_VERSION)
+        check_for_updates_async(
+            on_done,
+            current_version=APP_VERSION,
+            ui_language=self.config.ui_language,
+        )
 
     def _open_update_modal(self):
         if not self._latest_update_info:

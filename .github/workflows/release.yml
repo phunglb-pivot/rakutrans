@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           TAG_VER="${GITHUB_REF_NAME#v}"
-          APP_VER="$(python3 -c "import ast, pathlib; t=ast.parse(pathlib.Path('config.py').read_text(encoding='utf-8')); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) for tgt in n.targets if isinstance(tgt, ast.Name) and tgt.id=='APP_VERSION'))")"
+          APP_VER="$(python3 check_env.py --meta APP_VERSION)"
           echo "Tag version: $TAG_VER | config.APP_VERSION: $APP_VER"
           if [ "$TAG_VER" != "$APP_VER" ]; then
             echo "::error::Git tag ($GITHUB_REF_NAME) does not match config.py APP_VERSION ($APP_VER). Please update APP_VERSION before tagging."
@@ -78,7 +78,7 @@ jobs:
         shell: pwsh
         run: |
           $tagVer = $env:GITHUB_REF_NAME -replace '^v', ''
-          $appVer = python -c "import ast, pathlib; t=ast.parse(pathlib.Path('config.py').read_text(encoding='utf-8')); print(next(n.value.value for n in t.body if isinstance(n, ast.Assign) for tgt in n.targets if isinstance(tgt, ast.Name) and tgt.id=='APP_VERSION'))"
+          $appVer = python check_env.py --meta APP_VERSION
           Write-Host "Tag version: $tagVer | config.APP_VERSION: $appVer"
           if ($tagVer -ne $appVer) {
             Write-Error "Git tag ($env:GITHUB_REF_NAME) does not match config.py APP_VERSION ($appVer). Please update APP_VERSION before tagging."

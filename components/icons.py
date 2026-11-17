@@ -57,10 +57,6 @@ def _resolve_colors(color: ColorPair) -> Tuple[str, str]:
     return ICON_COLORS["default"]
 
 
-def _s(v: float, scale: float) -> float:
-    return v * scale
-
-
 def _draw_thick_line(draw: ImageDraw.ImageDraw, pts, color, width: int):
     if len(pts) < 2:
         return
@@ -400,7 +396,7 @@ def get_icon(name: str, color: ColorPair = "default", size: int = 16) -> ctk.CTk
     return ctk.CTkImage(light_image=light_img, dark_image=dark_img, size=(size, size))
 
 
-from config import AI_PROVIDERS
+from config import AI_PROVIDERS, APP_USER_MODEL_ID
 
 _PROVIDER_ICON_MAP = {
     prov: meta.get("icon_name", "globe")
@@ -422,9 +418,6 @@ def get_provider_icon(provider: str, color: ColorPair = "default", size: int = 1
 # Windows Taskbar & Window Icon Helpers
 # -----------------------------------------------------------------------------
 
-_APP_USER_MODEL_ID = "RakuTrans.AI.Desktop"
-
-
 _APP_ID_INITIALIZED = False
 
 
@@ -438,7 +431,7 @@ def init_windows_app_id():
         return
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(_APP_USER_MODEL_ID)
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
         _APP_ID_INITIALIZED = True
     except Exception:
         pass

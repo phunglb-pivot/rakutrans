@@ -127,7 +127,7 @@ For more info, visit [Documentation](https://api.example.com).
             + "```python\ndef f1():\n    return 1\n\ndef f2():\n    return 2\n```\n\n"
             + "Tail paragraph."
         )
-        chunks = translator._split_into_chunks(code_md, max_chars=800)
+        chunks = [c for c, _ in translator._split_into_chunk_specs(code_md, max_chars=800)]
         fence_chunks = [c for c in chunks if "```python" in c]
         self.assertEqual(len(fence_chunks), 1)
         self.assertIn("def f2():", fence_chunks[0])

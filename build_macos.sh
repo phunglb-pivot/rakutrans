@@ -15,7 +15,7 @@ VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 PYINSTALLER="$SCRIPT_DIR/.venv/bin/pyinstaller"
 
 # Ensure .venv is healthy and synced with requirements.txt
-if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" -c "import hashlib, pathlib, sys, customtkinter, tkinterdnd2, PIL, openpyxl, docx, pptx, fitz, pypdf, pdf2docx, reportlab, charset_normalizer; req = pathlib.Path('requirements.txt'); stamp = pathlib.Path('.venv/.req_stamp'); ok_stamp = (not req.exists()) or (stamp.exists() and stamp.read_text().strip() == hashlib.sha256(req.read_bytes()).hexdigest()); sys.exit(0 if (sys.version_info >= (3, 10) and ok_stamp) else 1)" >/dev/null 2>&1; then
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" "$SCRIPT_DIR/check_env.py" >/dev/null 2>&1; then
     echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs sync."
     echo "[RakuTrans AI] Running automatic setup..."
     bash "$SCRIPT_DIR/setup_env.sh" --with-build
@@ -30,9 +30,9 @@ fi
 echo "Cleaning previous builds..."
 rm -rf build dist
 
-APP_NAME="$("$VENV_PY" -c "import config; print(config.APP_NAME)")"
-APP_VERSION="$("$VENV_PY" -c "import config; print(config.APP_VERSION)")"
-APP_EXEC_NAME="$("$VENV_PY" -c "import config; print(config.APP_EXECUTABLE_NAME)")"
+APP_NAME="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_NAME)"
+APP_VERSION="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_VERSION)"
+APP_EXEC_NAME="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_EXECUTABLE_NAME)"
 if [ -z "$APP_NAME" ] || [ -z "$APP_VERSION" ] || [ -z "$APP_EXEC_NAME" ]; then
     echo "[Error] Failed to read app metadata from config.py" >&2
     exit 1

@@ -14,7 +14,21 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import APP_VERSION, LATEST_RELEASE_API_URL, RELEASES_PAGE_URL
+from config import (
+    APP_EXECUTABLE_NAME,
+    APP_VERSION,
+    DEFAULT_UI_LANGUAGE,
+    LATEST_RELEASE_API_URL,
+    RELEASES_PAGE_URL,
+)
+
+DEFAULT_UPDATE_CHECK_TIMEOUT_S = 6.0
+
+
+def _t_update_err(ui_language: Optional[str], key: str, **kwargs: Any) -> str:
+    from i18n import I18nManager
+
+    return I18nManager(ui_language or DEFAULT_UI_LANGUAGE).t(key, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -179,9 +193,10 @@ def check_for_updates(
     current_version: str = APP_VERSION,
     api_url: str = LATEST_RELEASE_API_URL,
     releases_url: str = RELEASES_PAGE_URL,
-    timeout: float = 6.0,
+    timeout: float = DEFAULT_UPDATE_CHECK_TIMEOUT_S,
     system_name: Optional[str] = None,
     opener: Optional[Callable[..., Any]] = None,
+    ui_language: Optional[str] = None,
 ) -> UpdateCheckResult:
     """
     Synchronously queries GitHub Releases API for the latest release and compares
@@ -193,7 +208,7 @@ def check_for_updates(
         api_url,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": f"RakuTrans-AI/{norm_current}",
+            "User-Agent": f"{APP_EXECUTABLE_NAME}/{norm_current}",
         },
         method="GET",
     )
@@ -209,7 +224,10 @@ def check_for_updates(
             raw_bytes = resp.read()
         payload = json.loads(raw_bytes.decode("utf-8"))
         if not isinstance(payload, dict):
-            return UpdateCheckResult(status="error", error_message="Invalid release metadata format.")
+            return UpdateCheckResult(
+                status="error",
+                error_message=_t_update_err(ui_language, "update_err_invalid_metadata"),
+            )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             # No published release exists yet on the repository
@@ -226,9 +244,12 @@ def check_for_updates(
         if e.code in (403, 429):
             return UpdateCheckResult(
                 status="error",
-                error_message=f"GitHub API rate limit exceeded (HTTP {e.code}).",
+                error_message=_t_update_err(ui_language, "update_err_rate_limit", code=e.code),
             )
-        return UpdateCheckResult(status="error", error_message=f"HTTP {e.code}: {e.reason}")
+        return UpdateCheckResult(
+            status="error",
+            error_message=_t_update_err(ui_language, "update_err_http", code=e.code, reason=e.reason),
+        )
     except Exception as e:
         return UpdateCheckResult(status="error", error_message=str(e))
 
@@ -247,7 +268,10 @@ def check_for_updates(
     raw_tag = str(payload.get("tag_name") or payload.get("name") or "").strip()
     latest_ver = normalize_version_str(raw_tag)
     if not latest_ver:
-        return UpdateCheckResult(status="error", error_message="Release tag is missing.")
+        return UpdateCheckResult(
+            status="error",
+            error_message=_t_update_err(ui_language, "update_err_missing_tag"),
+        )
 
     html_url = str(payload.get("html_url") or "").strip()
     if not _is_safe_https_url(html_url):
@@ -280,8 +304,9 @@ def check_for_updates_async(
     current_version: str = APP_VERSION,
     api_url: str = LATEST_RELEASE_API_URL,
     releases_url: str = RELEASES_PAGE_URL,
-    timeout: float = 6.0,
+    timeout: float = DEFAULT_UPDATE_CHECK_TIMEOUT_S,
     system_name: Optional[str] = None,
+    ui_language: Optional[str] = None,
 ) -> threading.Thread:
     """Runs `check_for_updates` in a daemon thread and invokes `callback(result)`."""
     def _worker():
@@ -292,6 +317,7 @@ def check_for_updates_async(
                 releases_url=releases_url,
                 timeout=timeout,
                 system_name=system_name,
+                ui_language=ui_language,
             )
         except Exception as e:
             res = UpdateCheckResult(status="error", error_message=str(e))

@@ -14,15 +14,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import AI_PROVIDERS, get_config_dir
+from config import AI_PROVIDERS, NUMERIC_SETTING_SPECS, get_config_dir
 
 CACHE_DIR = get_config_dir()
 MODELS_CACHE_FILE = CACHE_DIR / "models_cache.json"
 _INITIAL_CACHE_DIR = CACHE_DIR
 _INITIAL_MODELS_CACHE_FILE = MODELS_CACHE_FILE
 _CACHE_LOCK = threading.RLock()
-
-SUPPORTED_PROVIDERS = tuple(AI_PROVIDERS.keys())
+_DEFAULT_MODEL_FETCH_TIMEOUT_S = float(NUMERIC_SETTING_SPECS["model_fetch_timeout"].default)
 
 
 def _resolve_models_cache_file() -> Path:
@@ -228,7 +227,7 @@ def _extract_gemini_model_meta(model_obj: Any) -> Dict[str, Any]:
 
 def _build_gemini_client(
     api_key: str,
-    timeout_s: float = 30.0,
+    timeout_s: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
     base_url: Optional[str] = None,
 ):
     """Instantiates google.genai.Client with explicit timeout and single-attempt HTTP retry options."""
@@ -248,17 +247,13 @@ def _build_gemini_client(
 
 def _fetch_gemini_models(
     api_key: str,
-    timeout_s: float = 30.0,
+    timeout_s: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
     base_url: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     models: List[str] = []
     meta_map: Dict[str, Dict[str, Any]] = {}
 
-    clean_url = (base_url or "").strip()
-    if clean_url:
-        client = _build_gemini_client(api_key, timeout_s=timeout_s, base_url=clean_url)
-    else:
-        client = _build_gemini_client(api_key, timeout_s=timeout_s)
+    client = _build_gemini_client(api_key, timeout_s=timeout_s, base_url=base_url)
     for m in client.models.list():
         name = _strip_gemini_prefix(getattr(m, "name", "") or "")
         if not name:
@@ -275,7 +270,7 @@ def _fetch_gemini_models(
 
 def _fetch_openai_models(
     api_key: str,
-    timeout_s: float = 30.0,
+    timeout_s: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
     base_url: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     from openai import OpenAI
@@ -346,7 +341,7 @@ def _extract_claude_model_meta(model_info: Any) -> Dict[str, Any]:
 
 def _fetch_claude_models(
     api_key: str,
-    timeout_s: float = 30.0,
+    timeout_s: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
     base_url: Optional[str] = None,
 ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     import anthropic
@@ -404,7 +399,7 @@ def fetch_live_models(
     provider: str,
     api_key: str,
     base_url: Optional[str] = None,
-    timeout: float = 30.0,
+    timeout: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
 ) -> List[str]:
     """
     Directly queries the provider's official Models API to retrieve available models
@@ -431,7 +426,7 @@ def fetch_models_async(
     api_key: str,
     callback: Optional[Callable[[List[str], Optional[str]], None]] = None,
     base_url: Optional[str] = None,
-    timeout: float = 30.0,
+    timeout: float = _DEFAULT_MODEL_FETCH_TIMEOUT_S,
 ) -> threading.Thread:
     """
     Spawns a daemon thread to fetch live models asynchronously.

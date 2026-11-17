@@ -5,7 +5,7 @@ all formulas, formatting, styles, dimensions, and structural properties.
 """
 
 from pathlib import Path
-from typing import List, Tuple, Dict, Callable, Optional, Set, Any
+from typing import List, Tuple, Callable, Optional, Set, Any
 import openpyxl
 from openpyxl.comments import Comment
 try:
@@ -21,6 +21,10 @@ from base_translator import BaseTranslator, safe_save_file, should_translate_tex
 from config import AppConfig, TranslationOptions, get_smart_output_path
 from llm_manager import LLMManager
 from translation_cache import TranslationCache
+
+_EXCEL_SHEET_TITLE_MAX_LEN = 31
+_ARCHIVE_SHEET_SUFFIX = "_Orig"
+_ARCHIVE_PREFIX_MAX_LEN = _EXCEL_SHEET_TITLE_MAX_LEN - len(_ARCHIVE_SHEET_SUFFIX)
 
 
 def _is_excel_formula(val: Any) -> bool:
@@ -47,23 +51,15 @@ def load_workbook_safe(file_path: str, data_only: bool = False, read_only: bool 
         raise
 
 
-def safe_save_workbook(workbook: openpyxl.Workbook, target_path: Path) -> Path:
-    """
-    Saves workbook to target_path. If target_path is locked (e.g. open in Microsoft Excel),
-    automatically falls back to target_path (1).xlsx, target_path (2).xlsx to avoid crashing.
-    """
-    return safe_save_file(lambda p: workbook.save(str(p)), target_path)
-
-
 def _unique_orig_sheet_title(sheet_name: str, existing_names: Set[str]) -> str:
     """Generates a unique <=31 char archive worksheet title avoiding prefix collisions."""
-    candidate = f"{sheet_name[:26]}_Orig"
+    candidate = f"{sheet_name[:_ARCHIVE_PREFIX_MAX_LEN]}{_ARCHIVE_SHEET_SUFFIX}"
     if candidate not in existing_names:
         return candidate
     idx = 1
     while True:
-        suffix = f"_Orig_{idx}"
-        candidate = f"{sheet_name[: max(1, 31 - len(suffix))]}{suffix}"
+        suffix = f"{_ARCHIVE_SHEET_SUFFIX}_{idx}"
+        candidate = f"{sheet_name[: max(1, _EXCEL_SHEET_TITLE_MAX_LEN - len(suffix))]}{suffix}"
         if candidate not in existing_names:
             return candidate
         idx += 1
@@ -202,7 +198,7 @@ class ExcelTranslator(BaseTranslator):
                         is_bilingual=is_bilingual,
                     )
                 )
-                out_file = safe_save_workbook(workbook, target_path)
+                out_file = safe_save_file(lambda p: workbook.save(str(p)), target_path)
                 if progress_callback:
                     progress_callback(100, 100, self._t("progress_no_translatable_excel"))
                 return str(out_file)
@@ -283,7 +279,7 @@ class ExcelTranslator(BaseTranslator):
                     is_bilingual=is_bilingual,
                 )
             )
-            output_path = safe_save_workbook(workbook, target_path)
+            output_path = safe_save_file(lambda p: workbook.save(str(p)), target_path)
 
             if progress_callback:
                 note_key = "progress_saved_lock_note" if output_path.name != target_path.name else "progress_saved_to"

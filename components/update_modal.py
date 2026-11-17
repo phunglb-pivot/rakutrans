@@ -9,7 +9,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 
 from components.icons import get_icon
-from components.ui_system import BaseModal, CustomButton
+from components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT
 from update_checker import UpdateInfo
 
 
@@ -29,11 +29,12 @@ class UpdateModal(BaseModal):
         self.on_skip_version = on_skip_version
         self.t = get_translation or (lambda k, **kw: k)
 
+        modal_w, modal_h = UI_LAYOUT["update_modal_size"]
         super().__init__(
             parent=parent,
             title=self.t("update_modal_title"),
-            width=560,
-            height=460,
+            width=modal_w,
+            height=modal_h,
             resizable=False,
             on_confirm=self._open_download,
         )
@@ -82,7 +83,7 @@ class UpdateModal(BaseModal):
                 latest=self.update_info.latest_version,
             ),
             font=ctk.CTkFont(size=12),
-            text_color=("#52525B", "#A1A1AA"),
+            text_color=COLORS["text_secondary"],
             anchor="w",
         )
         self.versions_label.pack(fill="x", pady=(2, 0))
@@ -90,9 +91,9 @@ class UpdateModal(BaseModal):
         # 2. OS-specific upgrade reassurance tip
         tip_box = ctk.CTkFrame(
             container,
-            fg_color=("#EFF6FF", "#172554"),
+            fg_color=COLORS["info_bg"],
             border_width=1,
-            border_color=("#BFDBFE", "#1D4ED8"),
+            border_color=COLORS["info_border"],
             corner_radius=8,
         )
         tip_box.pack(fill="x", pady=(0, 12))
@@ -111,7 +112,7 @@ class UpdateModal(BaseModal):
             tip_inner,
             text=self.t(self._get_install_tip_key()),
             font=ctk.CTkFont(size=12),
-            text_color=("#1E3A8A", "#DBEAFE"),
+            text_color=COLORS["info_text"],
             wraplength=460,
             justify="left",
             anchor="w",
@@ -134,10 +135,10 @@ class UpdateModal(BaseModal):
         self.notes_box = ctk.CTkTextbox(
             container,
             font=ctk.CTkFont(size=12),
-            fg_color=("#F4F4F5", "#18181B"),
+            fg_color=COLORS["surface_subtle"],
             border_width=1,
-            border_color=("#E4E4E7", "#27272A"),
-            text_color=("#18181B", "#FAFAFA"),
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
             wrap="word",
         )
         self.notes_box.pack(fill="both", expand=True, pady=(0, 14))

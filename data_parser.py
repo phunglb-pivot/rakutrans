@@ -12,13 +12,21 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Set, Callable, Optional, Any, Tuple
 
+_MAX_CSV_FIELD_LIMIT_BYTES = 10 * 1024 * 1024
+_MIN_CSV_FIELD_LIMIT_BYTES = 131072
+_CSV_SNIFF_BYTES = 8192
+_CSV_SNIFF_MAX_LINES = 20
+_CSV_CANDIDATE_DELIMITERS = (",", "\t", ";", "|")
+_CSV_OUTPUT_ENCODING = "utf-8-sig"
+_DEFAULT_TEXT_CHUNK_CHARS = 3000
+
 
 def _ensure_large_csv_field_limit() -> None:
     """Raises csv.field_size_limit safely (up to 10 MiB) to handle large CSV cells."""
-    target = min(sys.maxsize, 10 * 1024 * 1024)
+    target = min(sys.maxsize, _MAX_CSV_FIELD_LIMIT_BYTES)
     if csv.field_size_limit() >= target:
         return
-    while target > 131072:
+    while target > _MIN_CSV_FIELD_LIMIT_BYTES:
         try:
             csv.field_size_limit(target)
             return
@@ -32,17 +40,17 @@ from base_translator import (
     safe_save_file,
     should_translate_text,
 )
-from config import TranslationOptions, get_smart_output_path
+from config import TranslationOptions, get_smart_output_path, resolve_config_int
 
 
-def _should_translate_cell(val: Any) -> bool:
-    """Checks if a cell or string value should be translated."""
-    return should_translate_text(val, ignore_formulas=True)
-
-
-def _detect_encoding(file_path: Path) -> str:
-    """Detects encoding deterministically using BOM, strict UTF-8, and charset detection."""
-    return detect_text_encoding(file_path)
+def _apply_trimmed_translation(raw: str, translation_map: Dict[str, str]) -> str:
+    """Replaces trimmed translatable content while preserving leading/trailing whitespace."""
+    trimmed = raw.strip()
+    if should_translate_text(raw, ignore_formulas=True) and trimmed in translation_map:
+        prefix = raw[: len(raw) - len(raw.lstrip())]
+        suffix = raw[len(raw.rstrip()) :]
+        return f"{prefix}{translation_map[trimmed]}{suffix}"
+    return raw
 
 
 class CsvTranslator(BaseTranslator):
@@ -59,14 +67,14 @@ class CsvTranslator(BaseTranslator):
             return "\t"
         try:
             with open(file_path, "r", encoding=encoding, errors="replace") as f:
-                sample = f.read(8192)
+                sample = f.read(_CSV_SNIFF_BYTES)
             non_empty = [ln for ln in sample.splitlines() if ln.strip()]
             if not non_empty:
                 return ","
-            sniff_sample = "\n".join(non_empty[:20])
+            sniff_sample = "\n".join(non_empty[:_CSV_SNIFF_MAX_LINES])
             try:
-                dialect = csv.Sniffer().sniff(sniff_sample, delimiters=[",", "\t", ";", "|"])
-                if dialect.delimiter in (",", "\t", ";", "|"):
+                dialect = csv.Sniffer().sniff(sniff_sample, delimiters=list(_CSV_CANDIDATE_DELIMITERS))
+                if dialect.delimiter in _CSV_CANDIDATE_DELIMITERS:
                     return dialect.delimiter
             except Exception:
                 # Fallback for single-row files where Sniffer refuses to guess
@@ -93,7 +101,7 @@ class CsvTranslator(BaseTranslator):
 
         try:
             _ensure_large_csv_field_limit()
-            enc = _detect_encoding(path)
+            enc = detect_text_encoding(path)
             delimiter = cls._detect_delimiter(path, enc)
             row_count = 0
             max_cols = 0
@@ -108,7 +116,7 @@ class CsvTranslator(BaseTranslator):
                     row_count += 1
                     max_cols = max(max_cols, len(row))
                     for cell in row:
-                        if _should_translate_cell(cell):
+                        if should_translate_text(cell, ignore_formulas=True):
                             translatable_cells += 1
                             unique_texts.add(cell.strip())
 
@@ -148,7 +156,7 @@ class CsvTranslator(BaseTranslator):
             progress_callback(5, 100, self._t("progress_reading_csv"))
 
         _ensure_large_csv_field_limit()
-        enc = _detect_encoding(src)
+        enc = detect_text_encoding(src)
         delimiter = self._detect_delimiter(src, enc)
 
         rows: List[List[str]] = []
@@ -159,7 +167,8 @@ class CsvTranslator(BaseTranslator):
 
         unique_texts = list(
             dict.fromkeys(
-                cell.strip() for row in rows for cell in row if _should_translate_cell(cell)
+                cell.strip() for row in rows for cell in row
+                if should_translate_text(cell, ignore_formulas=True)
             )
         )
         total_unique = len(unique_texts)
@@ -192,18 +201,10 @@ class CsvTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(90, 100, self._t("progress_applying_csv"))
 
-        translated_rows: List[List[str]] = []
-        for row in rows:
-            new_row = []
-            for cell in row:
-                trimmed = cell.strip()
-                if _should_translate_cell(cell) and trimmed in translation_map:
-                    prefix = cell[: len(cell) - len(cell.lstrip())]
-                    suffix = cell[len(cell.rstrip()) :]
-                    new_row.append(f"{prefix}{translation_map[trimmed]}{suffix}")
-                else:
-                    new_row.append(cell)
-            translated_rows.append(new_row)
+        translated_rows: List[List[str]] = [
+            [_apply_trimmed_translation(cell, translation_map) for cell in row]
+            for row in rows
+        ]
 
         out_path = get_smart_output_path(
             source_path=src,
@@ -221,7 +222,7 @@ class CsvTranslator(BaseTranslator):
     @staticmethod
     def _write_csv(target_path: Path, rows: List[List[str]], delimiter: str):
         """Writes rows to file using UTF-8-SIG."""
-        with open(target_path, "w", encoding="utf-8-sig", newline="") as f:
+        with open(target_path, "w", encoding=_CSV_OUTPUT_ENCODING, newline="") as f:
             writer = csv.writer(f, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
             writer.writerows(rows)
 
@@ -244,7 +245,7 @@ class JsonTranslator(BaseTranslator):
             elif isinstance(node, list):
                 stack.extend(reversed(node))
             elif isinstance(node, str):
-                if _should_translate_cell(node):
+                if should_translate_text(node, ignore_formulas=True):
                     on_string(node)
 
     @classmethod
@@ -255,7 +256,7 @@ class JsonTranslator(BaseTranslator):
             return {"type": "json", "error": "File not found"}
 
         try:
-            enc = _detect_encoding(path)
+            enc = detect_text_encoding(path)
             with open(path, "r", encoding=enc, errors="replace") as f:
                 data = json.load(f)
 
@@ -272,7 +273,7 @@ class JsonTranslator(BaseTranslator):
                 elif isinstance(node, list):
                     stack.extend(reversed(node))
                 elif isinstance(node, str):
-                    if _should_translate_cell(node):
+                    if should_translate_text(node, ignore_formulas=True):
                         string_count += 1
                         unique_texts.add(node.strip())
 
@@ -309,7 +310,7 @@ class JsonTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(5, 100, self._t("progress_reading_json"))
 
-        enc = _detect_encoding(src)
+        enc = detect_text_encoding(src)
         with open(src, "r", encoding=enc, errors="replace") as f:
             data = json.load(f)
 
@@ -349,11 +350,7 @@ class JsonTranslator(BaseTranslator):
         def replace_values(root: Any) -> Any:
             if not isinstance(root, (dict, list)):
                 if isinstance(root, str):
-                    trimmed = root.strip()
-                    if _should_translate_cell(root) and trimmed in translation_map:
-                        prefix = root[: len(root) - len(root.lstrip())]
-                        suffix = root[len(root.rstrip()) :]
-                        return f"{prefix}{translation_map[trimmed]}{suffix}"
+                    return _apply_trimmed_translation(root, translation_map)
                 return root
 
             root_copy: Any = {} if isinstance(root, dict) else []
@@ -371,13 +368,7 @@ class JsonTranslator(BaseTranslator):
                             dst_node[k] = child_l
                             stack.append((v, child_l))
                         elif isinstance(v, str):
-                            trimmed = v.strip()
-                            if _should_translate_cell(v) and trimmed in translation_map:
-                                prefix = v[: len(v) - len(v.lstrip())]
-                                suffix = v[len(v.rstrip()) :]
-                                dst_node[k] = f"{prefix}{translation_map[trimmed]}{suffix}"
-                            else:
-                                dst_node[k] = v
+                            dst_node[k] = _apply_trimmed_translation(v, translation_map)
                         else:
                             dst_node[k] = v
                 else:
@@ -391,13 +382,7 @@ class JsonTranslator(BaseTranslator):
                             dst_node.append(child_l)
                             stack.append((item, child_l))
                         elif isinstance(item, str):
-                            trimmed = item.strip()
-                            if _should_translate_cell(item) and trimmed in translation_map:
-                                prefix = item[: len(item) - len(item.lstrip())]
-                                suffix = item[len(item.rstrip()) :]
-                                dst_node.append(f"{prefix}{translation_map[trimmed]}{suffix}")
-                            else:
-                                dst_node.append(item)
+                            dst_node.append(_apply_trimmed_translation(item, translation_map))
                         else:
                             dst_node.append(item)
             return root_copy
@@ -497,7 +482,9 @@ class TextTranslator(BaseTranslator):
         return parts
 
     @classmethod
-    def _split_text_chunks(cls, content: str, max_chars: int = 3000) -> List[Tuple[str, str]]:
+    def _split_text_chunks(
+        cls, content: str, max_chars: int = _DEFAULT_TEXT_CHUNK_CHARS
+    ) -> List[Tuple[str, str]]:
         """
         Splits text into (chunk_text, join_sep_after_chunk) tuples preserving exact paragraph/line boundaries.
         """
@@ -567,7 +554,7 @@ class TextTranslator(BaseTranslator):
             return {"type": "txt", "error": "File not found"}
 
         try:
-            enc = _detect_encoding(path)
+            enc = detect_text_encoding(path)
             with open(path, "r", encoding=enc, errors="replace") as f:
                 content = f.read()
 
@@ -606,7 +593,7 @@ class TextTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(5, 100, self._t("progress_reading_txt"))
 
-        enc = _detect_encoding(src)
+        enc = detect_text_encoding(src)
         with open(src, "r", encoding=enc, errors="replace") as f:
             content = f.read()
 
@@ -619,10 +606,7 @@ class TextTranslator(BaseTranslator):
                 progress_callback(100, 100, self._t("progress_no_translatable_file"))
             return str(saved_path)
 
-        try:
-            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 6000) or 6000))
-        except (TypeError, ValueError):
-            section_max_chars = 6000
+        section_max_chars = resolve_config_int(self.config, "section_max_chars")
         chunk_specs = self._split_text_chunks(content, max_chars=section_max_chars)
         section_inputs = [chunk_text for chunk_text, _ in chunk_specs if chunk_text.strip()]
         section_map = self.translate_unique_sections(

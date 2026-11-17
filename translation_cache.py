@@ -18,6 +18,10 @@ CACHE_DB_PATH = CONFIG_DIR / "cache.db"
 _INITIAL_CACHE_DB_PATH = CACHE_DB_PATH
 PROMPT_VERSION = "v6"
 _SQL_CHUNK_SIZE = 400
+_SQLITE_CONNECT_TIMEOUT_S = 10.0
+_SQLITE_BUSY_TIMEOUT_MS = 10000
+_SQLITE_WRITE_MAX_RETRIES = 4
+_SQLITE_RETRY_BASE_DELAY_S = 0.05
 
 
 def _normalize_cache_langs(source_lang: Optional[str], target_lang: str) -> Tuple[str, str]:
@@ -68,8 +72,8 @@ class TranslationCache:
     def _get_connection(self) -> sqlite3.Connection:
         if not self.db_path.parent.exists():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0)
-        conn.execute("PRAGMA busy_timeout=10000;")
+        conn = sqlite3.connect(str(self.db_path), timeout=_SQLITE_CONNECT_TIMEOUT_S)
+        conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS};")
         return conn
 
     @contextmanager
@@ -85,15 +89,15 @@ class TranslationCache:
         """Serialize in-process writes and retry transient SQLite lock contention."""
         with self._write_lock:
             last_err: Optional[Exception] = None
-            for attempt in range(4):
+            for attempt in range(_SQLITE_WRITE_MAX_RETRIES):
                 try:
                     with self._connection() as conn:
                         return fn(conn)
                 except sqlite3.OperationalError as e:
                     last_err = e
                     msg = str(e).lower()
-                    if ("locked" in msg or "busy" in msg) and attempt < 3:
-                        time.sleep(0.05 * (2 ** attempt))
+                    if ("locked" in msg or "busy" in msg) and attempt < _SQLITE_WRITE_MAX_RETRIES - 1:
+                        time.sleep(_SQLITE_RETRY_BASE_DELAY_S * (2 ** attempt))
                         continue
                     raise
             if last_err is not None:
@@ -124,26 +128,6 @@ class TranslationCache:
 
         self._run_write(_init)
 
-    @staticmethod
-    def _resolve_legacy_args(
-        target_lang: str,
-        options: Optional[TranslationOptions],
-        source_lang: Optional[str],
-        args: tuple,
-        kwargs: dict,
-    ) -> Tuple[str, Optional[TranslationOptions], str]:
-        """Support explicit legacy signature (..., source_lang, target_lang, options) cleanly."""
-        if isinstance(options, str):
-            legacy_source = target_lang
-            legacy_target = options
-            legacy_opts = (
-                source_lang
-                if isinstance(source_lang, TranslationOptions)
-                else (args[0] if args else kwargs.get("options", None))
-            )
-            return legacy_target, legacy_opts, legacy_source or "auto"
-        return target_lang, options, source_lang or "auto"
-
     def get_batch(
         self,
         texts: List[str],
@@ -152,8 +136,6 @@ class TranslationCache:
         source_lang: str = "auto",
         mode: str = "batch",
         model_id: str = "",
-        *args,
-        **kwargs,
     ) -> Tuple[Dict[int, str], List[Tuple[int, str]]]:
         """
         Splits an input list of texts into cached items and uncached items.
@@ -164,10 +146,7 @@ class TranslationCache:
         if not texts:
             return {}, []
 
-        target_lang, options, source_lang = self._resolve_legacy_args(
-            target_lang, options, source_lang, args, kwargs
-        )
-        norm_src, norm_tgt = _normalize_cache_langs(source_lang, target_lang)
+        norm_src, norm_tgt = _normalize_cache_langs(source_lang or "auto", target_lang)
         opt_hash = compute_options_hash(options, mode=mode, model_id=model_id)
 
         unique_queries = list(dict.fromkeys(texts))
@@ -217,17 +196,12 @@ class TranslationCache:
         source_lang: str = "auto",
         mode: str = "batch",
         model_id: str = "",
-        *args,
-        **kwargs,
     ):
         """Persist newly translated pairs into the cache."""
         if not source_texts or len(source_texts) != len(translated_texts):
             return
 
-        target_lang, options, source_lang = self._resolve_legacy_args(
-            target_lang, options, source_lang, args, kwargs
-        )
-        norm_src, norm_tgt = _normalize_cache_langs(source_lang, target_lang)
+        norm_src, norm_tgt = _normalize_cache_langs(source_lang or "auto", target_lang)
         opt_hash = compute_options_hash(options, mode=mode, model_id=model_id)
 
         records = [
@@ -247,47 +221,6 @@ class TranslationCache:
                 """,
                 records,
             )
-        )
-
-    def get(
-        self,
-        text: str,
-        target_lang: str,
-        options: Optional[TranslationOptions] = None,
-        source_lang: str = "auto",
-        mode: str = "batch",
-        model_id: str = "",
-    ) -> Optional[str]:
-        """Convenience method to look up a single cached string."""
-        cached_map, _ = self.get_batch(
-            texts=[text],
-            target_lang=target_lang,
-            options=options,
-            source_lang=source_lang,
-            mode=mode,
-            model_id=model_id,
-        )
-        return cached_map.get(0)
-
-    def set(
-        self,
-        text: str,
-        target_lang: str,
-        translated_text: str,
-        options: Optional[TranslationOptions] = None,
-        source_lang: str = "auto",
-        mode: str = "batch",
-        model_id: str = "",
-    ):
-        """Convenience method to store a single translated string."""
-        self.save_batch(
-            source_texts=[text],
-            translated_texts=[translated_text],
-            target_lang=target_lang,
-            options=options,
-            source_lang=source_lang,
-            mode=mode,
-            model_id=model_id,
         )
 
     def count(self) -> int:

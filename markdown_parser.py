@@ -15,9 +15,11 @@ from base_translator import (
     detect_text_encoding,
     safe_save_file,
 )
-from config import AppConfig, TranslationOptions, get_smart_output_path
+from config import AppConfig, TranslationOptions, get_smart_output_path, resolve_config_int
 from llm_manager import LLMManager
 from translation_cache import TranslationCache
+
+_DEFAULT_MD_CHUNK_CHARS = 3500
 
 # Backtick fence info strings cannot contain backticks (CommonMark spec),
 # preventing lines starting with inline ```code``` spans from hijacking tokenization.
@@ -33,6 +35,17 @@ def match_code_fence_open(line: str) -> Optional[Tuple[str, int]]:
     return fence_seq[0], len(fence_seq)
 
 
+def build_close_fence_regex(fence_char: str, fence_len: int) -> re.Pattern:
+    """Builds regex matching the closing delimiter of an open fenced code block."""
+    return re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+
+
+def is_md_table_line(line: str) -> bool:
+    """Returns True when a line looks like a pipe-delimited Markdown table row."""
+    stripped = line.strip()
+    return len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|")
+
+
 def _has_translatable_markdown(chunk_text: str) -> bool:
     """Returns True if chunk contains at least one non-empty prose/heading/table block outside code fences."""
     if not chunk_text or not chunk_text.strip():
@@ -40,21 +53,16 @@ def _has_translatable_markdown(chunk_text: str) -> bool:
     return any(kind != "code_fence" and block_text.strip() for kind, block_text, _ in _tokenize_markdown_blocks(chunk_text))
 
 
-def safe_save_markdown(content: str, target_path: Path) -> Path:
-    """
-    Saves markdown string to target_path. If target_path is locked,
-    automatically falls back to target_path (1).md, target_path (2).md to avoid crashing.
-    """
-    def _save(p: Path):
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    return safe_save_file(_save, target_path)
-
-
-def _is_table_line(line: str) -> bool:
-    stripped = line.strip()
-    return len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|")
+def _consume_trailing_blanks(lines: List[str], idx: int) -> Tuple[int, str]:
+    """Consumes blank lines after a block and returns (next_idx, separator_text)."""
+    n = len(lines)
+    if idx >= n:
+        return idx, ""
+    blank_run = 0
+    while idx < n and not lines[idx].strip():
+        blank_run += 1
+        idx += 1
+    return idx, "\n" * (1 + blank_run)
 
 
 def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
@@ -85,7 +93,7 @@ def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
         fence_open = match_code_fence_open(lines[i])
         if fence_open:
             fence_char, fence_len = fence_open
-            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            close_re = build_close_fence_regex(fence_char, fence_len)
 
             buf = [lines[i]]
             i += 1
@@ -95,29 +103,17 @@ def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
                     i += 1
                     break
                 i += 1
-            sep = ""
-            if i < n:
-                blank_run = 0
-                while i < n and not lines[i].strip():
-                    blank_run += 1
-                    i += 1
-                sep = "\n" * (1 + blank_run)
+            i, sep = _consume_trailing_blanks(lines, i)
             blocks.append(("code_fence", "\n".join(buf), sep))
             continue
 
-        if _is_table_line(lines[i]):
+        if is_md_table_line(lines[i]):
             buf = [lines[i]]
             i += 1
-            while i < n and _is_table_line(lines[i]):
+            while i < n and is_md_table_line(lines[i]):
                 buf.append(lines[i])
                 i += 1
-            sep = ""
-            if i < n:
-                blank_run = 0
-                while i < n and not lines[i].strip():
-                    blank_run += 1
-                    i += 1
-                sep = "\n" * (1 + blank_run)
+            i, sep = _consume_trailing_blanks(lines, i)
             blocks.append(("table", "\n".join(buf), sep))
             continue
 
@@ -125,17 +121,11 @@ def _tokenize_markdown_blocks(text: str) -> List[Tuple[str, str, str]]:
         buf = [lines[i]]
         i += 1
         while i < n:
-            if not lines[i].strip() or match_code_fence_open(lines[i]) or _is_table_line(lines[i]):
+            if not lines[i].strip() or match_code_fence_open(lines[i]) or is_md_table_line(lines[i]):
                 break
             buf.append(lines[i])
             i += 1
-        sep = ""
-        if i < n:
-            blank_run = 0
-            while i < n and not lines[i].strip():
-                blank_run += 1
-                i += 1
-            sep = "\n" * (1 + blank_run)
+        i, sep = _consume_trailing_blanks(lines, i)
         blocks.append(("prose", "\n".join(buf), sep))
 
     return blocks
@@ -187,7 +177,7 @@ class MarkdownTranslator(BaseTranslator):
             return {"type": "markdown", "error": str(e)}
 
     def _split_into_chunk_specs(
-        self, text: str, max_chars: int = 3500
+        self, text: str, max_chars: int = _DEFAULT_MD_CHUNK_CHARS
     ) -> List[Tuple[str, str]]:
         """
         Splits Markdown into (chunk_text, sep_after_chunk) specs respecting fenced code blocks
@@ -212,7 +202,7 @@ class MarkdownTranslator(BaseTranslator):
                 b_lines = block_text.splitlines()
                 cur_lines: List[str] = []
                 cur_len = 0
-                for ln_idx, ln in enumerate(b_lines):
+                for ln in b_lines:
                     ln_len = len(ln) + (1 if cur_lines else 0)
                     if cur_lines and cur_len + ln_len > max_chars:
                         atomic_units.append(("\n".join(cur_lines), "\n"))
@@ -255,10 +245,6 @@ class MarkdownTranslator(BaseTranslator):
 
         return chunks
 
-    def _split_into_chunks(self, text: str, max_chars: int = 3500) -> List[str]:
-        """Splits markdown text into structure-safe chunks."""
-        return [chunk for chunk, _ in self._split_into_chunk_specs(text, max_chars=max_chars)]
-
     def read_content(self, src_path: Path) -> str:
         """Reads markdown using deterministic encoding detection."""
         enc = detect_text_encoding(src_path)
@@ -297,15 +283,14 @@ class MarkdownTranslator(BaseTranslator):
                 if custom_output_path
                 else get_smart_output_path(source_path=src_path, target_lang=target_lang, is_bilingual=False)
             )
-            output_path = safe_save_markdown(content, target_path)
+            output_path = safe_save_file(
+                lambda p: p.write_text(content, encoding="utf-8"), target_path
+            )
             if progress_callback:
                 progress_callback(100, 100, self._t("progress_saved_file", filename=output_path.name))
             return str(output_path)
 
-        try:
-            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 6000) or 6000))
-        except (TypeError, ValueError):
-            section_max_chars = 6000
+        section_max_chars = resolve_config_int(self.config, "section_max_chars")
         chunk_specs = self._split_into_chunk_specs(content, max_chars=section_max_chars)
         total_chunks = len(chunk_specs)
         section_inputs = [
@@ -358,7 +343,9 @@ class MarkdownTranslator(BaseTranslator):
                 is_bilingual=False,
             )
         )
-        output_path = safe_save_markdown(final_markdown, target_path)
+        output_path = safe_save_file(
+            lambda p: p.write_text(final_markdown, encoding="utf-8"), target_path
+        )
 
         if progress_callback:
             note_key = "progress_saved_lock_note" if output_path.name != target_path.name else "progress_saved_to"

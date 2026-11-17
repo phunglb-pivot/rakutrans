@@ -7,7 +7,57 @@ with text-pattern fallback only for unstructured exceptions.
 
 import traceback
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Dict, Set
+
+_GENERAL_MSG_MAX_CHARS = 180
+_EXCEPTION_CHAIN_MAX_DEPTH = 6
+
+AUTH_ERROR_CODES = frozenset({
+    "invalid_api_key",
+    "authentication_error",
+    "permission_error",
+    "unauthenticated",
+    "permission_denied",
+})
+BILLING_ERROR_CODES = frozenset({
+    "insufficient_quota",
+    "billing_hard_limit_reached",
+    "credit_balance_too_low",
+})
+RATE_LIMIT_STATUS_CODES = frozenset({429, 529})
+RATE_LIMIT_API_CODES = frozenset({
+    "resource_exhausted",
+    "rate_limit_exceeded",
+    "rate_limit_error",
+    "overloaded_error",
+})
+NOT_FOUND_ERROR_CODES = frozenset({
+    "not_found",
+    "not_found_error",
+    "model_not_found",
+    "model_not_selected",
+})
+AUTH_SDK_CLASSES = frozenset({"AuthenticationError", "PermissionDeniedError"})
+RATE_LIMIT_SDK_CLASSES = frozenset({"RateLimitError", "OverloadedError"})
+NETWORK_SDK_CLASSES = frozenset({
+    "ConnectionError",
+    "TimeoutError",
+    "APIConnectionError",
+    "APITimeoutError",
+    "RequestTimeoutError",
+    "GatewayTimeoutError",
+    "DeadlineExceededError",
+})
+
+_SDK_CLASS_HTTP_STATUS = {
+    "AuthenticationError": 401,
+    "PermissionDeniedError": 403,
+    "NotFoundError": 404,
+    "BadRequestError": 400,
+    "UnprocessableEntityError": 422,
+    "RateLimitError": 429,
+    "OverloadedError": 529,
+}
 
 
 @dataclass
@@ -22,8 +72,9 @@ class DiagnosticInfo:
     technical_details: str = ""
 
 
-def _iter_chain(exc: Exception, max_depth: int = 6):
-    seen = set()
+def iter_exception_chain(exc: BaseException, max_depth: int = _EXCEPTION_CHAIN_MAX_DEPTH):
+    """Yield exception and its cause/context chain without infinite loops."""
+    seen: Set[int] = set()
     curr: Optional[BaseException] = exc
     depth = 0
     while curr is not None and id(curr) not in seen and depth < max_depth:
@@ -33,13 +84,46 @@ def _iter_chain(exc: Exception, max_depth: int = 6):
         depth += 1
 
 
-def _extract_structured_diag_signals(exc: Exception):
-    status_code: Optional[int] = None
-    codes: set[str] = set()
-    class_names: set[str] = set()
-    is_format_error = False
+def extract_body_error_dict(exc: BaseException) -> Dict[str, Any]:
+    """Extract structured error metadata dict from OpenAI/Anthropic/Google SDK payloads."""
+    for attr in ("body", "details"):
+        payload = getattr(exc, attr, None)
+        if isinstance(payload, dict):
+            nested = payload.get("error")
+            if isinstance(nested, dict):
+                return nested
+            return payload
+    return {}
 
-    for err in _iter_chain(exc):
+
+def get_http_status_code(err: BaseException) -> Optional[int]:
+    """Extract numeric HTTP status code from SDK exceptions, responses, or class names."""
+    for exc in iter_exception_chain(err):
+        for attr in ("status_code", "code"):
+            val = getattr(exc, attr, None)
+            if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+                return val
+        response = getattr(exc, "response", None)
+        if response is not None:
+            val = getattr(response, "status_code", None)
+            if isinstance(val, int) and not isinstance(val, bool) and val > 0:
+                return val
+        cls_names = {cls.__name__ for cls in type(exc).__mro__}
+        for cls_name, code in _SDK_CLASS_HTTP_STATUS.items():
+            if cls_name in cls_names:
+                return code
+    return None
+
+
+def collect_structured_error_signals(exc: BaseException) -> Dict[str, Any]:
+    """Collect authoritative API error metadata (status_code, codes, class_names, headers, format flag)."""
+    status_code: Optional[int] = None
+    codes: Set[str] = set()
+    class_names: Set[str] = set()
+    is_format_error = False
+    should_retry_header: Optional[str] = None
+
+    for err in iter_exception_chain(exc):
         class_names.update(cls.__name__ for cls in type(err).__mro__)
         if getattr(err, "is_format_error", False):
             is_format_error = True
@@ -62,7 +146,26 @@ def _extract_structured_diag_signals(exc: Exception):
         if isinstance(raw_code, str) and raw_code.strip():
             codes.add(raw_code.strip().lower())
 
-    return status_code, codes, class_names, is_format_error
+        body_err = extract_body_error_dict(err)
+        for key in ("code", "type", "status", "error_code"):
+            val = body_err.get(key)
+            if isinstance(val, str) and val.strip():
+                codes.add(val.strip().lower())
+
+        response = getattr(err, "response", None)
+        headers = getattr(response, "headers", None) if response is not None else None
+        if headers is not None and hasattr(headers, "get") and should_retry_header is None:
+            hdr = headers.get("x-should-retry") or headers.get("X-Should-Retry")
+            if isinstance(hdr, str) and hdr.strip():
+                should_retry_header = hdr.strip().lower()
+
+    return {
+        "status_code": status_code,
+        "codes": codes,
+        "class_names": class_names,
+        "is_format_error": is_format_error,
+        "should_retry": should_retry_header,
+    }
 
 
 def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo:
@@ -86,7 +189,11 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
     def t(key: str, **kwargs) -> str:
         return i18n.t(key, **kwargs)
 
-    status_code, codes, class_names, is_format_error = _extract_structured_diag_signals(exc)
+    signals = collect_structured_error_signals(exc)
+    status_code = signals["status_code"]
+    codes = signals["codes"]
+    class_names = signals["class_names"]
+    is_format_error = signals["is_format_error"]
 
     # 1. User Cancellation (do not misclassify server/HTTP errors whose prose mentions "cancelled")
     is_user_cancel = (
@@ -126,8 +233,8 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
     # 3. Authentication / Invalid API Key (401, 403 or SDK auth classes/codes)
     if (
         status_code in (401, 403)
-        or bool(class_names & {"AuthenticationError", "PermissionDeniedError"})
-        or bool(codes & {"invalid_api_key", "authentication_error", "permission_error", "unauthenticated", "permission_denied"})
+        or bool(class_names & AUTH_SDK_CLASSES)
+        or bool(codes & AUTH_ERROR_CODES)
     ):
         return DiagnosticInfo(
             category="auth",
@@ -142,7 +249,7 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
     # 4a. Billing / Credits Depleted (HTTP 402 or non-retryable billing/quota codes)
     if (
         status_code == 402
-        or bool(codes & {"insufficient_quota", "billing_hard_limit_reached", "credit_balance_too_low"})
+        or bool(codes & BILLING_ERROR_CODES)
     ):
         return DiagnosticInfo(
             category="quota",
@@ -156,9 +263,9 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
 
     # 4b. Quota / Rate Limit (429, 529 or SDK RateLimit/Overloaded classes/codes)
     if (
-        status_code in (429, 529)
-        or bool(class_names & {"RateLimitError", "OverloadedError"})
-        or bool(codes & {"resource_exhausted", "rate_limit_exceeded", "rate_limit_error", "overloaded_error"})
+        status_code in RATE_LIMIT_STATUS_CODES
+        or bool(class_names & RATE_LIMIT_SDK_CLASSES)
+        or bool(codes & RATE_LIMIT_API_CODES)
     ):
         return DiagnosticInfo(
             category="quota",
@@ -171,7 +278,7 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
         )
 
     # 5. Network / Connection Timeout (SDK network/timeout classes or stdlib errors)
-    if bool(class_names & {"ConnectionError", "TimeoutError", "APIConnectionError", "APITimeoutError", "RequestTimeoutError", "GatewayTimeoutError", "DeadlineExceededError"}):
+    if bool(class_names & NETWORK_SDK_CLASSES):
         return DiagnosticInfo(
             category="network",
             title=t("err_diag_network_title"),
@@ -266,13 +373,13 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
     return DiagnosticInfo(
         category="general",
         title=t("err_diag_general_title"),
-        message=raw_str if len(raw_str) < 180 else raw_str[:180] + "...",
+        message=raw_str if len(raw_str) < _GENERAL_MSG_MAX_CHARS else raw_str[:_GENERAL_MSG_MAX_CHARS] + "...",
         action_advice=t("err_diag_general_advice"),
         can_retry=True,
         requires_settings=(
             status_code == 404
             or "NotFoundError" in class_names
-            or bool(codes & {"not_found", "not_found_error", "model_not_found", "model_not_selected"})
+            or bool(codes & NOT_FOUND_ERROR_CODES)
         ),
         technical_details=f"{raw_str}\n\n{full_trace}"
     )

@@ -32,11 +32,6 @@ _A_T_TAG = f"{_A_NS}t"
 _A_FLD_TAG = f"{_A_NS}fld"
 
 
-def _should_translate(text: Optional[str]) -> bool:
-    """Checks if a string has translatable content."""
-    return should_translate_text(text, ignore_formulas=False)
-
-
 def _normalize_pptx_text(text: Optional[str]) -> str:
     """Converts DrawingML soft-break control char (\\x0b / \\v) to standard newlines."""
     if not text:
@@ -385,7 +380,7 @@ class PptxTranslator(BaseTranslator):
             if p._p.find(_A_FLD_TAG) is not None:
                 return False
             raw_text = _normalize_pptx_text(p.text)
-        return _should_translate(raw_text)
+        return should_translate_text(raw_text, ignore_formulas=False)
 
     @classmethod
     def inspect_file(cls, file_path: str) -> Dict[str, Any]:

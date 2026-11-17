@@ -63,9 +63,10 @@ class TestLLMManager(unittest.TestCase):
         self.assertIn("APPEND ORIGINAL SOURCE WORDS", prompt)
         self.assertIn("Rule: preserve sku codes", prompt)
 
-        legacy_prompt = build_system_prompt("Japanese", "Vietnamese", opts)
-        self.assertIn("Vietnamese", legacy_prompt)
-        self.assertIn("KEEP SPECIALIZED TERMS UNTRANSLATED", legacy_prompt)
+        source_prompt = build_system_prompt("Vietnamese", opts, source_lang="Japanese")
+        self.assertIn("Vietnamese", source_prompt)
+        self.assertIn("Japanese", source_prompt)
+        self.assertIn("KEEP SPECIALIZED TERMS UNTRANSLATED", source_prompt)
 
     def test_clean_json_text(self):
         raw = '["Xin chào", "Tạm biệt"]'

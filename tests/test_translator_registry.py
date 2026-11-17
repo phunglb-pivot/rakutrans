@@ -108,6 +108,25 @@ class TestTranslatorRegistry(unittest.TestCase):
         ):
             self.assertFalse(TranslatorRegistry.supports_bilingual(path), f"Unexpected bilingual support for {path}")
 
+    def test_register_custom_strategy_and_bilingual_flag(self):
+        from base_translator import BaseTranslator
+
+        class _DummyTranslator(BaseTranslator):
+            SUPPORTS_BILINGUAL = True
+
+            def process_file(self, *args, **kwargs) -> str:
+                return ""
+
+        ext = ".raku_test"
+        try:
+            TranslatorRegistry.register(ext, _DummyTranslator)
+            self.assertTrue(TranslatorRegistry.is_supported(f"sample{ext}"))
+            self.assertIs(TranslatorRegistry.get_translator_class(ext), _DummyTranslator)
+            self.assertTrue(TranslatorRegistry.supports_bilingual(f"sample{ext}"))
+            self.assertIn(ext, TranslatorRegistry.get_bilingual_extensions())
+        finally:
+            TranslatorRegistry._registry.pop(ext, None)
+
 
 if __name__ == "__main__":
     unittest.main()

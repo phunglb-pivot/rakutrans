@@ -196,7 +196,7 @@ echo "Upgrading pip..."
 if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
     echo "Installing application dependencies..."
     "$VENV_PY" -m pip install -q -r "$SCRIPT_DIR/requirements.txt"
-    "$VENV_PY" -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.venv/.req_stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest())"
+    "$VENV_PY" "$SCRIPT_DIR/check_env.py" --write-stamp
 fi
 
 if [ "$WITH_BUILD" = "1" ]; then

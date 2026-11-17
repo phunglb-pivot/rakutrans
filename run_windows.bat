@@ -14,7 +14,7 @@ set "NEED_SETUP=0"
 if not exist "%VENV_PY%" (
     set "NEED_SETUP=1"
 ) else (
-    "%VENV_PY%" -c "import hashlib, pathlib, sys, customtkinter, tkinterdnd2, PIL, openpyxl, docx, pptx, fitz, pypdf, pdf2docx, reportlab, charset_normalizer; req = pathlib.Path('requirements.txt'); stamp = pathlib.Path('.venv/.req_stamp'); ok_stamp = (not req.exists()) or (stamp.exists() and stamp.read_text().strip() == hashlib.sha256(req.read_bytes()).hexdigest()); sys.exit(0 if (sys.version_info >= (3, 10) and ok_stamp) else 1)" >nul 2>&1
+    "%VENV_PY%" "%SCRIPT_DIR%check_env.py" >nul 2>&1
     if errorlevel 1 (
         echo [Notice] .venv is invalid, incomplete, or requirements.txt changed.
         set "NEED_SETUP=1"

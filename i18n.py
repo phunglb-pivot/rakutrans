@@ -183,7 +183,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "update_no_release_notes": "View full changelog and release assets on GitHub.",
         "update_install_tip_windows": "Tip: Run the downloaded installer directly to upgrade — your API keys, settings, and translation cache will be preserved.",
         "update_install_tip_macos": "Tip: Quit RakuTrans AI, open the .dmg, drag to Applications and choose Replace — your API keys and settings will be preserved.",
-        "update_install_tip_other": "Tip: Your settings and translation cache in ~/.rakutrans are preserved across upgrades.",
+        "update_install_tip_other": "Tip: Your settings and translation cache in ~/{config_dir} are preserved across upgrades.",
         "download_update_btn": "Download Update ↗",
         "open_releases_page_btn": "Release Page ↗",
         "skip_version_btn": "Skip This Version",
@@ -203,7 +203,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rate_profile_balanced": "Balanced (Default, 45 RPM)",
         "rate_profile_fast_paid": "Fast / High-Tier Paid",
         "rate_profile_custom": "Custom",
-        "rate_profile_hint": "Large files (>10 MB) or Free keys work best with Safe / Free Tier or larger Batch Max Chars.",
+        "rate_profile_hint": "Large files (>{min_size_mb} MB) or Free keys work best with Safe / Free Tier or larger Batch Max Chars.",
         "batch_max_chars_label": "Batch Max Chars:",
         "section_max_chars_label": "Section Max Chars:",
         "min_interval_label": "Min Interval (s):",
@@ -250,7 +250,27 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "progress_saved_file": "Saved: {filename}",
         "progress_saved_to": "Saved to {filename}",
         "progress_saved_lock_note": "Saved to {filename} (safe-renamed to avoid file lock)",
-        "progress_completed_note": "Completed! {note}"
+        "progress_completed_note": "Completed! {note}",
+        "err_scanned_pdf_ocr": "This PDF appears to be a scanned/image-only document with no selectable text layer. Please run OCR on the PDF before translating.",
+        "update_err_invalid_metadata": "Invalid release metadata format.",
+        "update_err_rate_limit": "GitHub API rate limit exceeded (HTTP {code}).",
+        "update_err_http": "HTTP {code}: {reason}",
+        "update_err_missing_tag": "Release tag is missing.",
+        "cli_err_convert_requires_file": "[Error] --convert requires --file to specify the input file.",
+        "cli_conversion_failed": "[Error] Conversion failed: {error}",
+        "cli_converted_saved": "[Success] Converted file saved to: {path}",
+        "cli_err_file_not_found": "[Error] File not found: {path}",
+        "cli_err_model_requires_provider": "[Error] --model requires --provider to specify which AI provider owns the model.",
+        "cli_err_unknown_provider": "[Error] Unknown provider '{provider}'. Choose one of: {providers}",
+        "cli_err_no_api_key": "[Error] No API key found for provider '{provider}'. Set env {env_var} or run GUI first.",
+        "cli_err_no_model": "[Error] No model selected for provider '{provider}'. Fetch & select a model in Settings or pass --model <id>.",
+        "cli_warn_bilingual_ignored": "[Warning] --bilingual is only supported for {extensions} files; ignoring --bilingual for {suffix}.",
+        "cli_err_unsupported_file": "[Error] Unsupported file type: {error}",
+        "cli_translating_header": "Translating '{filename}' -> {target_lang} using {provider} ({model})...",
+        "cli_success_saved": "\n[Success] Translated file saved to: {path}",
+        "cli_cancelled": "\n[Cancelled] {error}",
+        "cli_failed": "\n[Failed] {message}",
+        "cli_progress_line": "  [{pct:3d}%] {message}"
     },
     
     "ja": {
@@ -430,7 +450,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "update_no_release_notes": "変更内容の詳細は GitHub リリースページをご確認ください。",
         "update_install_tip_windows": "ヒント: ダウンロードしたインストーラーをそのまま実行して上書き更新できます（APIキー・設定・翻訳キャッシュは保持されます）。",
         "update_install_tip_macos": "ヒント: RakuTrans AI を終了し、.dmg を開いて Applications へドラッグし「置き換える」を選択してください（APIキー・設定は保持されます）。",
-        "update_install_tip_other": "ヒント: ~/.rakutrans 内の設定と翻訳キャッシュはアップデート後も保持されます。",
+        "update_install_tip_other": "ヒント: ~/{config_dir} 内の設定と翻訳キャッシュはアップデート後も保持されます。",
         "download_update_btn": "アップデートをダウンロード ↗",
         "open_releases_page_btn": "リリースページ ↗",
         "skip_version_btn": "このバージョンをスキップ",
@@ -450,7 +470,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rate_profile_balanced": "バランス (既定・45 RPM)",
         "rate_profile_fast_paid": "高速 / 有料上位プラン",
         "rate_profile_custom": "カスタム",
-        "rate_profile_hint": "大容量ファイル (>10 MB) や無料キーでは、セーフ / 無料枠プロファイルまたは大きなバッチ文字数上限を推奨します。",
+        "rate_profile_hint": "大容量ファイル (>{min_size_mb} MB) や無料キーでは、セーフ / 無料枠プロファイルまたは大きなバッチ文字数上限を推奨します。",
         "batch_max_chars_label": "バッチ最大文字数:",
         "section_max_chars_label": "セクション最大文字数:",
         "min_interval_label": "最小リクエスト間隔 (秒):",
@@ -497,7 +517,27 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "progress_saved_file": "保存完了: {filename}",
         "progress_saved_to": "{filename} に保存しました",
         "progress_saved_lock_note": "{filename} に保存しました (ロック回避のため別名保存)",
-        "progress_completed_note": "完了！ {note}"
+        "progress_completed_note": "完了！ {note}",
+        "err_scanned_pdf_ocr": "このPDFはテキストレイヤーのないスキャン画像PDFのようです。翻訳前にOCR処理を実行してください。",
+        "update_err_invalid_metadata": "リリースメタデータの形式が不正です。",
+        "update_err_rate_limit": "GitHub API のレート制限を超過しました (HTTP {code})。",
+        "update_err_http": "HTTP {code}: {reason}",
+        "update_err_missing_tag": "リリースタグが見つかりません。",
+        "cli_err_convert_requires_file": "[エラー] --convert を使用する場合は --file で入力ファイルを指定してください。",
+        "cli_conversion_failed": "[エラー] 変換に失敗しました: {error}",
+        "cli_converted_saved": "[成功] 変換後のファイルを保存しました: {path}",
+        "cli_err_file_not_found": "[エラー] ファイルが見つかりません: {path}",
+        "cli_err_model_requires_provider": "[エラー] --model を使用する場合は --provider でプロバイダーを指定してください。",
+        "cli_err_unknown_provider": "[エラー] 不明なプロバイダー '{provider}' です。選択可能: {providers}",
+        "cli_err_no_api_key": "[エラー] プロバイダー '{provider}' のAPIキーが見つかりません。環境変数 {env_var} を設定するか GUI で設定してください。",
+        "cli_err_no_model": "[エラー] '{provider}' のモデルが未選択です。設定画面でモデルを取得・選択するか --model <id> を指定してください。",
+        "cli_warn_bilingual_ignored": "[警告] --bilingual は {extensions} ファイルのみ対応しています。{suffix} では無視されます。",
+        "cli_err_unsupported_file": "[エラー] 未対応のファイル形式です: {error}",
+        "cli_translating_header": "'{filename}' を {target_lang} に翻訳中... ({provider} / {model})",
+        "cli_success_saved": "\n[成功] 翻訳済みファイルを保存しました: {path}",
+        "cli_cancelled": "\n[キャンセル] {error}",
+        "cli_failed": "\n[失敗] {message}",
+        "cli_progress_line": "  [{pct:3d}%] {message}"
     },
     
     "vi": {
@@ -677,7 +717,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "update_no_release_notes": "Xem chi tiết thay đổi và tệp cài đặt trên trang GitHub Releases.",
         "update_install_tip_windows": "Mẹo: Chạy thẳng file cài đặt vừa tải để nâng cấp đè — API key, cài đặt và bộ nhớ đệm của bạn vẫn được giữ nguyên.",
         "update_install_tip_macos": "Mẹo: Thoát RakuTrans AI, mở file .dmg, kéo vào Applications và chọn Replace — API key và cài đặt của bạn vẫn được giữ nguyên.",
-        "update_install_tip_other": "Mẹo: Cài đặt và bộ nhớ đệm trong ~/.rakutrans luôn được giữ nguyên khi cập nhật.",
+        "update_install_tip_other": "Mẹo: Cài đặt và bộ nhớ đệm trong ~/{config_dir} luôn được giữ nguyên khi cập nhật.",
         "download_update_btn": "Tải bản cập nhật ↗",
         "open_releases_page_btn": "Trang Release ↗",
         "skip_version_btn": "Bỏ qua phiên bản này",
@@ -697,7 +737,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "rate_profile_balanced": "Cân bằng (Mặc định, 45 RPM)",
         "rate_profile_fast_paid": "Tốc độ cao / Paid Tier",
         "rate_profile_custom": "Tùy chỉnh",
-        "rate_profile_hint": "File > 10 MB hoặc API key miễn phí nên dùng 'An toàn / Free Tier' hoặc tăng số ký tự tối đa mỗi batch.",
+        "rate_profile_hint": "File > {min_size_mb} MB hoặc API key miễn phí nên dùng 'An toàn / Free Tier' hoặc tăng số ký tự tối đa mỗi batch.",
         "batch_max_chars_label": "Ký tự tối đa / Batch:",
         "section_max_chars_label": "Ký tự tối đa / Đoạn:",
         "min_interval_label": "Giãn cách tối thiểu (giây):",
@@ -744,7 +784,27 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "progress_saved_file": "Đã lưu: {filename}",
         "progress_saved_to": "Đã lưu tại {filename}",
         "progress_saved_lock_note": "Đã lưu tại {filename} (đổi tên an toàn để tránh xung đột khóa tệp)",
-        "progress_completed_note": "Hoàn tất! {note}"
+        "progress_completed_note": "Hoàn tất! {note}",
+        "err_scanned_pdf_ocr": "Tệp PDF này có vẻ là bản scan/ảnh không có lớp văn bản chọn được. Vui lòng chạy OCR cho PDF trước khi dịch.",
+        "update_err_invalid_metadata": "Định dạng dữ liệu phiên bản không hợp lệ.",
+        "update_err_rate_limit": "Đã vượt giới hạn gọi GitHub API (HTTP {code}).",
+        "update_err_http": "HTTP {code}: {reason}",
+        "update_err_missing_tag": "Thiếu thẻ phiên bản phát hành (release tag).",
+        "cli_err_convert_requires_file": "[Lỗi] --convert cần tham số --file để chỉ định tệp đầu vào.",
+        "cli_conversion_failed": "[Lỗi] Chuyển đổi thất bại: {error}",
+        "cli_converted_saved": "[Thành công] Đã lưu tệp sau chuyển đổi tại: {path}",
+        "cli_err_file_not_found": "[Lỗi] Không tìm thấy tệp: {path}",
+        "cli_err_model_requires_provider": "[Lỗi] --model cần tham số --provider để xác định nhà cung cấp AI.",
+        "cli_err_unknown_provider": "[Lỗi] Nhà cung cấp không hợp lệ '{provider}'. Chọn một trong: {providers}",
+        "cli_err_no_api_key": "[Lỗi] Chưa có API key cho '{provider}'. Hãy đặt biến môi trường {env_var} hoặc mở GUI để cấu hình.",
+        "cli_err_no_model": "[Lỗi] Chưa chọn model cho '{provider}'. Hãy tải & chọn model trong Cài đặt hoặc truyền --model <id>.",
+        "cli_warn_bilingual_ignored": "[Cảnh báo] --bilingual chỉ hỗ trợ tệp {extensions}; bỏ qua tùy chọn này cho {suffix}.",
+        "cli_err_unsupported_file": "[Lỗi] Định dạng tệp không được hỗ trợ: {error}",
+        "cli_translating_header": "Đang dịch '{filename}' sang {target_lang} bằng {provider} ({model})...",
+        "cli_success_saved": "\n[Thành công] Đã lưu tệp đã dịch tại: {path}",
+        "cli_cancelled": "\n[Đã hủy] {error}",
+        "cli_failed": "\n[Thất bại] {message}",
+        "cli_progress_line": "  [{pct:3d}%] {message}"
     }
 }
 
@@ -770,6 +830,12 @@ class I18nManager:
         if "{patterns}" in text and "patterns" not in kwargs:
             from translator_registry import TranslatorRegistry
             kwargs["patterns"] = ", ".join(f"*{ext}" for ext in TranslatorRegistry.get_supported_extensions())
+        if "{config_dir}" in text and "config_dir" not in kwargs:
+            from config import CONFIG_DIR_NAME
+            kwargs["config_dir"] = CONFIG_DIR_NAME
+        if "{min_size_mb}" in text and "min_size_mb" not in kwargs:
+            from config import LARGE_FILE_SIZE_BYTES
+            kwargs["min_size_mb"] = max(1, LARGE_FILE_SIZE_BYTES // (1024 * 1024))
         if kwargs:
             try:
                 return text.format(**kwargs)

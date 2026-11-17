@@ -19,9 +19,16 @@ APP_NAME = "RakuTrans AI"
 APP_VERSION = "1.0.0"
 APP_EXECUTABLE_NAME = "RakuTrans"
 APP_BUNDLE_ID = "com.rakutrans.app"
+APP_USER_MODEL_ID = "RakuTrans.AI.Desktop"
 GITHUB_REPO = "phunglb-pivot/rakutrans"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+CONFIG_DIR_NAME = ".rakutrans"
+LARGE_FILE_SIZE_BYTES = 10 * 1024 * 1024
+HIGH_REQUEST_WARNING_THRESHOLD = 250
+LARGE_FILE_REQUEST_FALLBACK_THRESHOLD = 100
+SAFE_OUTPUT_PATH_MAX_ATTEMPTS = 1000
 
 
 def get_config_dir() -> Path:
@@ -29,7 +36,7 @@ def get_config_dir() -> Path:
     env_home = (os.getenv("RAKUTRANS_HOME") or "").strip()
     if env_home:
         return Path(env_home).expanduser()
-    return Path.home() / ".rakutrans"
+    return Path.home() / CONFIG_DIR_NAME
 
 
 CONFIG_DIR = get_config_dir()
@@ -51,8 +58,12 @@ UI_LANGUAGES = {
     "ja": "日本語",
     "vi": "Tiếng Việt"
 }
-# Backward compatibility alias
-SUPPORTED_LANGUAGES = UI_LANGUAGES
+DEFAULT_UI_LANGUAGE = "en"
+DEFAULT_THEME_MODE = "dark"
+THEME_MODES = ("dark", "light", "system")
+DEFAULT_ACTIVE_PROVIDER = "Gemini"
+DEFAULT_RATE_LIMIT_PRESET = "balanced"
+MAX_RECENT_TARGET_LANGUAGES = 3
 
 
 @dataclass(frozen=True)
@@ -148,15 +159,17 @@ def get_all_languages() -> list[LanguageInfo]:
     return list(ALL_LANGUAGES)
 
 # Default target language is dynamically resolved as English from the catalogue
-_english_info = next((l for l in ALL_LANGUAGES if l.code.lower() == "en"), None)
+_LANG_BY_CODE = {lang.code.lower(): lang for lang in ALL_LANGUAGES}
+_english_info = _LANG_BY_CODE.get("en")
 DEFAULT_TARGET_LANGUAGE: str = _english_info.display_name if _english_info else "English (English)"
 _DEFAULT_TARGET_CODE: str = _english_info.code.lower() if _english_info else "en"
 
+DEFAULT_RECENT_TARGET_CODES: tuple[str, ...] = ("vi", "en", "ja")
 DEFAULT_RECENT_TARGET_LANGUAGES: list[str] = [
-    "Tiếng Việt (Vietnamese)",
-    "English (English)",
-    "日本語 (Japanese)"
-]
+    _LANG_BY_CODE[code].display_name
+    for code in DEFAULT_RECENT_TARGET_CODES
+    if code in _LANG_BY_CODE
+][:MAX_RECENT_TARGET_LANGUAGES]
 
 AI_PROVIDERS = {
     "Gemini": {
@@ -166,7 +179,6 @@ AI_PROVIDERS = {
         "icon_name": "provider_gemini",
         "api_url_guide": "https://aistudio.google.com/app/apikey",
         "guide_key": "guide_gemini",
-        "guide_text": "Get a free API key from Google AI Studio (aistudio.google.com)."
     },
     "OpenAI": {
         "name": "OpenAI (GPT)",
@@ -175,7 +187,6 @@ AI_PROVIDERS = {
         "icon_name": "provider_openai",
         "api_url_guide": "https://platform.openai.com/api-keys",
         "guide_key": "guide_openai",
-        "guide_text": "Create an API key in your OpenAI Platform dashboard (platform.openai.com)."
     },
     "Claude": {
         "name": "Anthropic Claude",
@@ -184,14 +195,8 @@ AI_PROVIDERS = {
         "icon_name": "provider_claude",
         "api_url_guide": "https://console.anthropic.com/settings/keys",
         "guide_key": "guide_claude",
-        "guide_text": "Generate an API key in your Anthropic Console (console.anthropic.com)."
     }
 }
-
-def get_provider_models(provider: str) -> list[str]:
-    """Returns live-fetched models for provider from local cache."""
-    from model_fetcher import load_cached_models
-    return load_cached_models(provider)
 
 
 @dataclass
@@ -309,13 +314,65 @@ RATE_LIMIT_PRESETS: Dict[str, Dict[str, Union[int, float]]] = {
     },
 }
 
+_DEFAULT_PRESET_VALUES = RATE_LIMIT_PRESETS[DEFAULT_RATE_LIMIT_PRESET]
+
+
+@dataclass(frozen=True)
+class NumericSettingSpec:
+    """Single source of truth for numeric setting default and clamping bounds."""
+    default: Optional[Union[int, float]]
+    min_val: Union[int, float]
+    max_val: Union[int, float]
+    kind: str  # "int" | "float" | "optional_float"
+
+
+NUMERIC_SETTING_SPECS: Dict[str, NumericSettingSpec] = {
+    "temperature": NumericSettingSpec(None, 0.0, 2.0, "optional_float"),
+    "request_timeout": NumericSettingSpec(120.0, 5.0, 600.0, "float"),
+    "model_fetch_timeout": NumericSettingSpec(30.0, 3.0, 120.0, "float"),
+    "batch_size": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["batch_size"]), 1, 500, "int"),
+    "batch_max_chars": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["batch_max_chars"]), 200, 100000, "int"),
+    "section_max_chars": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["section_max_chars"]), 200, 100000, "int"),
+    "max_concurrent_requests": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["max_concurrent_requests"]), 1, 20, "int"),
+    "min_request_interval": NumericSettingSpec(float(_DEFAULT_PRESET_VALUES["min_request_interval"]), 0.0, 60.0, "float"),
+    "rpm_limit": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["rpm_limit"]), 0, 10000, "int"),
+    "tpm_limit": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["tpm_limit"]), 0, 10000000, "int"),
+    "max_retries_general": NumericSettingSpec(3, 1, 10, "int"),
+    "max_retries_rate_limit": NumericSettingSpec(int(_DEFAULT_PRESET_VALUES["max_retries_rate_limit"]), 1, 15, "int"),
+    "max_retries_format": NumericSettingSpec(2, 1, 10, "int"),
+}
+
+
+def coerce_setting_value(name: str, raw_val: object) -> Optional[Union[int, float]]:
+    """Coerces and clamps a named numeric setting using NUMERIC_SETTING_SPECS."""
+    spec = NUMERIC_SETTING_SPECS[name]
+    if spec.kind == "int":
+        return _coerce_int(raw_val, int(spec.default), int(spec.min_val), int(spec.max_val))
+    if spec.kind == "float":
+        return _coerce_float(raw_val, float(spec.default), float(spec.min_val), float(spec.max_val))
+    return _coerce_optional_float(raw_val, float(spec.min_val), float(spec.max_val))
+
+
+def resolve_config_int(config: Optional[object], name: str) -> int:
+    """Safely reads and clamps an integer setting from config using NUMERIC_SETTING_SPECS."""
+    spec = NUMERIC_SETTING_SPECS[name]
+    raw_val = getattr(config, name, spec.default) if config is not None else spec.default
+    return _coerce_int(raw_val, int(spec.default), int(spec.min_val), int(spec.max_val))
+
+
+def resolve_config_float(config: Optional[object], name: str) -> float:
+    """Safely reads and clamps a float setting from config using NUMERIC_SETTING_SPECS."""
+    spec = NUMERIC_SETTING_SPECS[name]
+    raw_val = getattr(config, name, spec.default) if config is not None else spec.default
+    return _coerce_float(raw_val, float(spec.default), float(spec.min_val), float(spec.max_val))
+
 
 @dataclass
 class AppConfig:
     """Application configuration and state persistence."""
-    ui_language: str = "en"
-    theme_mode: str = "dark"
-    active_provider: str = "Gemini"
+    ui_language: str = DEFAULT_UI_LANGUAGE
+    theme_mode: str = DEFAULT_THEME_MODE
+    active_provider: str = DEFAULT_ACTIVE_PROVIDER
     api_keys: Dict[str, str] = field(default_factory=lambda: {
         prov: "" for prov in AI_PROVIDERS
     })
@@ -327,19 +384,19 @@ class AppConfig:
     })
     temperature: Optional[float] = None
     strict_json_mode: bool = True
-    request_timeout: float = 120.0
-    model_fetch_timeout: float = 30.0
-    rate_limit_preset: str = "balanced"
-    batch_size: int = 25
-    batch_max_chars: int = 6000
-    section_max_chars: int = 6000
-    max_concurrent_requests: int = 2
-    min_request_interval: float = 0.5
-    rpm_limit: int = 45
-    tpm_limit: int = 0
-    max_retries_general: int = 3
-    max_retries_rate_limit: int = 5
-    max_retries_format: int = 2
+    request_timeout: float = float(NUMERIC_SETTING_SPECS["request_timeout"].default)
+    model_fetch_timeout: float = float(NUMERIC_SETTING_SPECS["model_fetch_timeout"].default)
+    rate_limit_preset: str = DEFAULT_RATE_LIMIT_PRESET
+    batch_size: int = int(NUMERIC_SETTING_SPECS["batch_size"].default)
+    batch_max_chars: int = int(NUMERIC_SETTING_SPECS["batch_max_chars"].default)
+    section_max_chars: int = int(NUMERIC_SETTING_SPECS["section_max_chars"].default)
+    max_concurrent_requests: int = int(NUMERIC_SETTING_SPECS["max_concurrent_requests"].default)
+    min_request_interval: float = float(NUMERIC_SETTING_SPECS["min_request_interval"].default)
+    rpm_limit: int = int(NUMERIC_SETTING_SPECS["rpm_limit"].default)
+    tpm_limit: int = int(NUMERIC_SETTING_SPECS["tpm_limit"].default)
+    max_retries_general: int = int(NUMERIC_SETTING_SPECS["max_retries_general"].default)
+    max_retries_rate_limit: int = int(NUMERIC_SETTING_SPECS["max_retries_rate_limit"].default)
+    max_retries_format: int = int(NUMERIC_SETTING_SPECS["max_retries_format"].default)
     target_language: str = DEFAULT_TARGET_LANGUAGE
     recent_target_languages: list[str] = field(default_factory=lambda: list(DEFAULT_RECENT_TARGET_LANGUAGES))
     source_language: Optional[str] = None
@@ -379,12 +436,12 @@ class AppConfig:
         return "custom"
 
     def record_recent_target_language(self, lang_name: str) -> None:
-        """Adds a language to the top of recent_target_languages (MRU, max 3)."""
+        """Adds a language to the top of recent_target_languages (MRU)."""
         norm = normalize_language_name(lang_name)
         # Deduplicate while preserving order
         self.recent_target_languages = [l for l in self.recent_target_languages if l != norm]
         self.recent_target_languages.insert(0, norm)
-        self.recent_target_languages = self.recent_target_languages[:3]
+        self.recent_target_languages = self.recent_target_languages[:MAX_RECENT_TARGET_LANGUAGES]
 
     def get_effective_api_key(self, provider: Optional[str] = None) -> str:
         """Returns the active API key with dynamic fallback to env vars."""
@@ -549,31 +606,31 @@ class AppConfig:
                     for prov in AI_PROVIDERS
                 }
 
-                raw_provider = str(data.get("active_provider", "Gemini") or "Gemini")
-                active_provider = raw_provider if raw_provider in AI_PROVIDERS else "Gemini"
+                raw_provider = str(data.get("active_provider", DEFAULT_ACTIVE_PROVIDER) or DEFAULT_ACTIVE_PROVIDER)
+                active_provider = raw_provider if raw_provider in AI_PROVIDERS else DEFAULT_ACTIVE_PROVIDER
 
-                raw_ui_lang = str(data.get("ui_language", "en") or "en")
-                ui_language = raw_ui_lang if raw_ui_lang in UI_LANGUAGES else "en"
+                raw_ui_lang = str(data.get("ui_language", DEFAULT_UI_LANGUAGE) or DEFAULT_UI_LANGUAGE)
+                ui_language = raw_ui_lang if raw_ui_lang in UI_LANGUAGES else DEFAULT_UI_LANGUAGE
 
-                raw_theme = str(data.get("theme_mode", "dark") or "dark").lower()
-                theme_mode = raw_theme if raw_theme in ("dark", "light", "system") else "dark"
+                raw_theme = str(data.get("theme_mode", DEFAULT_THEME_MODE) or DEFAULT_THEME_MODE).lower()
+                theme_mode = raw_theme if raw_theme in THEME_MODES else DEFAULT_THEME_MODE
 
-                temperature = _coerce_optional_float(data.get("temperature"), 0.0, 2.0)
+                temperature = coerce_setting_value("temperature", data.get("temperature"))
                 raw_strict_json = data.get("strict_json_mode", True)
                 strict_json_mode = raw_strict_json if isinstance(raw_strict_json, bool) else True
-                request_timeout = _coerce_float(data.get("request_timeout"), 120.0, 5.0, 600.0)
-                model_fetch_timeout = _coerce_float(data.get("model_fetch_timeout"), 30.0, 3.0, 120.0)
+                request_timeout = float(coerce_setting_value("request_timeout", data.get("request_timeout")))
+                model_fetch_timeout = float(coerce_setting_value("model_fetch_timeout", data.get("model_fetch_timeout")))
 
-                batch_size = _coerce_int(data.get("batch_size"), 25, 1, 500)
-                batch_max_chars = _coerce_int(data.get("batch_max_chars"), 6000, 200, 100000)
-                section_max_chars = _coerce_int(data.get("section_max_chars"), 6000, 200, 100000)
-                max_concurrent_requests = _coerce_int(data.get("max_concurrent_requests"), 2, 1, 20)
-                min_request_interval = _coerce_float(data.get("min_request_interval"), 0.5, 0.0, 60.0)
-                rpm_limit = _coerce_int(data.get("rpm_limit"), 45, 0, 10000)
-                tpm_limit = _coerce_int(data.get("tpm_limit"), 0, 0, 10000000)
-                max_retries_general = _coerce_int(data.get("max_retries_general"), 3, 1, 10)
-                max_retries_rate_limit = _coerce_int(data.get("max_retries_rate_limit"), 5, 1, 15)
-                max_retries_format = _coerce_int(data.get("max_retries_format"), 2, 1, 10)
+                batch_size = int(coerce_setting_value("batch_size", data.get("batch_size")))
+                batch_max_chars = int(coerce_setting_value("batch_max_chars", data.get("batch_max_chars")))
+                section_max_chars = int(coerce_setting_value("section_max_chars", data.get("section_max_chars")))
+                max_concurrent_requests = int(coerce_setting_value("max_concurrent_requests", data.get("max_concurrent_requests")))
+                min_request_interval = float(coerce_setting_value("min_request_interval", data.get("min_request_interval")))
+                rpm_limit = int(coerce_setting_value("rpm_limit", data.get("rpm_limit")))
+                tpm_limit = int(coerce_setting_value("tpm_limit", data.get("tpm_limit")))
+                max_retries_general = int(coerce_setting_value("max_retries_general", data.get("max_retries_general")))
+                max_retries_rate_limit = int(coerce_setting_value("max_retries_rate_limit", data.get("max_retries_rate_limit")))
+                max_retries_format = int(coerce_setting_value("max_retries_format", data.get("max_retries_format")))
 
                 raw_target = data.get("target_language", DEFAULT_TARGET_LANGUAGE)
                 normalized_target = normalize_language_name(
@@ -587,14 +644,14 @@ class AppConfig:
                         norm = normalize_language_name(str(r))
                         if norm not in recents:
                             recents.append(norm)
-                    recents = recents[:3]
+                    recents = recents[:MAX_RECENT_TARGET_LANGUAGES]
                 else:
                     recents = list(DEFAULT_RECENT_TARGET_LANGUAGES)
 
                 # Ensure the active target language is at the top of recent list
                 if normalized_target not in recents:
                     recents.insert(0, normalized_target)
-                    recents = recents[:3]
+                    recents = recents[:MAX_RECENT_TARGET_LANGUAGES]
 
                 raw_source = data.get("source_language", None)
                 source_language = str(raw_source).strip() if isinstance(raw_source, str) and raw_source.strip() else None
@@ -619,7 +676,7 @@ class AppConfig:
                     strict_json_mode=strict_json_mode,
                     request_timeout=request_timeout,
                     model_fetch_timeout=model_fetch_timeout,
-                    rate_limit_preset=raw_preset if raw_preset in valid_presets else "balanced",
+                    rate_limit_preset=raw_preset if raw_preset in valid_presets else DEFAULT_RATE_LIMIT_PRESET,
                     batch_size=batch_size,
                     batch_max_chars=batch_max_chars,
                     section_max_chars=section_max_chars,
@@ -719,7 +776,7 @@ def get_unique_output_path(target_path: Path) -> Path:
         if not candidate.exists():
             return candidate
         counter += 1
-        if counter > 1000:
+        if counter > SAFE_OUTPUT_PATH_MAX_ATTEMPTS:
             return parent / f"{base_stem} ({uuid.uuid4().hex[:8]}){suffix}"
 
 

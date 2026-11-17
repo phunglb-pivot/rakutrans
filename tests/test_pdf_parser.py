@@ -14,11 +14,9 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 
+from base_translator import should_translate_text
 from config import AppConfig
-from pdf_parser import (
-    PdfTranslator,
-    _should_translate,
-)
+from pdf_parser import PdfTranslator
 from translator_registry import TranslatorRegistry
 
 
@@ -65,15 +63,15 @@ class TestPdfParser(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_should_translate(self):
-        self.assertTrue(_should_translate("Hello world"))
-        self.assertTrue(_should_translate("Tiếng Việt"))
-        self.assertTrue(_should_translate("日本語"))
-        self.assertFalse(_should_translate(""))
-        self.assertFalse(_should_translate("   "))
-        self.assertFalse(_should_translate("12345"))
-        self.assertFalse(_should_translate("99.99"))
-        self.assertFalse(_should_translate("$100"))
-        self.assertFalse(_should_translate("---"))
+        self.assertTrue(should_translate_text("Hello world", ignore_formulas=False))
+        self.assertTrue(should_translate_text("Tiếng Việt", ignore_formulas=False))
+        self.assertTrue(should_translate_text("日本語", ignore_formulas=False))
+        self.assertFalse(should_translate_text("", ignore_formulas=False))
+        self.assertFalse(should_translate_text("   ", ignore_formulas=False))
+        self.assertFalse(should_translate_text("12345", ignore_formulas=False))
+        self.assertFalse(should_translate_text("99.99", ignore_formulas=False))
+        self.assertFalse(should_translate_text("$100", ignore_formulas=False))
+        self.assertFalse(should_translate_text("---", ignore_formulas=False))
 
     def test_inspect_file(self):
         info = PdfTranslator.inspect_file(str(self.sample_pdf))

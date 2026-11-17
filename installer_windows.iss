@@ -29,7 +29,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 VersionInfoVersion={#MyAppVersion}
-DefaultDirName={autopf}\RakuTrans
+DefaultDirName={autopf}\{#MyAppExecBase}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 

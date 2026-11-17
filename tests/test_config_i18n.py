@@ -3,7 +3,7 @@ Unit tests for configuration and i18n localization.
 """
 
 import unittest
-from config import AppConfig, UI_LANGUAGES, SUPPORTED_LANGUAGES, DEFAULT_TARGET_LANGUAGE, normalize_language_name
+from config import AppConfig, UI_LANGUAGES, DEFAULT_TARGET_LANGUAGE, normalize_language_name
 from i18n import I18nManager, TRANSLATIONS
 
 
@@ -49,11 +49,10 @@ class TestConfigAndI18n(unittest.TestCase):
         self.assertEqual(DEFAULT_TARGET_LANGUAGE, "English (English)")
 
     def test_i18n_all_languages(self):
-        # Verify that all 3 languages exist in UI_LANGUAGES and SUPPORTED_LANGUAGES alias
+        # Verify that all 3 languages exist in UI_LANGUAGES
         self.assertIn("en", UI_LANGUAGES)
         self.assertIn("ja", UI_LANGUAGES)
         self.assertIn("vi", UI_LANGUAGES)
-        self.assertEqual(SUPPORTED_LANGUAGES, UI_LANGUAGES)
 
         # Test language normalization
         self.assertEqual(normalize_language_name("Vietnamese"), "Tiếng Việt (Vietnamese)")

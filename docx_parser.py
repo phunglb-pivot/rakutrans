@@ -38,22 +38,8 @@ _TAB_TAG = f"{_W_NS}tab"
 _BR_TAG = f"{_W_NS}br"
 
 
-def _should_translate(text: Optional[str]) -> bool:
-    """Checks if a string has translatable content."""
-    return should_translate_text(text, ignore_formulas=False)
-
-
 def _is_structural_break(br_elem) -> bool:
     return br_elem.get(qn("w:type")) in ("page", "column")
-
-
-def _collect_direct_t_elements(p_elem) -> List[Any]:
-    """
-    Collects all <w:t> elements belonging directly to paragraph element p_elem
-    (including inside <w:hyperlink> or <w:r>), without descending into nested
-    text boxes (<w:txbxContent>) or nested paragraphs (<w:p>).
-    """
-    return [u[0] for u in _collect_direct_t_units(p_elem) if u[0].tag == _T_TAG]
 
 
 def _collect_direct_t_units(p_elem) -> List[Tuple[Any, Optional[Any], Optional[Any], str]]:
@@ -490,7 +476,7 @@ class DocxTranslator(BaseTranslator):
                 text = p.text
                 if text:
                     total_words += count_words_multilingual(text)
-                    if _should_translate(text):
+                    if should_translate_text(text, ignore_formulas=False):
                         unique_texts.add(text.strip())
 
             return {
@@ -533,7 +519,7 @@ class DocxTranslator(BaseTranslator):
 
         doc = Document(str(src))
         paragraphs_to_process: List[Paragraph] = [
-            p for p in _iter_all_paragraphs(doc) if _should_translate(p.text)
+            p for p in _iter_all_paragraphs(doc) if should_translate_text(p.text, ignore_formulas=False)
         ]
 
         if not paragraphs_to_process:

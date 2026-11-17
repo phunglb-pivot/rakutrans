@@ -6,14 +6,10 @@ Presents a clear, focused confirmation prompt for destructive or irreversible ac
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from components.ui_system import BaseModal, CustomButton
+from components.ui_system import BaseModal, CustomButton, UI_LAYOUT
 from components.icons import get_icon
 
-_LEGACY_ICON_MAP = {
-    "⚠️": ("alert_triangle", "warning_accent"),
-    "⚠": ("alert_triangle", "warning_accent"),
-    "🗑️": ("trash", "danger_accent"),
-    "🗑": ("trash", "danger_accent"),
+_CONFIRM_ICON_MAP = {
     "trash": ("trash", "danger_accent"),
     "alert_triangle": ("alert_triangle", "warning_accent"),
     "info": ("info", "info_accent"),
@@ -52,11 +48,12 @@ class ConfirmModal(BaseModal):
         resolved_confirm = confirm_text or self.t("confirm")
         resolved_cancel = cancel_text or self.t("cancel")
 
+        modal_w, modal_h = UI_LAYOUT["confirm_modal_size"]
         super().__init__(
             parent=parent,
             title=resolved_title,
-            width=460,
-            height=240,
+            width=modal_w,
+            height=modal_h,
             resizable=False,
             on_close=self._handle_cancel,
             on_confirm=self._handle_confirm
@@ -81,7 +78,7 @@ class ConfirmModal(BaseModal):
         header_frame = ctk.CTkFrame(container, fg_color="transparent")
         header_frame.pack(fill="x", pady=(0, 10))
 
-        icon_name, icon_color = _LEGACY_ICON_MAP.get(icon, ("alert_triangle", "warning_accent"))
+        icon_name, icon_color = _CONFIRM_ICON_MAP.get(icon, ("alert_triangle", "warning_accent"))
         icon_label = ctk.CTkLabel(
             header_frame,
             text="",

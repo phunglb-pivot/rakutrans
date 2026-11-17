@@ -5,12 +5,18 @@ with real-time filtering, clean neutral colors, and zero secondary windows.
 """
 
 import unicodedata
-import time
 from typing import Callable, List, Optional
 import customtkinter as ctk
 
-from config import LanguageInfo, get_all_languages, DEFAULT_TARGET_LANGUAGE, normalize_language_name
+from config import (
+    DEFAULT_TARGET_LANGUAGE,
+    LanguageInfo,
+    MAX_RECENT_TARGET_LANGUAGES,
+    get_all_languages,
+    normalize_language_name,
+)
 from components.icons import get_icon
+from components.ui_system import COLORS, UI_LAYOUT, UI_TIMING
 
 
 def _strip_accents(text: str) -> str:
@@ -48,7 +54,7 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         self.on_close = on_close
         self.selected_display = normalize_language_name(current_language or DEFAULT_TARGET_LANGUAGE)
         
-        # Initialize recent languages (max 3)
+        # Initialize recent languages (capped by config.MAX_RECENT_TARGET_LANGUAGES)
         raw_recents = recent_languages if recent_languages is not None else [self.selected_display]
         seen_recents: List[str] = []
         for r in raw_recents:
@@ -57,14 +63,13 @@ class SearchableLanguageSelect(ctk.CTkFrame):
                 seen_recents.append(norm)
         if self.selected_display not in seen_recents:
             seen_recents.insert(0, self.selected_display)
-        self.recent_languages: List[str] = seen_recents[:3]
+        self.recent_languages: List[str] = seen_recents[:MAX_RECENT_TARGET_LANGUAGES]
 
         self.is_open = False
         self._enabled = True
         self._panel_width = width
-        self._panel_height = 240
+        self._panel_height = UI_LAYOUT["lang_panel_height"]
         self._buttons: List[ctk.CTkButton] = []
-        self._just_toggled_time: float = 0.0
         self._suppress_search_trace: bool = False
         self._chevron_after_id = None
         self._focus_after_id = None
@@ -78,11 +83,11 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             text=self.selected_display,
             width=width,
             height=height,
-            fg_color=("white", "#202023"),
-            text_color=("#18181B", "#FAFAFA"),
-            hover_color=("#F4F4F5", "#27272A"),
+            fg_color=COLORS["surface_elevated"],
+            text_color=COLORS["text_primary"],
+            hover_color=COLORS["surface_hover"],
             border_width=1,
-            border_color=("#E4E4E7", "#27272A"),
+            border_color=COLORS["border"],
             corner_radius=8,
             anchor="w",
             font=ctk.CTkFont(size=13, weight="bold"),
@@ -91,7 +96,9 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         )
         self.trigger_btn.pack(fill="x")
         self.trigger_btn.bind("<Configure>", lambda e: self._update_chevron(), add="+")
-        self._chevron_after_id = self.after(20, self._update_chevron)
+        self._chevron_after_id = self.after(
+            UI_TIMING["grab_retry_delay_ms"], self._update_chevron
+        )
 
         # Collapsible Floating Dropdown Panel
         # Attached to the toplevel window so it floats as an overlay without pushing layout
@@ -101,9 +108,9 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             self,
             width=width,
             height=self._panel_height,
-            fg_color=("white", "#18181B"),
+            fg_color=COLORS["surface_card"],
             border_width=1,
-            border_color=("#E4E4E7", "#27272A"),
+            border_color=COLORS["border"],
             corner_radius=8
         )
         self.panel.pack_propagate(False)
@@ -120,9 +127,9 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             corner_radius=6,
             fg_color=("#F4F4F5", "#202023"),
             border_width=1,
-            border_color=("#E4E4E7", "#27272A"),
-            text_color=("#18181B", "#FAFAFA"),
-            placeholder_text_color=("#A1A1AA", "#71717A"),
+            border_color=COLORS["border"],
+            text_color=COLORS["text_primary"],
+            placeholder_text_color=COLORS["disabled_text"],
             font=ctk.CTkFont(size=12)
         )
         self.search_entry.pack(fill="x", padx=8, pady=(8, 6))
@@ -240,14 +247,6 @@ class SearchableLanguageSelect(ctk.CTkFrame):
         except Exception:
             pass
 
-    @property
-    def arrow_label(self):
-        """Backward-compatibility shim for external references to arrow_label."""
-        class _Dummy:
-            def configure(self, *a, **kw): pass
-            def cget(self, *a, **kw): return "▾"
-        return _Dummy()
-
     def _update_chevron(self):
         """Draws or updates a clean vector chevron directly on the button canvas with zero background."""
         self._chevron_after_id = None
@@ -330,7 +329,8 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             except Exception:
                 pass
         self._focus_after_id = self.after(
-            50, lambda: self.search_entry.focus_set() if self.winfo_exists() else None
+            UI_TIMING["focus_delay_ms"],
+            lambda: self.search_entry.focus_set() if self.winfo_exists() else None,
         )
 
     def close(self):
@@ -353,13 +353,13 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             pass
 
     def set_recent_languages(self, langs: List[str]):
-        """Sets the list of recent languages (max 3)."""
+        """Sets the list of recent languages (capped by config.MAX_RECENT_TARGET_LANGUAGES)."""
         seen: List[str] = []
         for l in langs:
             norm = normalize_language_name(l)
             if norm not in seen:
                 seen.append(norm)
-        self.recent_languages = seen[:3]
+        self.recent_languages = seen[:MAX_RECENT_TARGET_LANGUAGES]
         if self.is_open:
             self._render_items()
 
@@ -373,8 +373,8 @@ class SearchableLanguageSelect(ctk.CTkFrame):
             height=28,
             corner_radius=6,
             fg_color=("#F4F4F5", "#27272A") if is_selected else "transparent",
-            text_color=("#18181B", "#FAFAFA"),
-            hover_color=("#E4E4E7", "#3F3F46") if is_selected else ("#F4F4F5", "#27272A"),
+            text_color=COLORS["text_primary"],
+            hover_color=("#E4E4E7", "#3F3F46") if is_selected else COLORS["surface_hover"],
             font=ctk.CTkFont(size=12, weight="bold" if is_selected else "normal"),
             cursor="hand2",
             command=lambda d=display_name: self._choose(d),

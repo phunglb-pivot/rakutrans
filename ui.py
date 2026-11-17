@@ -7,6 +7,7 @@ and comprehensive translation progress tracking.
 
 import os
 import platform
+import shutil
 import subprocess
 import threading
 from dataclasses import replace
@@ -17,17 +18,20 @@ import customtkinter as ctk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 
-from config import AI_PROVIDERS, AppConfig, APP_NAME, APP_VERSION
+from config import (
+    AI_PROVIDERS,
+    APP_NAME,
+    APP_VERSION,
+    AppConfig,
+    HIGH_REQUEST_WARNING_THRESHOLD,
+    LARGE_FILE_REQUEST_FALLBACK_THRESHOLD,
+    LARGE_FILE_SIZE_BYTES,
+)
 from i18n import I18nManager
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from llm_manager import LLMManager
 from translator_registry import TranslatorRegistry
-from base_translator import (
-    BaseTranslator,
-    HIGH_REQUEST_WARNING_THRESHOLD,
-    LARGE_FILE_SIZE_BYTES,
-    estimate_translation_requests,
-)
+from base_translator import BaseTranslator, estimate_translation_requests
 from translation_cache import TranslationCache
 from format_converter import (
     convert_file_direct,
@@ -40,16 +44,18 @@ from components.settings_modal import SettingsView
 from components.error_modal import ErrorModal
 from components.update_modal import UpdateModal
 from components.searchable_select import SearchableLanguageSelect
-from components.ui_system import CustomButton, CustomSegmentedButton
+from components.ui_system import (
+    COLORS,
+    CustomButton,
+    CustomSegmentedButton,
+    HAS_TKDND,
+    TkinterDnD,
+    UI_LAYOUT,
+    UI_TIMING,
+)
 from components.confirm_modal import ConfirmModal
 from components.icons import get_icon, get_provider_icon, get_assets_dir, init_windows_app_id, apply_windows_window_icon
 from error_handler import diagnose_error, DiagnosticInfo
-
-try:
-    from tkinterdnd2 import TkinterDnD
-    HAS_TKDND = True
-except ImportError:
-    HAS_TKDND = False
 
 
 class RakuTransApp(ctk.CTk):
@@ -108,8 +114,8 @@ class RakuTransApp(ctk.CTk):
 
         # Window configuration
         self.title(self.i18n.t("app_title"))
-        self.geometry("860x820")
-        self.minsize(780, 680)
+        self.geometry(UI_LAYOUT["main_geometry"])
+        self.minsize(*UI_LAYOUT["main_minsize"])
 
         # Apply theme
         ctk.set_appearance_mode(self.config.theme_mode)
@@ -148,7 +154,7 @@ class RakuTransApp(ctk.CTk):
                 import ctypes
                 import ctypes.util
                 objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
-                appkit = ctypes.cdll.LoadLibrary(ctypes.util.find_library("AppKit"))
+                ctypes.cdll.LoadLibrary(ctypes.util.find_library("AppKit"))
 
                 objc.objc_getClass.restype = ctypes.c_void_p
                 objc.objc_getClass.argtypes = [ctypes.c_char_p]
@@ -207,7 +213,9 @@ class RakuTransApp(ctk.CTk):
         self.lift()
 
         if self.config.auto_check_updates:
-            self._update_check_after_id = self.after(1500, self._start_startup_update_check)
+            self._update_check_after_id = self.after(
+                UI_TIMING["startup_update_delay_ms"], self._start_startup_update_check
+            )
 
     def _setup_ui(self):
         # Configure layout: Row 0 Header, Row 1 Nav Tabs, Row 2 Scrollable Body, Row 3 Sticky Bottom Bar
@@ -449,10 +457,9 @@ class RakuTransApp(ctk.CTk):
     # Language Card
     # -------------------------------------------------------------------------
 
-    def _build_language_card(self, parent=None):
-        target_parent = parent or self.body_scroll
+    def _build_language_card(self, parent):
         self.lang_card = ctk.CTkFrame(
-            target_parent,
+            parent,
             fg_color="transparent"
         )
         self.lang_card.pack(fill="x", pady=(0, 12))
@@ -468,13 +475,12 @@ class RakuTransApp(ctk.CTk):
         # Pin to top (aligned with the 36px trigger) so it stays put when the list expands
         self.tgt_label.pack(side="left", padx=(0, 14), pady=(8, 0), anchor="n")
 
-        self.tgt_var = ctk.StringVar(value=self.config.target_language)
         self.tgt_select = SearchableLanguageSelect(
             row,
             current_language=self.config.target_language,
             on_change=lambda v: self._save_lang_choice(),
-            width=360,
-            height=36,
+            width=UI_LAYOUT["lang_trigger_width"],
+            height=UI_LAYOUT["lang_trigger_height"],
             get_translation=self.i18n.t,
             on_open=self._hide_dropzone_for_lang,
             on_close=self._show_dropzone_after_lang,
@@ -498,10 +504,9 @@ class RakuTransApp(ctk.CTk):
     # Drop Zone
     # -------------------------------------------------------------------------
 
-    def _build_dropzone(self, parent=None):
-        target_parent = parent or self.body_scroll
+    def _build_dropzone(self, parent):
         self.drop_zone = DropZone(
-            target_parent,
+            parent,
             on_file_selected=self._on_file_selected,
             get_translation=self.i18n.t,
             on_invalid_file=lambda msg, _p: self._set_status(msg, is_error=True),
@@ -513,10 +518,9 @@ class RakuTransApp(ctk.CTk):
     # Options Card (collapsible)
     # -------------------------------------------------------------------------
 
-    def _build_options_card(self, parent=None):
-        target_parent = parent or self.body_scroll
+    def _build_options_card(self, parent):
         self.options_card = ctk.CTkFrame(
-            target_parent,
+            parent,
             fg_color="transparent"
         )
         self.options_card.pack(fill="x", pady=(0, 15))
@@ -1180,14 +1184,14 @@ class RakuTransApp(ctk.CTk):
         if self.selected_file:
             self.status_label.configure(
                 text=f"{self.i18n.t('status_ready')}: {Path(file_path).name}",
-                text_color=("#18181B", "#FAFAFA")
+                text_color=COLORS["text_primary"]
             )
             if hasattr(self, "bilingual_cb"):
                 bilingual_ok = TranslatorRegistry.supports_bilingual(file_path)
                 self.bilingual_cb.configure(state="normal" if bilingual_ok else "disabled")
             self._update_button_states("file_ready")
         else:
-            self.status_label.configure(text=self.i18n.t("status_ready"), text_color=("#71717A", "#A1A1AA"))
+            self.status_label.configure(text=self.i18n.t("status_ready"), text_color=COLORS["text_muted"])
             if hasattr(self, "bilingual_cb"):
                 self.bilingual_cb.configure(state="normal")
             self._update_button_states("idle_no_file")
@@ -1200,8 +1204,8 @@ class RakuTransApp(ctk.CTk):
             self.target_segmented.configure(values=["--"])
             self.target_segmented.set("--")
             self.selected_target_format = None
-            self.convert_desc_label.configure(text="", text_color=("#71717A", "#A1A1AA"))
-            self.status_label.configure(text=self.i18n.t("status_ready"), text_color=("#71717A", "#A1A1AA"))
+            self.convert_desc_label.configure(text="", text_color=COLORS["text_muted"])
+            self.status_label.configure(text=self.i18n.t("status_ready"), text_color=COLORS["text_muted"])
             self._update_button_states("idle_no_file")
             return
 
@@ -1216,14 +1220,14 @@ class RakuTransApp(ctk.CTk):
             self.target_segmented.set(display_opts[0])
             self.selected_target_format = options[0]
             desc_key = f"convert_desc_{options[0]}"
-            self.convert_desc_label.configure(text=self.i18n.t(desc_key), text_color=("#71717A", "#A1A1AA"))
+            self.convert_desc_label.configure(text=self.i18n.t(desc_key), text_color=COLORS["text_muted"])
             self._update_button_states("file_ready")
         else:
             display_opts = ["--"]
             self.target_segmented.configure(values=display_opts)
             self.target_segmented.set("--")
             self.selected_target_format = None
-            self.convert_desc_label.configure(text=self.i18n.t("convert_no_options"), text_color=("#DC2626", "#EF4444"))
+            self.convert_desc_label.configure(text=self.i18n.t("convert_no_options"), text_color=COLORS["danger"])
             self._update_button_states("idle_no_file")
 
         # Must run AFTER configure(values=...) because CTkSegmentedButton sets weight=1 on old columns
@@ -1240,7 +1244,7 @@ class RakuTransApp(ctk.CTk):
 
         self.status_label.configure(
             text=f"{self.i18n.t('status_ready')}: {p.name}",
-            text_color=("#18181B", "#FAFAFA")
+            text_color=COLORS["text_primary"]
         )
 
     def _on_target_format_changed(self, selected_display_fmt: str):
@@ -1249,7 +1253,7 @@ class RakuTransApp(ctk.CTk):
         if self.selected_target_format:
             desc_key = f"convert_desc_{tgt_fmt}"
             desc = self.i18n.t(desc_key)
-            self.convert_desc_label.configure(text=desc, text_color=("#71717A", "#A1A1AA"))
+            self.convert_desc_label.configure(text=desc, text_color=COLORS["text_muted"])
             self._update_button_states("file_ready")
         else:
             self._update_button_states("idle_no_file")
@@ -1259,12 +1263,10 @@ class RakuTransApp(ctk.CTk):
     # -------------------------------------------------------------------------
 
     def _save_lang_choice(self):
-        val = self.tgt_select.get() if hasattr(self, "tgt_select") else self.tgt_var.get()
+        val = self.tgt_select.get()
         self.config.target_language = val
         self.config.record_recent_target_language(val)
-        if hasattr(self, "tgt_select"):
-            self.tgt_select.set_recent_languages(self.config.recent_target_languages)
-        self.tgt_var.set(val)
+        self.tgt_select.set_recent_languages(self.config.recent_target_languages)
         self.config.save()
 
     def _on_clear_cache_main(self):
@@ -1283,7 +1285,9 @@ class RakuTransApp(ctk.CTk):
                     self.after_cancel(self._cache_refresh_after_id)
                 except Exception:
                     pass
-            self._cache_refresh_after_id = self.after(2500, self._refresh_cache_display)
+            self._cache_refresh_after_id = self.after(
+                UI_TIMING["cache_refresh_delay_ms"], self._refresh_cache_display
+            )
 
         ConfirmModal(
             parent=self,
@@ -1323,7 +1327,9 @@ class RakuTransApp(ctk.CTk):
             except Exception:
                 pass
         try:
-            self._options_save_after_id = self.after(300, self._save_options)
+            self._options_save_after_id = self.after(
+                UI_TIMING["debounce_save_ms"], self._save_options
+            )
         except Exception:
             self._options_save_after_id = None
 
@@ -1578,7 +1584,11 @@ class RakuTransApp(ctk.CTk):
             self._set_status(self.i18n.t("err_no_file"), is_error=True)
             return
 
-        tgt_lang = self.tgt_select.get() if hasattr(self, "tgt_select") else self.tgt_var.get()
+        tgt_lang = (
+            self.tgt_select.get()
+            if hasattr(self, "tgt_select")
+            else self.config.target_language
+        )
 
         # Check provider, API key, and selected model explicitly
         active_provider = (self.config.active_provider or "").strip()
@@ -1620,7 +1630,10 @@ class RakuTransApp(ctk.CTk):
         est_reqs = estimate_translation_requests(inspect_info, self.config)
         needs_confirm = (
             est_reqs >= HIGH_REQUEST_WARNING_THRESHOLD
-            or (file_size >= LARGE_FILE_SIZE_BYTES and (inspect_info is None or est_reqs >= 100))
+            or (
+                file_size >= LARGE_FILE_SIZE_BYTES
+                and (inspect_info is None or est_reqs >= LARGE_FILE_REQUEST_FALLBACK_THRESHOLD)
+            )
         )
         if needs_confirm:
             size_str = format_file_size(file_size)
@@ -1630,7 +1643,7 @@ class RakuTransApp(ctk.CTk):
                 reqs=est_reqs if est_reqs > 0 else "?",
             )
             if (
-                Path(self.selected_file).suffix.lower() == ".xlsx"
+                TranslatorRegistry.supports_bilingual(self.selected_file)
                 and self.config.translation_options.bilingual_mode
                 and file_size >= LARGE_FILE_SIZE_BYTES
             ):
@@ -1746,13 +1759,15 @@ class RakuTransApp(ctk.CTk):
     def _notify_completion(self, out_name: str, subtitle_key: str):
         try:
             import sys
-            sys.stdout.write('\a')
+            sys.stdout.write("\a")
             sys.stdout.flush()
         except Exception:
             pass
 
-        if platform.system() == "Darwin":
-            try:
+        subtitle = self.i18n.t(subtitle_key)
+        sys_name = platform.system()
+        try:
+            if sys_name == "Darwin":
                 subprocess.Popen([
                     "osascript",
                     "-e",
@@ -1763,16 +1778,21 @@ class RakuTransApp(ctk.CTk):
                         "end run"
                     ),
                     out_name,
-                    self.i18n.t(subtitle_key),
+                    subtitle,
                     APP_NAME,
                 ])
-            except Exception:
-                pass
+            elif sys_name == "Windows":
+                import ctypes
+                ctypes.windll.user32.FlashWindow(self.winfo_id(), True)
+            elif shutil.which("notify-send"):
+                subprocess.Popen(["notify-send", APP_NAME, f"{subtitle}: {out_name}"])
+        except Exception:
+            pass
 
     def _on_translation_cancelled(self):
         self.is_translating = False
         self.progress_bar.set(0)
-        self._set_status(self.i18n.t("status_cancelled"), text_color=("#D97706", "#F59E0B"))
+        self._set_status(self.i18n.t("status_cancelled"), text_color=COLORS["warning"])
         self._update_button_states("cancelled")
 
     def _on_translation_failed(self, error_msg: str, exc: Optional[Exception] = None):
@@ -1830,7 +1850,7 @@ class RakuTransApp(ctk.CTk):
         self.progress_bar.set(1.0)
         out_name = Path(output_path).name
         msg = self.i18n.t("convert_success", filename=out_name)
-        self._set_status(msg, text_color=("#16A34A", "#22C55E"))
+        self._set_status(msg, text_color=COLORS["success"])
         self._update_button_states("completed")
 
         # Audio completion cue & notification
@@ -1911,11 +1931,11 @@ class RakuTransApp(ctk.CTk):
     def _set_status(self, text: str, is_error: bool = False, text_color: Optional[str] = None):
         self._update_status_wraplength()
         if is_error:
-            self.status_label.configure(text=text, text_color=("#DC2626", "#EF4444"))
+            self.status_label.configure(text=text, text_color=COLORS["danger"])
         elif text_color:
             self.status_label.configure(text=text, text_color=text_color)
         else:
-            self.status_label.configure(text=text, text_color=("#18181B", "#FAFAFA"))
+            self.status_label.configure(text=text, text_color=COLORS["text_primary"])
 
     # -------------------------------------------------------------------------
     # Update Check & Notification Banner
@@ -1928,6 +1948,7 @@ class RakuTransApp(ctk.CTk):
         check_for_updates_async(
             lambda res: self._safe_after(0, lambda r=res: self._handle_startup_update_result(r)),
             current_version=APP_VERSION,
+            ui_language=self.config.ui_language,
         )
 
     def _handle_startup_update_result(self, result: UpdateCheckResult):

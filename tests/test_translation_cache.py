@@ -25,16 +25,22 @@ class TestTranslationCache(unittest.TestCase):
         opts = TranslationOptions(keep_it_terms=True, append_original_words=False)
 
         # 1. Initial lookup -> 100% cache miss
-        cached_map, uncached = self.cache.get_batch(texts, "English", "Vietnamese", opts)
+        cached_map, uncached = self.cache.get_batch(
+            texts, target_lang="Vietnamese", options=opts, source_lang="English"
+        )
         self.assertEqual(len(cached_map), 0)
         self.assertEqual(len(uncached), 3)
 
         # 2. Save translations
         translated = ["Quả táo", "Quả chuối", "Quả anh đào"]
-        self.cache.save_batch(texts, translated, "English", "Vietnamese", opts)
+        self.cache.save_batch(
+            texts, translated, target_lang="Vietnamese", options=opts, source_lang="English"
+        )
 
         # 3. Subsequent lookup -> 100% cache hit
-        cached_map, uncached = self.cache.get_batch(texts, "English", "Vietnamese", opts)
+        cached_map, uncached = self.cache.get_batch(
+            texts, target_lang="Vietnamese", options=opts, source_lang="English"
+        )
         self.assertEqual(len(cached_map), 3)
         self.assertEqual(len(uncached), 0)
         self.assertEqual(cached_map[0], "Quả táo")
@@ -43,10 +49,12 @@ class TestTranslationCache(unittest.TestCase):
 
     def test_partial_cache_hit(self):
         opts = TranslationOptions()
-        self.cache.save_batch(["Hello"], ["Xin chào"], "English", "Vietnamese", opts)
+        self.cache.save_batch(
+            ["Hello"], ["Xin chào"], target_lang="Vietnamese", options=opts, source_lang="English"
+        )
 
         cached_map, uncached = self.cache.get_batch(
-            ["Hello", "Goodbye"], "English", "Vietnamese", opts
+            ["Hello", "Goodbye"], target_lang="Vietnamese", options=opts, source_lang="English"
         )
         self.assertEqual(len(cached_map), 1)
         self.assertEqual(cached_map[0], "Xin chào")
@@ -58,21 +66,29 @@ class TestTranslationCache(unittest.TestCase):
         opts1 = TranslationOptions(append_original_words=False)
         opts2 = TranslationOptions(append_original_words=True)
 
-        self.cache.save_batch(texts, ["Máy chủ"], "English", "Vietnamese", opts1)
+        self.cache.save_batch(
+            texts, ["Máy chủ"], target_lang="Vietnamese", options=opts1, source_lang="English"
+        )
 
         # Lookup with opts1 -> Hit
-        hit, _ = self.cache.get_batch(texts, "English", "Vietnamese", opts1)
+        hit, _ = self.cache.get_batch(
+            texts, target_lang="Vietnamese", options=opts1, source_lang="English"
+        )
         self.assertEqual(len(hit), 1)
 
         # Lookup with opts2 -> Miss (different translation output expected)
-        miss, _ = self.cache.get_batch(texts, "English", "Vietnamese", opts2)
+        miss, _ = self.cache.get_batch(
+            texts, target_lang="Vietnamese", options=opts2, source_lang="English"
+        )
         self.assertEqual(len(miss), 0)
 
     def test_count_and_clear(self):
         opts = TranslationOptions()
         self.assertEqual(self.cache.count(), 0)
 
-        self.cache.save_batch(["A", "B", "C"], ["1", "2", "3"], "EN", "VI", opts)
+        self.cache.save_batch(
+            ["A", "B", "C"], ["1", "2", "3"], target_lang="VI", options=opts, source_lang="EN"
+        )
         self.assertEqual(self.cache.count(), 3)
 
         self.cache.clear()

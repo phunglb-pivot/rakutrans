@@ -224,11 +224,11 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertTrue(any("DetailsSheet_Orig" in name for name in res_wb.sheetnames))
 
     def test_safe_save_workbook(self):
-        from excel_parser import safe_save_workbook
+        from base_translator import safe_save_file
         wb = openpyxl.Workbook()
         target = Path(self.temp_dir.name) / "locked_file.xlsx"
         # First save succeeds
-        out1 = safe_save_workbook(wb, target)
+        out1 = safe_save_file(lambda p: wb.save(str(p)), target)
         self.assertEqual(out1, target)
 
         # Mock permission error on locked target
@@ -239,7 +239,7 @@ class TestExcelTranslator(unittest.TestCase):
             return orig_save(path)
 
         wb.save = mock_save
-        out2 = safe_save_workbook(wb, target)
+        out2 = safe_save_file(lambda p: wb.save(str(p)), target)
         self.assertIn("(1)", str(out2))
         self.assertTrue(out2.exists())
 

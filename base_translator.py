@@ -15,13 +15,28 @@ from typing import Callable, Optional, Dict, Any, List, Tuple, TypeVar
 
 T = TypeVar("T")
 
-from config import AppConfig, TranslationOptions
+from config import (
+    AppConfig,
+    NUMERIC_SETTING_SPECS,
+    TranslationOptions,
+    resolve_config_int,
+)
 from llm_manager import LLMManager
 from model_fetcher import get_model_metadata
 from translation_cache import TranslationCache
 
-LARGE_FILE_SIZE_BYTES = 10 * 1024 * 1024
-HIGH_REQUEST_WARNING_THRESHOLD = 250
+_ESTIMATE_CHAR_RATIO = 0.7
+_ENCODING_SNIFF_BYTES = 65536
+_LEGACY_FALLBACK_ENCODINGS = ("cp932", "shift_jis", "euc_jp", "gbk", "cp1252", "latin-1")
+_WIN_LOCK_ERRNOS = frozenset({32, 33})
+_SAFE_SAVE_MAX_ATTEMPTS = 50
+_SMALL_MODEL_OUTPUT_TOKEN_CAP = 2048
+_SMALL_MODEL_CHAR_MULTIPLIER = 1.5
+_MIN_CHAR_BUDGET = int(NUMERIC_SETTING_SPECS["batch_max_chars"].min_val)
+_WORKER_POLL_TIMEOUT_S = 0.25
+_DEFAULT_PROGRESS_START = 10
+_DEFAULT_PROGRESS_BATCH_SPAN = 75
+_DEFAULT_PROGRESS_SECTION_SPAN = 80
 
 
 def estimate_translation_requests(
@@ -32,18 +47,9 @@ def estimate_translation_requests(
     if not inspect_info or "error" in inspect_info:
         return 0
 
-    try:
-        batch_size = max(1, int(getattr(config, "batch_size", 25) or 25))
-    except (TypeError, ValueError):
-        batch_size = 25
-    try:
-        batch_max_chars = max(200, int(getattr(config, "batch_max_chars", 6000) or 6000))
-    except (TypeError, ValueError):
-        batch_max_chars = 6000
-    try:
-        section_max_chars = max(200, int(getattr(config, "section_max_chars", 6000) or 6000))
-    except (TypeError, ValueError):
-        section_max_chars = 6000
+    batch_size = resolve_config_int(config, "batch_size")
+    batch_max_chars = resolve_config_int(config, "batch_max_chars")
+    section_max_chars = resolve_config_int(config, "section_max_chars")
 
     doc_type = str(inspect_info.get("type", "") or "").lower()
     if doc_type in ("markdown", "txt"):
@@ -62,7 +68,7 @@ def estimate_translation_requests(
     by_items = math.ceil(items / batch_size)
     chars = int(inspect_info.get("char_count", 0) or 0)
     if chars > 0:
-        by_chars = math.ceil((chars * 0.7) / batch_max_chars)
+        by_chars = math.ceil((chars * _ESTIMATE_CHAR_RATIO) / batch_max_chars)
         return max(1, by_items, by_chars)
     return max(1, by_items)
 
@@ -198,7 +204,7 @@ def detect_text_encoding(file_path: Path) -> str:
     """
     try:
         with open(file_path, "rb") as fb:
-            raw = fb.read(65536)
+            raw = fb.read(_ENCODING_SNIFF_BYTES)
     except OSError:
         return "utf-8"
 
@@ -223,7 +229,7 @@ def detect_text_encoding(file_path: Path) -> str:
     except Exception:
         pass
 
-    for enc in ("cp932", "shift_jis", "euc_jp", "gbk", "cp1252", "latin-1"):
+    for enc in _LEGACY_FALLBACK_ENCODINGS:
         try:
             raw.decode(enc, errors="strict")
             return enc
@@ -261,12 +267,12 @@ def safe_save_file(save_fn: Callable[[Path], None], target_path: Path) -> Path:
             is_lock_error = (
                 isinstance(e, PermissionError)
                 or e.errno in _LOCK_ERRNOS
-                or getattr(e, "winerror", None) in (32, 33)
+                or getattr(e, "winerror", None) in _WIN_LOCK_ERRNOS
             )
             if not is_lock_error:
                 raise
             attempts += 1
-            if attempts > 50:
+            if attempts > _SAFE_SAVE_MAX_ATTEMPTS:
                 raise
             out_path = target_path.parent / f"{base_stem} ({counter}){suffix}"
             counter += 1
@@ -356,12 +362,6 @@ class BaseTranslator(ABC):
             return f"{provider}:{model}"
         return provider or model
 
-    def _resolve_cache_model_id(self) -> str:
-        """
-        Returns the stable provider:model cache key from the explicitly configured provider and model.
-        """
-        return self._get_cache_model_id()
-
     def pack_batches(
         self,
         items: List[T],
@@ -373,19 +373,11 @@ class BaseTranslator(ABC):
         if not items:
             return []
 
-        raw_batch_size = getattr(self.config, "batch_size", 25)
-        try:
-            configured_items = max(1, int(raw_batch_size))
-        except (TypeError, ValueError):
-            configured_items = 25
+        configured_items = resolve_config_int(self.config, "batch_size")
         item_limit = max(1, min(configured_items, max_items)) if max_items is not None else configured_items
 
-        raw_max_chars = getattr(self.config, "batch_max_chars", 6000)
-        try:
-            configured_chars = max(200, int(raw_max_chars))
-        except (TypeError, ValueError):
-            configured_chars = 6000
-        char_limit = max(200, min(configured_chars, max_chars)) if max_chars is not None else configured_chars
+        configured_chars = resolve_config_int(self.config, "batch_max_chars")
+        char_limit = max(_MIN_CHAR_BUDGET, min(configured_chars, max_chars)) if max_chars is not None else configured_chars
 
         # Respect small provider-reported model output limits to avoid predictable MAX_TOKENS splits
         if max_chars is None:
@@ -394,8 +386,8 @@ class BaseTranslator(ABC):
             if provider and model:
                 meta = get_model_metadata(provider, model)
                 out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
-                if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= 2048:
-                    char_limit = min(char_limit, max(200, int(out_lim * 1.5)))
+                if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
+                    char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
 
         batches: List[List[T]] = []
         curr_batch: List[T] = []
@@ -421,12 +413,7 @@ class BaseTranslator(ABC):
         if total_tasks <= 1:
             return 1
 
-        raw_workers = getattr(self.config, "max_concurrent_requests", 2)
-        try:
-            configured_workers = max(1, min(int(raw_workers), 20))
-        except (TypeError, ValueError):
-            configured_workers = 2
-
+        configured_workers = resolve_config_int(self.config, "max_concurrent_requests")
         return min(configured_workers, total_tasks)
 
     def _run_concurrent_tasks(
@@ -449,7 +436,7 @@ class BaseTranslator(ABC):
             raise InterruptedError("Translation cancelled by user.")
 
         max_workers = self.get_max_workers(len(tasks))
-        in_flight_limit = max(max_workers, max_workers * 2)
+        in_flight_limit = max_workers * 2
         executor = ThreadPoolExecutor(max_workers=max_workers)
         wait_on_exit = True
         try:
@@ -470,7 +457,7 @@ class BaseTranslator(ABC):
                 if is_run_cancelled():
                     raise InterruptedError("Translation cancelled by user.")
 
-                done, _ = wait(pending.keys(), timeout=0.25, return_when=FIRST_COMPLETED)
+                done, _ = wait(pending.keys(), timeout=_WORKER_POLL_TIMEOUT_S, return_when=FIRST_COMPLETED)
                 if is_run_cancelled():
                     raise InterruptedError("Translation cancelled by user.")
                 if not done:
@@ -503,8 +490,8 @@ class BaseTranslator(ABC):
         source_lang: str,
         options: TranslationOptions,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        progress_start: int = 10,
-        progress_span: int = 75,
+        progress_start: int = _DEFAULT_PROGRESS_START,
+        progress_span: int = _DEFAULT_PROGRESS_BATCH_SPAN,
         duplicate_saved: int = 0,
     ) -> Dict[str, str]:
         """
@@ -514,7 +501,7 @@ class BaseTranslator(ABC):
         if not unique_texts:
             return {}
 
-        model_id = self._resolve_cache_model_id()
+        model_id = self._get_cache_model_id()
         cached_map, uncached_items = self.cache.get_batch(
             texts=unique_texts,
             target_lang=target_lang,
@@ -603,8 +590,8 @@ class BaseTranslator(ABC):
         mode: str = "markdown",
         plain_text: bool = False,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
-        progress_start: int = 10,
-        progress_span: int = 80,
+        progress_start: int = _DEFAULT_PROGRESS_START,
+        progress_span: int = _DEFAULT_PROGRESS_SECTION_SPAN,
         on_cache_checked: Optional[Callable[[int, int], None]] = None,
         progress_formatter: Optional[Callable[[int, int, int], str]] = None,
     ) -> Dict[str, str]:
@@ -616,7 +603,7 @@ class BaseTranslator(ABC):
         if not unique_sections:
             return {}
 
-        model_id = self._resolve_cache_model_id()
+        model_id = self._get_cache_model_id()
         cached_map, uncached_items = self.cache.get_batch(
             texts=unique_sections,
             target_lang=target_lang,

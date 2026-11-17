@@ -10,44 +10,92 @@ import customtkinter as ctk
 
 from components.icons import get_icon, apply_windows_window_icon
 
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # noqa: F401
+    HAS_TKDND = True
+except ImportError:
+    DND_FILES = None
+    TkinterDnD = None
+    HAS_TKDND = False
+
 
 # -----------------------------------------------------------------------------
 # 1. Design Tokens
 # -----------------------------------------------------------------------------
+
+COLORS = {
+    "text_primary": ("#18181B", "#FAFAFA"),
+    "text_muted": ("#71717A", "#A1A1AA"),
+    "text_secondary": ("#52525B", "#A1A1AA"),
+    "text_body": ("#3F3F46", "#D4D4D8"),
+    "surface_card": ("#FFFFFF", "#18181B"),
+    "surface_subtle": ("#F4F4F5", "#18181B"),
+    "surface_elevated": ("#FFFFFF", "#202023"),
+    "surface_hover": ("#F4F4F5", "#27272A"),
+    "border": ("#E4E4E7", "#27272A"),
+    "border_strong": ("#D4D4D8", "#3F3F46"),
+    "border_active": ("#71717A", "#A1A1AA"),
+    "danger": ("#DC2626", "#EF4444"),
+    "success": ("#16A34A", "#22C55E"),
+    "warning": ("#D97706", "#F59E0B"),
+    "warning_bg": ("#FEF3C7", "#451A03"),
+    "warning_text": ("#B45309", "#FBBF24"),
+    "error_bg": ("#FEF2F2", "#2A1818"),
+    "error_border": ("#FCA5A5", "#7F1D1D"),
+    "error_title": "#EF4444",
+    "error_advice_title": ("#B91C1C", "#F87171"),
+    "info_bg": ("#EFF6FF", "#172554"),
+    "info_border": ("#BFDBFE", "#1D4ED8"),
+    "info_text": ("#1E3A8A", "#DBEAFE"),
+    "disabled_fg": ("#E4E4E7", "#27272A"),
+    "disabled_text": ("#A1A1AA", "#71717A"),
+}
+
+UI_LAYOUT = {
+    "main_geometry": "860x820",
+    "main_minsize": (780, 680),
+    "confirm_modal_size": (460, 240),
+    "error_modal_size": (580, 540),
+    "update_modal_size": (560, 460),
+    "lang_trigger_width": 360,
+    "lang_trigger_height": 36,
+    "lang_panel_height": 240,
+    "dropdown_row_height": 32,
+}
+
+UI_TIMING = {
+    "spinner_interval_ms": 100,
+    "grab_retry_delay_ms": 20,
+    "debounce_save_ms": 300,
+    "autofetch_delay_ms": 150,
+    "copy_reset_delay_ms": 2000,
+    "cache_refresh_delay_ms": 2500,
+    "focus_delay_ms": 50,
+    "startup_update_delay_ms": 1500,
+}
 
 BUTTON_SIZES = {
     "sm": {
         "height": 28,
         "font_size": 11,
         "corner_radius": 6,
-        "padx": 10
     },
     "md": {
         "height": 34,
         "font_size": 12,
         "corner_radius": 8,
-        "padx": 14
     },
     "lg": {
         "height": 40,
         "font_size": 13,
         "corner_radius": 8,
-        "padx": 16
     }
 }
 
 BUTTON_VARIANTS = {
     # Primary actions (Start Translation, Save Settings, Hero Open File)
     "primary": {
-        "fg_color": ("#18181B", "#FAFAFA"),
-        "hover_color": ("#27272A", "#E4E4E7"),
-        "text_color": ("#FFFFFF", "#18181B"),
-        "border_width": 0,
-        "border_color": None
-    },
-    # Accent actions (Convert Mode, Highlights)
-    "accent": {
-        "fg_color": ("#18181B", "#FAFAFA"),
+        "fg_color": COLORS["text_primary"],
         "hover_color": ("#27272A", "#E4E4E7"),
         "text_color": ("#FFFFFF", "#18181B"),
         "border_width": 0,
@@ -55,19 +103,19 @@ BUTTON_VARIANTS = {
     },
     # Secondary solid buttons (Browse, Select, Settings, Re-run actions)
     "secondary": {
-        "fg_color": ("#E4E4E7", "#27272A"),
-        "hover_color": ("#D4D4D8", "#3F3F46"),
-        "text_color": ("#18181B", "#FAFAFA"),
+        "fg_color": COLORS["disabled_fg"],
+        "hover_color": COLORS["border_strong"],
+        "text_color": COLORS["text_primary"],
         "border_width": 0,
         "border_color": None
     },
     # Outline buttons (Cancel, Close, Open Folder, Save As)
     "outline": {
         "fg_color": "transparent",
-        "hover_color": ("#F4F4F5", "#27272A"),
-        "text_color": ("#18181B", "#FAFAFA"),
+        "hover_color": COLORS["surface_hover"],
+        "text_color": COLORS["text_primary"],
         "border_width": 1,
-        "border_color": ("#D4D4D8", "#3F3F46")
+        "border_color": COLORS["border_strong"]
     },
     # Danger actions (Cancel Translation, Clear Cache, Delete, Error Details)
     "danger": {
@@ -80,51 +128,43 @@ BUTTON_VARIANTS = {
     # Ghost / Link buttons (View Docs, Inline options)
     "ghost": {
         "fg_color": "transparent",
-        "hover_color": ("#F4F4F5", "#27272A"),
-        "text_color": ("#18181B", "#FAFAFA"),
+        "hover_color": COLORS["surface_hover"],
+        "text_color": COLORS["text_primary"],
         "border_width": 0,
         "border_color": None
     },
-    # Info / Primary Action variant (Open File)
-    "info": {
-        "fg_color": ("#18181B", "#FAFAFA"),
-        "hover_color": ("#27272A", "#E4E4E7"),
-        "text_color": ("#FFFFFF", "#18181B"),
-        "border_width": 0,
-        "border_color": None
-    }
 }
 
-# Muted surfaces for disabled CustomButton states so disabled primary/accent
+# Muted surfaces for disabled CustomButton states so disabled primary
 # buttons do not stay bright white in Dark Mode or solid black in Light Mode.
 BUTTON_DISABLED_STYLES = {
     "filled": {
-        "fg_color": ("#E4E4E7", "#27272A"),
-        "text_color_disabled": ("#A1A1AA", "#71717A"),
-        "icon_color": ("#A1A1AA", "#71717A"),
+        "fg_color": COLORS["disabled_fg"],
+        "text_color_disabled": COLORS["disabled_text"],
+        "icon_color": COLORS["disabled_text"],
     },
     "loading": {
-        "fg_color": ("#E4E4E7", "#27272A"),
-        "text_color_disabled": ("#52525B", "#A1A1AA"),
-        "icon_color": ("#52525B", "#A1A1AA"),
+        "fg_color": COLORS["disabled_fg"],
+        "text_color_disabled": COLORS["text_secondary"],
+        "icon_color": COLORS["text_secondary"],
     },
     "transparent": {
         "fg_color": "transparent",
-        "border_color": ("#E4E4E7", "#27272A"),
-        "text_color_disabled": ("#A1A1AA", "#71717A"),
-        "icon_color": ("#A1A1AA", "#71717A"),
+        "border_color": COLORS["disabled_fg"],
+        "text_color_disabled": COLORS["disabled_text"],
+        "icon_color": COLORS["disabled_text"],
     },
 }
 
 SEGMENTED_BUTTON_TOKENS = {
     "fg_color": ("#D4D4D8", "#27272A"),
-    "selected_color": ("#18181B", "#FAFAFA"),
+    "selected_color": COLORS["text_primary"],
     "selected_hover_color": ("#27272A", "#E4E4E7"),
-    "unselected_color": ("#F4F4F5", "#18181B"),
-    "unselected_hover_color": ("#E4E4E7", "#27272A"),
+    "unselected_color": COLORS["surface_subtle"],
+    "unselected_hover_color": COLORS["disabled_fg"],
     "selected_text_color": ("#FFFFFF", "#18181B"),
-    "unselected_text_color": ("#71717A", "#A1A1AA"),
-    "text_color_disabled": ("#A1A1AA", "#71717A"),
+    "unselected_text_color": COLORS["text_muted"],
+    "text_color_disabled": COLORS["disabled_text"],
     "selected_icon_color": "primary",
     "unselected_icon_color": "muted",
 }
@@ -140,7 +180,7 @@ class CustomButton(ctk.CTkButton):
     """
     Standardized, high-accessibility button for RakuTrans AI.
     Features:
-    - Standardized variants ('primary', 'accent', 'secondary', 'outline', 'danger', 'ghost', 'info')
+    - Standardized variants ('primary', 'secondary', 'outline', 'danger', 'ghost')
     - Standardized sizes ('sm', 'md', 'lg')
     - Native hand cursor (cursor='hand2')
     - Built-in loading state with animated spinner
@@ -159,14 +199,12 @@ class CustomButton(ctk.CTkButton):
         **kwargs
     ):
         self.variant = variant
-        self.btn_size = size
         self._raw_text = text
         self._icon_name = icon_name
         self._icon_size = icon_size or (14 if size == "sm" else 16)
         self._is_loading = False
         self._spinner_idx = 0
         self._loading_after_id = None
-        self._orig_command = command
         self._custom_fg_color = kwargs.get("fg_color")
         self._custom_border_color = kwargs.get("border_color")
         self._custom_text_color_disabled = kwargs.get("text_color_disabled")
@@ -344,7 +382,9 @@ class CustomButton(ctk.CTkButton):
         self._spinner_idx += 1
         try:
             self.configure(text=f"{spinner} {self._loading_text}")
-            self._loading_after_id = self.after(100, self._animate_spinner)
+            self._loading_after_id = self.after(
+                UI_TIMING["spinner_interval_ms"], self._animate_spinner
+            )
         except Exception:
             self._loading_after_id = None
 
@@ -498,7 +538,9 @@ class BaseModal(ctk.CTkToplevel):
         except Exception:
             pass
         try:
-            self._grab_after_id = self.after(20, self._ensure_grab)
+            self._grab_after_id = self.after(
+                UI_TIMING["grab_retry_delay_ms"], self._ensure_grab
+            )
         except Exception:
             self._grab_after_id = None
 

@@ -8,43 +8,22 @@ from typing import Callable, List, Optional
 import customtkinter as ctk
 from tkinter import filedialog
 
-try:
-    from tkinterdnd2 import DND_FILES
-    HAS_TKDND = True
-except ImportError:
-    HAS_TKDND = False
-
-
-from base_translator import (
-    HIGH_REQUEST_WARNING_THRESHOLD,
-    LARGE_FILE_SIZE_BYTES,
-    estimate_translation_requests,
-)
-from translator_registry import TranslatorRegistry
-from components.ui_system import CustomButton
+from base_translator import estimate_translation_requests
+from config import HIGH_REQUEST_WARNING_THRESHOLD, LARGE_FILE_SIZE_BYTES
+from translator_registry import FILE_DIALOG_FILTER_GROUPS, TranslatorRegistry
+from components.ui_system import COLORS, CustomButton, DND_FILES, HAS_TKDND
 from components.icons import get_icon
 
 
 def get_file_type_badge(suffix: str, t_func: Optional[Callable[[str], str]] = None) -> tuple[str, str]:
     """Returns (icon_name, label_badge) for a given file suffix."""
     s = suffix.lower()
-    txt_badge = t_func("badge_plain_text") if t_func else "Plain Text"
-    if s == ".xlsx":
-        return ("file_excel", "Excel")
-    elif s in [".csv", ".tsv"]:
-        return ("file_excel", "CSV/TSV")
-    elif s == ".docx":
-        return ("file_word", "Word")
-    elif s == ".pptx":
-        return ("file_ppt", "PowerPoint")
-    elif s == ".pdf":
-        return ("file_pdf", "PDF")
-    elif s == ".md":
-        return ("file_md", "Markdown")
-    elif s == ".json":
-        return ("file_json", "JSON")
-    elif s == ".txt":
-        return ("file_text", txt_badge)
+    meta = TranslatorRegistry.get_format_metadata(s)
+    if meta is not None:
+        if meta.badge_i18n_key:
+            label = t_func(meta.badge_i18n_key) if t_func else meta.badge
+            return (meta.icon_name, label)
+        return (meta.icon_name, meta.badge)
     return ("file_generic", s.lstrip(".").upper() or "FILE")
 
 
@@ -77,7 +56,7 @@ class DropZone(ctk.CTkFrame):
             master,
             corner_radius=10,
             border_width=1,
-            border_color=("#E4E4E7", "#27272A"),
+            border_color=COLORS["border"],
             fg_color="transparent",
             **kwargs
         )
@@ -129,7 +108,7 @@ class DropZone(ctk.CTkFrame):
             self.inner_frame,
             text=self.t("drag_drop_title", formats=self._format_supported_extensions()),
             font=ctk.CTkFont(size=15, weight="bold"),
-            text_color=("#18181B", "#FAFAFA"),
+            text_color=COLORS["text_primary"],
             cursor="hand2"
         )
         self.title_label.pack(pady=(0, 2))
@@ -139,7 +118,7 @@ class DropZone(ctk.CTkFrame):
             self.inner_frame,
             text=self.t("drag_drop_subtitle"),
             font=ctk.CTkFont(size=12),
-            text_color=("#71717A", "#A1A1AA")
+            text_color=COLORS["text_muted"]
         )
         self.subtitle_label.pack(pady=(0, 10))
 
@@ -172,7 +151,7 @@ class DropZone(ctk.CTkFrame):
             self.inner_frame,
             text="",
             font=ctk.CTkFont(size=12),
-            text_color=("#71717A", "#A1A1AA")
+            text_color=COLORS["text_muted"]
         )
 
         # Pre-scan Inspector badge
@@ -181,7 +160,7 @@ class DropZone(ctk.CTkFrame):
             text="",
             font=ctk.CTkFont(size=11),
             fg_color=("#F4F4F5", "#27272A"),
-            text_color=("#71717A", "#A1A1AA"),
+            text_color=COLORS["text_muted"],
             corner_radius=6,
             padx=10,
             pady=4
@@ -192,8 +171,8 @@ class DropZone(ctk.CTkFrame):
             self.inner_frame,
             text="",
             font=ctk.CTkFont(size=11),
-            fg_color=("#FEF3C7", "#451A03"),
-            text_color=("#B45309", "#FBBF24"),
+            fg_color=COLORS["warning_bg"],
+            text_color=COLORS["warning_text"],
             corner_radius=6,
             padx=10,
             pady=4,
@@ -224,11 +203,11 @@ class DropZone(ctk.CTkFrame):
                 print(f"[Info] TkinterDnD registration note: {e}")
 
     def _on_drag_enter(self, event):
-        self.configure(border_color=("#71717A", "#A1A1AA"))
+        self.configure(border_color=COLORS["border_active"])
 
     def _on_drag_leave(self, event):
         self.configure(
-            border_color=("#71717A", "#A1A1AA") if self.selected_file else ("#E4E4E7", "#27272A")
+            border_color=COLORS["border_active"] if self.selected_file else COLORS["border"]
         )
 
     def _parse_drop_paths(self, raw_data: str) -> List[str]:
@@ -277,14 +256,14 @@ class DropZone(ctk.CTkFrame):
             else self.t(msg_key)
         )
         if not self.selected_file:
-            self.inspector_label.configure(text=msg, text_color=("#DC2626", "#EF4444"))
+            self.inspector_label.configure(text=msg, text_color=COLORS["danger"])
             self.inspector_label.pack(pady=(6, 2))
         if self.on_invalid_file:
             self.on_invalid_file(msg, file_path)
 
     def _on_drop(self, event):
         self.configure(
-            border_color=("#71717A", "#A1A1AA") if self.selected_file else ("#E4E4E7", "#27272A")
+            border_color=COLORS["border_active"] if self.selected_file else COLORS["border"]
         )
         if not self._enabled:
             return
@@ -300,16 +279,10 @@ class DropZone(ctk.CTkFrame):
         all_pattern = self._format_supported_patterns()
         filetypes = [(self.t("filetype_supported", patterns=all_pattern), all_pattern)]
 
-        def _filter_exts(label_key: str, exts: list[str]):
-            allowed = [f"*{e}" for e in exts if e in supported_exts]
+        for label_key, group_exts in FILE_DIALOG_FILTER_GROUPS:
+            allowed = [f"*{ext}" for ext in group_exts if ext in supported_exts]
             if allowed:
                 filetypes.append((self.t(label_key), " ".join(allowed)))
-
-        _filter_exts("filetype_pdf", [".pdf"])
-        _filter_exts("filetype_office", [".docx", ".pptx"])
-        _filter_exts("filetype_spreadsheets", [".xlsx", ".csv", ".tsv"])
-        _filter_exts("filetype_text", [".md", ".txt"])
-        _filter_exts("filetype_json", [".json"])
         filetypes.append((self.t("filetype_all"), "*.*"))
 
         chosen = filedialog.askopenfilename(title=self.t("dialog_select_file"), filetypes=filetypes)
@@ -332,7 +305,7 @@ class DropZone(ctk.CTkFrame):
         self._last_inspect_info = None
         self._last_inspect_suffix = suffix
         self.inspector_label.pack_forget()
-        self.inspector_label.configure(text="", text_color=("#71717A", "#A1A1AA"))
+        self.inspector_label.configure(text="", text_color=COLORS["text_muted"])
         self.workload_warning_label.pack_forget()
         self.workload_warning_label.configure(text="")
         file_size = path.stat().st_size
@@ -349,7 +322,7 @@ class DropZone(ctk.CTkFrame):
 
         # Show clear button
         self.clear_btn.pack(side="left", padx=6)
-        self.configure(border_color=("#71717A", "#A1A1AA"))
+        self.configure(border_color=COLORS["border_active"])
 
         # Run Pre-scan File Inspection in background thread
         self._update_workload_warning()
@@ -358,68 +331,14 @@ class DropZone(ctk.CTkFrame):
         self.on_file_selected(self.selected_file)
 
     def _format_inspection_text(self, suffix: str, info: dict) -> str:
-        if suffix == ".xlsx":
-            return self.t(
-                "inspect_excel_badge",
-                sheets=info.get("sheet_count", 0),
-                cells=info.get("translatable_cells", 0),
-                unique=info.get("unique_texts", 0),
-                formulas=info.get("formula_count", 0)
-            )
-        if suffix == ".md":
-            return self.t(
-                "inspect_md_badge",
-                words=info.get("word_count", 0),
-                sections=info.get("section_count", 0),
-                chars=info.get("char_count", 0)
-            )
-        if suffix == ".docx":
-            return self.t(
-                "inspect_docx_badge",
-                paragraphs=info.get("paragraphs", 0),
-                tables=info.get("tables", 0),
-                words=info.get("word_count", 0),
-                segments=info.get("translatable_segments", 0)
-            )
-        if suffix == ".pptx":
-            return self.t(
-                "inspect_pptx_badge",
-                slides=info.get("slides", 0),
-                shapes=info.get("shapes", 0),
-                words=info.get("word_count", 0),
-                segments=info.get("translatable_segments", 0)
-            )
-        if suffix == ".pdf":
-            return self.t(
-                "inspect_pdf_badge",
-                pages=info.get("page_count", 0),
-                words=info.get("word_count", 0),
-                segments=info.get("translatable_segments", 0),
-                chars=info.get("char_count", 0)
-            )
-        if suffix in [".csv", ".tsv"]:
-            return self.t(
-                "inspect_csv_badge",
-                rows=info.get("rows", 0),
-                cols=info.get("columns", 0),
-                cells=info.get("translatable_cells", 0),
-                unique=info.get("unique_texts", 0)
-            )
-        if suffix == ".json":
-            return self.t(
-                "inspect_json_badge",
-                keys=info.get("total_keys", 0),
-                strings=info.get("translatable_strings", 0),
-                unique=info.get("unique_texts", 0)
-            )
-        if suffix == ".txt":
-            return self.t(
-                "inspect_txt_badge",
-                lines=info.get("line_count", 0),
-                words=info.get("word_count", 0),
-                chars=info.get("char_count", 0)
-            )
-        return ""
+        meta = TranslatorRegistry.get_format_metadata(suffix)
+        if meta is None or not meta.inspect_badge_key:
+            return ""
+        fmt_kwargs = {
+            arg_name: info.get(info_key, 0)
+            for arg_name, info_key in meta.inspect_fields.items()
+        }
+        return self.t(meta.inspect_badge_key, **fmt_kwargs)
 
     def _run_inspection(self, file_path: str, suffix: str):
         import threading
@@ -486,7 +405,7 @@ class DropZone(ctk.CTkFrame):
 
     def _show_inspection(self, text: str):
         if self.selected_file and text:
-            self.inspector_label.configure(text=text, text_color=("#71717A", "#A1A1AA"))
+            self.inspector_label.configure(text=text, text_color=COLORS["text_muted"])
             self.inspector_label.pack(pady=(6, 2))
 
     def set_enabled(self, enabled: bool):
@@ -506,11 +425,11 @@ class DropZone(ctk.CTkFrame):
         self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
         self.file_info_label.pack_forget()
         self.inspector_label.pack_forget()
-        self.inspector_label.configure(text="", text_color=("#71717A", "#A1A1AA"))
+        self.inspector_label.configure(text="", text_color=COLORS["text_muted"])
         self.workload_warning_label.pack_forget()
         self.workload_warning_label.configure(text="")
         self.clear_btn.pack_forget()
-        self.configure(border_color=("#E4E4E7", "#27272A"))
+        self.configure(border_color=COLORS["border"])
         self.on_file_selected("")
 
     def refresh_i18n(self):

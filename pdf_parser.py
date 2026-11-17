@@ -11,8 +11,9 @@ This architectural pipeline combines the best of both worlds:
 
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Set, Callable, Optional, Any
+from typing import Dict, Iterator, Set, Callable, Optional, Any, Tuple
 
 # Fast PDF inspection engines
 try:
@@ -136,61 +137,44 @@ def _clean_pdf2docx_soft_breaks(docx_path: Path) -> None:
         print(f"[Warning] Failed to clean pdf2docx soft breaks: {e}")
 
 
-def _should_translate(text: Optional[str]) -> bool:
-    """Checks if a string has translatable content."""
-    return should_translate_text(text, ignore_formulas=False)
+_SCANNED_MIN_ALNUM_PER_PAGE = 10
+_SCANNED_AVG_ALNUM_PER_PAGE = 5
+
+
+@contextmanager
+def _open_pdf_pages(src: Path) -> Iterator[Tuple[int, Iterator[Tuple[str, bool]]]]:
+    """Yields (page_count, iterator of (page_text, has_images)) using PyMuPDF or pypdf."""
+    if HAS_PYMUPDF:
+        doc = pymupdf.open(str(src))
+        try:
+            yield len(doc), ((p.get_text() or "", bool(p.get_images())) for p in doc)
+        finally:
+            doc.close()
+    else:
+        reader = pypdf.PdfReader(str(src))
+        yield len(reader.pages), (
+            (p.extract_text() or "", bool(getattr(p, "images", None)))
+            for p in reader.pages
+        )
 
 
 def _is_scanned_image_pdf(src: Path) -> bool:
     """Returns True if the PDF is image-based with little or no meaningful selectable text."""
     try:
-        if HAS_PYMUPDF:
-            doc = pymupdf.open(str(src))
-            try:
-                page_count = len(doc)
-                if page_count == 0:
-                    return False
-                total_alnum = 0
-                max_page_alnum = 0
-                pages_with_images = 0
-                for page in doc:
-                    txt = page.get_text() or ""
-                    alnum_cnt = sum(1 for ch in txt if ch.isalnum())
-                    if alnum_cnt > 10:
-                        return False
-                    total_alnum += alnum_cnt
-                    if alnum_cnt > max_page_alnum:
-                        max_page_alnum = alnum_cnt
-                    if page.get_images():
-                        pages_with_images += 1
-                if pages_with_images == 0:
-                    return False
-                if total_alnum == 0:
-                    return True
-                return (
-                    pages_with_images >= max(1, page_count // 2)
-                    and max_page_alnum <= 10
-                    and total_alnum <= 5 * page_count
-                )
-            finally:
-                doc.close()
-        else:
-            reader = pypdf.PdfReader(str(src))
-            page_count = len(reader.pages)
+        with _open_pdf_pages(src) as (page_count, pages):
             if page_count == 0:
                 return False
             total_alnum = 0
             max_page_alnum = 0
             pages_with_images = 0
-            for page in reader.pages:
-                txt = page.extract_text() or ""
+            for txt, has_images in pages:
                 alnum_cnt = sum(1 for ch in txt if ch.isalnum())
-                if alnum_cnt > 10:
+                if alnum_cnt > _SCANNED_MIN_ALNUM_PER_PAGE:
                     return False
                 total_alnum += alnum_cnt
                 if alnum_cnt > max_page_alnum:
                     max_page_alnum = alnum_cnt
-                if getattr(page, "images", None):
+                if has_images:
                     pages_with_images += 1
             if pages_with_images == 0:
                 return False
@@ -198,8 +182,8 @@ def _is_scanned_image_pdf(src: Path) -> bool:
                 return True
             return (
                 pages_with_images >= max(1, page_count // 2)
-                and max_page_alnum <= 10
-                and total_alnum <= 5 * page_count
+                and max_page_alnum <= _SCANNED_MIN_ALNUM_PER_PAGE
+                and total_alnum <= _SCANNED_AVG_ALNUM_PER_PAGE * page_count
             )
     except Exception:
         return False
@@ -235,57 +219,27 @@ class PdfTranslator(BaseTranslator):
             return {"type": "pdf", "error": "File not found"}
 
         try:
-            if HAS_PYMUPDF:
-                doc = pymupdf.open(str(path))
-                try:
-                    page_count = len(doc)
-                    total_words = 0
-                    total_chars = 0
-                    unique_texts: Set[str] = set()
-
-                    for page in doc:
-                        text = page.get_text() or ""
-                        for line in text.splitlines():
-                            trimmed = line.strip()
-                            if trimmed:
-                                total_chars += len(trimmed)
-                                total_words += count_words_multilingual(trimmed)
-                                if _should_translate(trimmed):
-                                    unique_texts.add(trimmed)
-                finally:
-                    doc.close()
-
-                return {
-                    "type": "pdf",
-                    "page_count": page_count,
-                    "word_count": total_words,
-                    "char_count": total_chars,
-                    "translatable_segments": len(unique_texts),
-                }
-            else:
-                reader = pypdf.PdfReader(str(path))
-                page_count = len(reader.pages)
+            with _open_pdf_pages(path) as (page_count, pages):
                 total_words = 0
                 total_chars = 0
-                unique_texts = set()
+                unique_texts: Set[str] = set()
 
-                for page in reader.pages:
-                    text = page.extract_text() or ""
+                for text, _has_images in pages:
                     for line in text.splitlines():
                         trimmed = line.strip()
                         if trimmed:
                             total_chars += len(trimmed)
                             total_words += count_words_multilingual(trimmed)
-                            if _should_translate(trimmed):
+                            if should_translate_text(trimmed, ignore_formulas=False):
                                 unique_texts.add(trimmed)
 
-                return {
-                    "type": "pdf",
-                    "page_count": page_count,
-                    "word_count": total_words,
-                    "char_count": total_chars,
-                    "translatable_segments": len(unique_texts),
-                }
+            return {
+                "type": "pdf",
+                "page_count": page_count,
+                "word_count": total_words,
+                "char_count": total_chars,
+                "translatable_segments": len(unique_texts),
+            }
         except Exception as e:
             return {"type": "pdf", "error": str(e)}
 
@@ -314,10 +268,7 @@ class PdfTranslator(BaseTranslator):
             raise FileNotFoundError(f"File not found: {file_path}")
 
         if _is_scanned_image_pdf(src):
-            raise ValueError(
-                "This PDF appears to be a scanned/image-only document with no selectable text layer. "
-                "Please run OCR on the PDF before translating."
-            )
+            raise ValueError(self._t("err_scanned_pdf_ocr"))
 
         target_lang, source_lang, options = self._resolve_params(
             target_lang, source_lang, options, kwargs

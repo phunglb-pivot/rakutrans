@@ -1,5 +1,5 @@
 """
-Unit tests for UI System primitives: CustomButton, BaseModal, ConfirmModal, ToastManager.
+Unit tests for UI System primitives: CustomButton, BaseModal, ConfirmModal.
 """
 
 import unittest
@@ -19,7 +19,6 @@ try:
         BaseModal
     )
     from components.confirm_modal import ConfirmModal
-    from components.toast import ToastManager, TOAST_STYLES
 except (ImportError, ModuleNotFoundError):
     HAS_TKINTER = False
 
@@ -35,10 +34,9 @@ class TestUISystem(unittest.TestCase):
             self.assertIn("height", cfg)
             self.assertIn("font_size", cfg)
             self.assertIn("corner_radius", cfg)
-            self.assertIn("padx", cfg)
 
         # Verify button variants
-        expected_variants = {"primary", "accent", "secondary", "outline", "danger", "ghost", "info"}
+        expected_variants = {"primary", "secondary", "outline", "danger", "ghost"}
         for var in expected_variants:
             self.assertIn(var, BUTTON_VARIANTS)
             vcfg = BUTTON_VARIANTS[var]
@@ -47,15 +45,6 @@ class TestUISystem(unittest.TestCase):
             self.assertIn("text_color", vcfg)
 
         self.assertTrue(len(SPINNER_FRAMES) >= 4)
-
-    def test_toast_styles(self):
-        for t_type in ("success", "info", "warning", "error"):
-            self.assertIn(t_type, TOAST_STYLES)
-            cfg = TOAST_STYLES[t_type]
-            self.assertIn("icon", cfg)
-            self.assertIn("bg_color", cfg)
-            self.assertIn("border_color", cfg)
-            self.assertIn("text_color", cfg)
 
     def test_modal_classes(self):
         # Check that ConfirmModal is subclass of BaseModal
@@ -107,11 +96,10 @@ class TestUISystem(unittest.TestCase):
                 )
                 root.update()
 
-                # 1. No close_btn or save_btn in SettingsView, back_header_btn not mapped by default to avoid duplicate button
+                # 1. No redundant save/close/back buttons in SettingsView header (main header owns navigation)
                 self.assertFalse(hasattr(sv, "save_btn"))
                 self.assertFalse(hasattr(sv, "close_btn"))
-                self.assertTrue(hasattr(sv, "back_header_btn"))
-                self.assertFalse(sv.back_header_btn.winfo_ismapped())
+                self.assertFalse(hasattr(sv, "back_header_btn"))
 
                 # 2. Provider selector has thin border, equal column weights/uniform, and provider logo icons
                 self.assertEqual(sv.provider_selector.cget("border_width"), 1)

@@ -250,7 +250,9 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._refresh_cache_display()
         self.assertEqual(self.app.clear_cache_btn.cget("state"), "disabled")
 
-        self.app.cache.set("hello", "xin chào", "English", "Vietnamese")
+        self.app.cache.save_batch(
+            ["hello"], ["xin chào"], target_lang="Vietnamese", source_lang="English"
+        )
         self.app._refresh_cache_display()
         self.assertEqual(self.app.clear_cache_btn.cget("state"), "normal")
 

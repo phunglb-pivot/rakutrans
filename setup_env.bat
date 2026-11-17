@@ -163,7 +163,7 @@ if exist "%SCRIPT_DIR%requirements.txt" (
         if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
-    "%VENV_PY%" -c "import hashlib, pathlib; p = pathlib.Path('requirements.txt'); pathlib.Path('.venv/.req_stamp').write_text(hashlib.sha256(p.read_bytes()).hexdigest())"
+    "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --write-stamp
 )
 
 if "!WITH_BUILD!"=="1" (

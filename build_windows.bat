@@ -25,7 +25,7 @@ set "NEED_SETUP=0"
 if not exist "%VENV_PY%" (
     set "NEED_SETUP=1"
 ) else (
-    "%VENV_PY%" -c "import hashlib, pathlib, sys, customtkinter, tkinterdnd2, PIL, openpyxl, docx, pptx, fitz, pypdf, pdf2docx, reportlab, charset_normalizer; req = pathlib.Path('requirements.txt'); stamp = pathlib.Path('.venv/.req_stamp'); ok_stamp = (not req.exists()) or (stamp.exists() and stamp.read_text().strip() == hashlib.sha256(req.read_bytes()).hexdigest()); sys.exit(0 if (sys.version_info >= (3, 10) and ok_stamp) else 1)" >nul 2>&1
+    "%VENV_PY%" "%SCRIPT_DIR%check_env.py" >nul 2>&1
     if errorlevel 1 (
         echo [Notice] .venv is invalid, incomplete, or requirements.txt changed.
         set "NEED_SETUP=1"
@@ -52,11 +52,30 @@ if not exist "%PYINSTALLER%" (
     )
 )
 
+for /f "delims=" %%V in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_VERSION') do set "APP_VERSION=%%V"
+if not defined APP_VERSION (
+    echo [Error] Failed to read APP_VERSION from config.py.
+    call :maybe_pause
+    exit /b 1
+)
+for /f "delims=" %%N in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_NAME') do set "APP_NAME=%%N"
+if not defined APP_NAME (
+    echo [Error] Failed to read APP_NAME from config.py.
+    call :maybe_pause
+    exit /b 1
+)
+for /f "delims=" %%E in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_EXECUTABLE_NAME') do set "APP_EXEC_NAME=%%E"
+if not defined APP_EXEC_NAME (
+    echo [Error] Failed to read APP_EXECUTABLE_NAME from config.py.
+    call :maybe_pause
+    exit /b 1
+)
+
 echo Cleaning previous builds...
-tasklist /FI "IMAGENAME eq RakuTrans.exe" 2>nul | find /I "RakuTrans.exe" >nul
+tasklist /FI "IMAGENAME eq !APP_EXEC_NAME!.exe" 2>nul | find /I "!APP_EXEC_NAME!.exe" >nul
 if not errorlevel 1 (
-    echo [Notice] Closing running RakuTrans.exe so dist\ can be replaced...
-    taskkill /F /IM RakuTrans.exe >nul 2>&1
+    echo [Notice] Closing running !APP_EXEC_NAME!.exe so dist\ can be replaced...
+    taskkill /F /IM "!APP_EXEC_NAME!.exe" >nul 2>&1
     timeout /t 1 /nobreak >nul
 )
 
@@ -67,10 +86,10 @@ if exist "build" (
     exit /b 1
 )
 if exist "dist" rmdir /s /q dist
-if exist "dist\RakuTrans" (
+if exist "dist\!APP_EXEC_NAME!" (
     echo.
-    echo [Error] Cannot remove "dist\RakuTrans" because a file inside it is locked by another process.
-    echo         Please close RakuTrans.exe, Explorer windows, or terminal tabs using "dist\RakuTrans" and retry.
+    echo [Error] Cannot remove "dist\!APP_EXEC_NAME!" because a file inside it is locked by another process.
+    echo         Please close !APP_EXEC_NAME!.exe, Explorer windows, or terminal tabs using "dist\!APP_EXEC_NAME!" and retry.
     call :maybe_pause
     exit /b 1
 )
@@ -81,25 +100,6 @@ echo Compiling standalone Windows executable via RakuTrans.spec...
 if errorlevel 1 (
     echo.
     echo [Error] PyInstaller build failed.
-    call :maybe_pause
-    exit /b 1
-)
-
-for /f "delims=" %%V in ('"%VENV_PY%" -c "import config; print(config.APP_VERSION)"') do set "APP_VERSION=%%V"
-if not defined APP_VERSION (
-    echo [Error] Failed to read APP_VERSION from config.py.
-    call :maybe_pause
-    exit /b 1
-)
-for /f "delims=" %%N in ('"%VENV_PY%" -c "import config; print(config.APP_NAME)"') do set "APP_NAME=%%N"
-if not defined APP_NAME (
-    echo [Error] Failed to read APP_NAME from config.py.
-    call :maybe_pause
-    exit /b 1
-)
-for /f "delims=" %%E in ('"%VENV_PY%" -c "import config; print(config.APP_EXECUTABLE_NAME)"') do set "APP_EXEC_NAME=%%E"
-if not defined APP_EXEC_NAME (
-    echo [Error] Failed to read APP_EXECUTABLE_NAME from config.py.
     call :maybe_pause
     exit /b 1
 )

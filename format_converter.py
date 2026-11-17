@@ -31,7 +31,7 @@ from base_translator import detect_text_encoding
 from config import get_smart_output_path, get_unique_output_path
 from data_parser import CsvTranslator
 from excel_parser import load_workbook_safe
-from markdown_parser import match_code_fence_open
+from markdown_parser import build_close_fence_regex, is_md_table_line, match_code_fence_open
 
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
@@ -39,6 +39,17 @@ _STRICT_INT_RE = re.compile(r"^-?(?:0|[1-9]\d*)$")
 _STRICT_FLOAT_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d+)$")
 
 SOFFICE_TIMEOUT_SECONDS = 90.0
+SOFFICE_MAX_TIMEOUT_SECONDS = 600.0
+SOFFICE_TIMEOUT_PER_MB_SECONDS = 15.0
+
+_EXCEL_UI_FONT = "Segoe UI"
+_EXCEL_CODE_FONT = "Consolas"
+_EXCEL_ACCENT_HEX = "1F4E79"
+_EXCEL_BORDER_HEX = "D9D9D9"
+
+_RL_PAGE_MARGIN_PT = 40.0
+_RL_MAX_IMG_W_PT = 480.0
+_RL_MAX_IMG_H_PT = 380.0
 SOFFICE_CANDIDATE_PATHS: Tuple[str, ...] = (
     "/Applications/LibreOffice.app/Contents/MacOS/soffice",
     "~/Applications/LibreOffice.app/Contents/MacOS/soffice",
@@ -76,9 +87,32 @@ UNICODE_PDF_FONT_CANDIDATES: Tuple[str, ...] = (
 # Shared Deterministic Markdown & Value Helpers
 # -----------------------------------------------------------------------------
 
-def _is_md_table_line(line: str) -> bool:
-    s = line.strip()
-    return len(s) >= 2 and s.startswith("|") and s.endswith("|")
+def render_markdown_table(rows: List[List[str]], leading_blank: bool = False) -> List[str]:
+    """Formats normalized table cell rows as GFM pipe-table lines."""
+    if not rows:
+        return []
+    header = rows[0]
+    first_line = "| " + " | ".join(header) + " |"
+    lines = [f"\n{first_line}" if leading_blank else first_line]
+    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+    for data_row in rows[1:]:
+        padded = data_row + [""] * (len(header) - len(data_row))
+        lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+    return lines
+
+
+def _make_excel_table_styles():
+    """Creates shared openpyxl table styles for Excel export helpers."""
+    header_font = Font(name=_EXCEL_UI_FONT, size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(
+        start_color=_EXCEL_ACCENT_HEX, end_color=_EXCEL_ACCENT_HEX, fill_type="solid"
+    )
+    normal_font = Font(name=_EXCEL_UI_FONT, size=10)
+    thin_side = Side(style="thin", color=_EXCEL_BORDER_HEX)
+    thin_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    return header_font, header_fill, normal_font, thin_border, center_align, left_align
 
 
 def _split_md_table_row(line: str) -> List[str]:
@@ -401,7 +435,7 @@ def _extract_pdf_page_elements(page, body_size: float) -> List[Tuple[str, Any]]:
     for item in positioned:
         y0, x0, y1, kind, payload = item
         if merged and kind == "p" and merged[-1][3] == "p":
-            prev_y0, prev_x0, prev_y1, prev_kind, prev_payload = merged[-1]
+            prev_y0, prev_x0, prev_y1, _, prev_payload = merged[-1]
             v_gap = y0 - prev_y1
             if abs(x0 - prev_x0) <= 12.0 and -1.0 <= v_gap <= line_gap_limit:
                 merged[-1] = (prev_y0, prev_x0, max(prev_y1, y1), "p", _join_text_pair(prev_payload, payload))
@@ -581,13 +615,8 @@ def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
                     elif kind == "p":
                         p_out.append(f"{payload}\n")
                     elif kind == "table" and payload:
-                        header = [_escape_md_cell(c) for c in payload[0]]
-                        p_out.append("\n| " + " | ".join(header) + " |")
-                        p_out.append("| " + " | ".join(["---"] * len(header)) + " |")
-                        for row in payload[1:]:
-                            cells = [_escape_md_cell(c) for c in row]
-                            padded = cells + [""] * (len(header) - len(cells))
-                            p_out.append("| " + " | ".join(padded[: len(header)]) + " |")
+                        escaped_rows = [[_escape_md_cell(c) for c in row] for row in payload]
+                        p_out.extend(render_markdown_table(escaped_rows, leading_blank=True))
                         p_out.append("")
                 page_chunks.append("\n".join(p_out).strip())
 
@@ -762,14 +791,7 @@ def excel_to_markdown(xlsx_path: str, md_output_path: Optional[str] = None) -> s
                 for r in filtered_rows
             ]
 
-            header_cells = table_rows[0]
-            md_lines.append("| " + " | ".join(header_cells) + " |")
-            md_lines.append("| " + " | ".join(["---"] * len(header_cells)) + " |")
-
-            for data_row in table_rows[1:]:
-                padded = data_row + [""] * (len(header_cells) - len(data_row))
-                md_lines.append("| " + " | ".join(padded[: len(header_cells)]) + " |")
-
+            md_lines.extend(render_markdown_table(table_rows))
             md_lines.append("")
     finally:
         wb_val.close()
@@ -801,20 +823,12 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
     default_sheet = wb.active
     default_sheet.title = "Document"
 
-    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    title_font = Font(name="Segoe UI", size=13, bold=True, color="1F4E79")
-    subhead_font = Font(name="Segoe UI", size=11, bold=True, color="1F4E79")
-    normal_font = Font(name="Segoe UI", size=10)
-    code_font = Font(name="Consolas", size=10)
-    thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9"),
+    header_font, header_fill, normal_font, thin_border, center_align, left_align = (
+        _make_excel_table_styles()
     )
-    center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    title_font = Font(name=_EXCEL_UI_FONT, size=13, bold=True, color=_EXCEL_ACCENT_HEX)
+    subhead_font = Font(name=_EXCEL_UI_FONT, size=11, bold=True, color=_EXCEL_ACCENT_HEX)
+    code_font = Font(name=_EXCEL_CODE_FONT, size=10)
 
     lines = content.splitlines()
     current_sheet = default_sheet
@@ -845,7 +859,7 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
         if fence_open:
             flush_pending_title()
             fence_char, fence_len = fence_open
-            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            close_re = build_close_fence_regex(fence_char, fence_len)
             code_lines: List[str] = []
             idx += 1
             while idx < len(lines) and not close_re.match(lines[idx]):
@@ -896,10 +910,10 @@ def markdown_to_excel(md_path: str, xlsx_output_path: Optional[str] = None) -> s
             idx += 1
             continue
 
-        if _is_md_table_line(line):
+        if is_md_table_line(line):
             flush_pending_title()
             table_lines: List[str] = []
-            while idx < len(lines) and _is_md_table_line(lines[idx]):
+            while idx < len(lines) and is_md_table_line(lines[idx]):
                 table_lines.append(lines[idx].strip())
                 idx += 1
 
@@ -994,17 +1008,9 @@ def csv_to_excel(csv_path: str, xlsx_output_path: Optional[str] = None) -> str:
     ws = wb.active
     ws.title = _unique_sheet_name(src.stem, [])
 
-    header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    normal_font = Font(name="Segoe UI", size=10)
-    thin_border = Border(
-        left=Side(style="thin", color="D9D9D9"),
-        right=Side(style="thin", color="D9D9D9"),
-        top=Side(style="thin", color="D9D9D9"),
-        bottom=Side(style="thin", color="D9D9D9"),
+    header_font, header_fill, normal_font, thin_border, center_align, left_align = (
+        _make_excel_table_styles()
     )
-    left_align = Alignment(horizontal="left", vertical="center")
-    center_align = Alignment(horizontal="center", vertical="center")
 
     with open(src, "r", encoding=enc, errors="replace", newline="") as f:
         reader = csv.reader(f, delimiter=delim)
@@ -1110,14 +1116,7 @@ def csv_to_markdown(csv_path: str, md_output_path: Optional[str] = None) -> str:
         out_file.write_text(f"# {src.stem}\n\n*Empty CSV dataset*\n", encoding="utf-8")
         return str(out_file)
 
-    md_lines = [f"# {src.stem}\n"]
-    header = rows[0]
-    md_lines.append("| " + " | ".join(header) + " |")
-    md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-
-    for data_row in rows[1:]:
-        padded = data_row + [""] * (len(header) - len(data_row))
-        md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+    md_lines = [f"# {src.stem}\n", *render_markdown_table(rows)]
 
     with open(out_file, "w", encoding="utf-8") as f:
         f.write("\n".join(md_lines).strip() + "\n")
@@ -1143,24 +1142,26 @@ def markdown_to_csv(md_path: str, csv_output_path: Optional[str] = None) -> str:
     fence_char = ""
     fence_len = 0
 
+    close_re: Optional[re.Pattern] = None
     while idx < len(lines):
         raw_line = lines[idx]
         if not in_fence:
             fence_open = match_code_fence_open(raw_line)
             if fence_open:
                 in_fence = True
-                fence_char, fence_len = fence_open
+                close_re = build_close_fence_regex(*fence_open)
                 idx += 1
                 continue
         if in_fence:
-            if re.match(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$", raw_line):
+            if close_re and close_re.match(raw_line):
                 in_fence = False
+                close_re = None
             idx += 1
             continue
 
-        if _is_md_table_line(raw_line):
+        if is_md_table_line(raw_line):
             block_idx = 0
-            while idx < len(lines) and _is_md_table_line(lines[idx]):
+            while idx < len(lines) and is_md_table_line(lines[idx]):
                 cells = _split_md_table_row(lines[idx])
                 if not _is_md_separator_row(cells, block_idx):
                     table_rows.append(cells)
@@ -1269,9 +1270,9 @@ def _iter_docx_body_blocks(doc):
     yield from walk(doc.element.body)
 
 
-def _dedup_docx_table_rows(table) -> List[List[Tuple[Any, bool]]]:
+def dedup_table_rows(table) -> List[List[Tuple[Any, bool]]]:
     """
-    Extracts table rows as (cell, is_primary_tc) pairs so merged table cells
+    Extracts DOCX/PPTX table rows as (cell, is_primary_tc) pairs so merged table cells
     are only emitted once instead of duplicating cell text/images across spans.
     """
     seen_tcs: Set[Any] = set()
@@ -1293,7 +1294,10 @@ def _compute_soffice_timeout(src_path: Path) -> float:
         size_mb = src_path.stat().st_size / (1024.0 * 1024.0)
     except OSError:
         size_mb = 0.0
-    return max(SOFFICE_TIMEOUT_SECONDS, min(600.0, SOFFICE_TIMEOUT_SECONDS + size_mb * 15.0))
+    return max(
+        SOFFICE_TIMEOUT_SECONDS,
+        min(SOFFICE_MAX_TIMEOUT_SECONDS, SOFFICE_TIMEOUT_SECONDS + size_mb * SOFFICE_TIMEOUT_PER_MB_SECONDS),
+    )
 
 
 def docx_to_pdf(
@@ -1428,9 +1432,13 @@ def docx_to_pdf(
     )
 
     story = []
-    usable_width = letter[0] - 80.0
+    usable_width = letter[0] - (2 * _RL_PAGE_MARGIN_PT)
 
-    def get_element_images(elem, max_w: float = 480.0, max_h: float = 380.0):
+    def get_element_images(
+        elem,
+        max_w: float = _RL_MAX_IMG_W_PT,
+        max_h: float = _RL_MAX_IMG_H_PT,
+    ):
         imgs = []
         try:
             blips = elem.xpath(".//a:blip/@r:embed")
@@ -1472,7 +1480,7 @@ def docx_to_pdf(
                 story.append(Paragraph(_rl_safe_text(text), st))
         elif kind == "tbl":
             table = obj
-            dedup_rows = _dedup_docx_table_rows(table)
+            dedup_rows = dedup_table_rows(table)
             table_data = []
             max_cols = max((len(r) for r in dedup_rows), default=0)
             col_w = usable_width / max(1, max_cols)
@@ -1512,10 +1520,10 @@ def docx_to_pdf(
     pdf_doc = SimpleDocTemplate(
         str(out_file),
         pagesize=letter,
-        leftMargin=40,
-        rightMargin=40,
-        topMargin=40,
-        bottomMargin=40,
+        leftMargin=_RL_PAGE_MARGIN_PT,
+        rightMargin=_RL_PAGE_MARGIN_PT,
+        topMargin=_RL_PAGE_MARGIN_PT,
+        bottomMargin=_RL_PAGE_MARGIN_PT,
     )
     try:
         pdf_doc.build(story)
@@ -1581,15 +1589,10 @@ def docx_to_markdown(docx_path: str, md_output_path: Optional[str] = None) -> st
         elif kind == "tbl":
             t_rows = [
                 [_escape_md_cell(cell.text) if is_primary else "" for cell, is_primary in row_cells]
-                for row_cells in _dedup_docx_table_rows(obj)
+                for row_cells in dedup_table_rows(obj)
             ]
             if t_rows:
-                header = t_rows[0]
-                md_lines.append("\n| " + " | ".join(header) + " |")
-                md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-                for row in t_rows[1:]:
-                    padded = row + [""] * (len(header) - len(row))
-                    md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+                md_lines.extend(render_markdown_table(t_rows, leading_blank=True))
                 md_lines.append("")
 
     out_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1626,7 +1629,7 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
         fence_open = match_code_fence_open(raw_line)
         if fence_open:
             fence_char, fence_len = fence_open
-            close_re = re.compile(rf"^\s*{re.escape(fence_char)}{{{fence_len},}}\s*$")
+            close_re = build_close_fence_regex(fence_char, fence_len)
             code_lines: List[str] = []
             idx += 1
             while idx < len(lines) and not close_re.match(lines[idx]):
@@ -1647,9 +1650,9 @@ def markdown_to_docx(md_path: str, docx_output_path: Optional[str] = None) -> st
             idx += 1
             continue
 
-        if _is_md_table_line(stripped):
+        if is_md_table_line(stripped):
             table_lines = []
-            while idx < len(lines) and _is_md_table_line(lines[idx]):
+            while idx < len(lines) and is_md_table_line(lines[idx]):
                 table_lines.append(lines[idx].strip())
                 idx += 1
 
@@ -1729,7 +1732,7 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
             if obj.text.strip():
                 texts.append(obj.text.strip())
         elif kind == "tbl":
-            for row_cells in _dedup_docx_table_rows(obj):
+            for row_cells in dedup_table_rows(obj):
                 row_text = "\t".join(
                     cell.text.strip() for cell, is_primary in row_cells if is_primary and cell.text.strip()
                 )
@@ -1741,20 +1744,6 @@ def docx_to_text(docx_path: str, txt_output_path: Optional[str] = None) -> str:
         f.write("\n\n".join(texts).strip() + "\n")
 
     return str(out_file)
-
-
-def _dedup_pptx_table_rows(table) -> List[List[Tuple[Any, bool]]]:
-    seen_tcs: Set[Any] = set()
-    rows_out: List[List[Tuple[Any, bool]]] = []
-    for row in table.rows:
-        row_cells: List[Tuple[Any, bool]] = []
-        for cell in row.cells:
-            is_primary = cell._tc not in seen_tcs
-            if is_primary:
-                seen_tcs.add(cell._tc)
-            row_cells.append((cell, is_primary))
-        rows_out.append(row_cells)
-    return rows_out
 
 
 def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> str:
@@ -1783,15 +1772,10 @@ def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> st
             if shape.has_table:
                 t_rows = [
                     [_escape_md_cell(c.text) if is_primary else "" for c, is_primary in row_cells]
-                    for row_cells in _dedup_pptx_table_rows(shape.table)
+                    for row_cells in dedup_table_rows(shape.table)
                 ]
                 if t_rows:
-                    header = t_rows[0]
-                    md_lines.append("\n| " + " | ".join(header) + " |")
-                    md_lines.append("| " + " | ".join(["---"] * len(header)) + " |")
-                    for r in t_rows[1:]:
-                        padded = r + [""] * (len(header) - len(r))
-                        md_lines.append("| " + " | ".join(padded[: len(header)]) + " |")
+                    md_lines.extend(render_markdown_table(t_rows, leading_blank=True))
                     md_lines.append("")
 
         if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
@@ -1830,7 +1814,7 @@ def pptx_to_text(pptx_path: str, txt_output_path: Optional[str] = None) -> str:
                     if txt:
                         texts.append(txt)
             if shape.has_table:
-                for row_cells in _dedup_pptx_table_rows(shape.table):
+                for row_cells in dedup_table_rows(shape.table):
                     row_txt = "\t".join(
                         c.text.replace("\x0b", " ").strip()
                         for c, is_primary in row_cells
@@ -1915,6 +1899,11 @@ def _extract_source_ext(file_path_or_ext: Union[str, Path]) -> str:
 def get_convertible_extensions() -> List[str]:
     """Returns sorted list of supported source extensions (e.g. ['.csv', '.docx', ...]) from _CONVERSION_REGISTRY."""
     return sorted({f".{src}" for (src, _) in _CONVERSION_REGISTRY})
+
+
+def get_supported_conversion_targets() -> List[str]:
+    """Returns sorted list of unique target conversion formats from _CONVERSION_REGISTRY."""
+    return sorted({tgt for (_, tgt) in _CONVERSION_REGISTRY})
 
 
 def is_convert_supported(file_path_or_ext: Union[str, Path]) -> bool:

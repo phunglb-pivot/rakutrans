@@ -299,10 +299,14 @@ class MarkdownTranslator(BaseTranslator):
             )
             output_path = safe_save_markdown(content, target_path)
             if progress_callback:
-                progress_callback(100, 100, f"Saved: {output_path.name}")
+                progress_callback(100, 100, self._t("progress_saved_file", filename=output_path.name))
             return str(output_path)
 
-        chunk_specs = self._split_into_chunk_specs(content)
+        try:
+            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 3500) or 3500))
+        except (TypeError, ValueError):
+            section_max_chars = 3500
+        chunk_specs = self._split_into_chunk_specs(content, max_chars=section_max_chars)
         total_chunks = len(chunk_specs)
         section_inputs = [
             chunk_text for chunk_text, _ in chunk_specs if _has_translatable_markdown(chunk_text)
@@ -313,7 +317,7 @@ class MarkdownTranslator(BaseTranslator):
                 progress_callback(
                     5,
                     100,
-                    f"Prepared {total_chunks} sections ({cache_hits} from memory cache)...",
+                    self._t("progress_prepared_md", total=total_chunks, cached=cache_hits),
                 )
 
         section_map = self.translate_unique_sections(
@@ -333,7 +337,7 @@ class MarkdownTranslator(BaseTranslator):
             raise InterruptedError("Translation was cancelled by user.")
 
         if progress_callback:
-            progress_callback(95, 100, "Saving translated markdown document...")
+            progress_callback(95, 100, self._t("progress_saving_md"))
 
         parts: List[str] = []
         for orig_chunk, sep_after in chunk_specs:
@@ -357,9 +361,8 @@ class MarkdownTranslator(BaseTranslator):
         output_path = safe_save_markdown(final_markdown, target_path)
 
         if progress_callback:
-            note = f"Saved to {output_path.name}"
-            if output_path.name != target_path.name:
-                note += " (safe-renamed to avoid file lock)"
-            progress_callback(100, 100, f"Completed! {note}")
+            note_key = "progress_saved_lock_note" if output_path.name != target_path.name else "progress_saved_to"
+            note = self._t(note_key, filename=output_path.name)
+            progress_callback(100, 100, self._t("progress_completed_note", note=note))
 
         return str(output_path)

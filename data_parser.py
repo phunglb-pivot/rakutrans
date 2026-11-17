@@ -145,7 +145,7 @@ class CsvTranslator(BaseTranslator):
         )
 
         if progress_callback:
-            progress_callback(5, 100, "Reading CSV table...")
+            progress_callback(5, 100, self._t("progress_reading_csv"))
 
         _ensure_large_csv_field_limit()
         enc = _detect_encoding(src)
@@ -170,11 +170,11 @@ class CsvTranslator(BaseTranslator):
             )
             saved_path = safe_save_file(lambda p: self._write_csv(p, rows, delimiter), out_path)
             if progress_callback:
-                progress_callback(100, 100, "File contains no translatable text.")
+                progress_callback(100, 100, self._t("progress_no_translatable_file"))
             return str(saved_path)
 
         if progress_callback:
-            progress_callback(10, 100, f"Found {total_unique} unique cells. Checking cache...")
+            progress_callback(10, 100, self._t("progress_found_cells", count=total_unique))
 
         translation_map = self.translate_unique_texts(
             unique_texts=unique_texts,
@@ -190,7 +190,7 @@ class CsvTranslator(BaseTranslator):
             raise InterruptedError("Translation cancelled by user.")
 
         if progress_callback:
-            progress_callback(90, 100, "Applying translations to CSV...")
+            progress_callback(90, 100, self._t("progress_applying_csv"))
 
         translated_rows: List[List[str]] = []
         for row in rows:
@@ -214,7 +214,7 @@ class CsvTranslator(BaseTranslator):
         saved_path = safe_save_file(lambda p: self._write_csv(p, translated_rows, delimiter), out_path)
 
         if progress_callback:
-            progress_callback(100, 100, f"Saved: {saved_path.name}")
+            progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
         return str(saved_path)
 
@@ -307,7 +307,7 @@ class JsonTranslator(BaseTranslator):
         )
 
         if progress_callback:
-            progress_callback(5, 100, "Reading JSON document...")
+            progress_callback(5, 100, self._t("progress_reading_json"))
 
         enc = _detect_encoding(src)
         with open(src, "r", encoding=enc, errors="replace") as f:
@@ -324,11 +324,11 @@ class JsonTranslator(BaseTranslator):
             )
             saved_path = safe_save_file(lambda p: self._save_json(p, data), out_path)
             if progress_callback:
-                progress_callback(100, 100, "File contains no translatable text.")
+                progress_callback(100, 100, self._t("progress_no_translatable_file"))
             return str(saved_path)
 
         if progress_callback:
-            progress_callback(10, 100, f"Found {total_unique} translatable phrases. Checking cache...")
+            progress_callback(10, 100, self._t("progress_found_phrases", count=total_unique))
 
         translation_map = self.translate_unique_texts(
             unique_texts=unique_list,
@@ -344,7 +344,7 @@ class JsonTranslator(BaseTranslator):
             raise InterruptedError("Translation cancelled by user.")
 
         if progress_callback:
-            progress_callback(90, 100, "Reconstructing translated JSON...")
+            progress_callback(90, 100, self._t("progress_rebuilding_json"))
 
         def replace_values(root: Any) -> Any:
             if not isinstance(root, (dict, list)):
@@ -413,7 +413,7 @@ class JsonTranslator(BaseTranslator):
         saved_path = safe_save_file(lambda p: self._save_json(p, translated_data), out_path)
 
         if progress_callback:
-            progress_callback(100, 100, f"Saved: {saved_path.name}")
+            progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
         return str(saved_path)
 
@@ -604,7 +604,7 @@ class TextTranslator(BaseTranslator):
         )
 
         if progress_callback:
-            progress_callback(5, 100, "Reading text file...")
+            progress_callback(5, 100, self._t("progress_reading_txt"))
 
         enc = _detect_encoding(src)
         with open(src, "r", encoding=enc, errors="replace") as f:
@@ -616,10 +616,14 @@ class TextTranslator(BaseTranslator):
             )
             saved_path = safe_save_file(lambda p: p.write_text(content, encoding="utf-8"), out_path)
             if progress_callback:
-                progress_callback(100, 100, "File contains no translatable text.")
+                progress_callback(100, 100, self._t("progress_no_translatable_file"))
             return str(saved_path)
 
-        chunk_specs = self._split_text_chunks(content)
+        try:
+            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 3500) or 3500))
+        except (TypeError, ValueError):
+            section_max_chars = 3500
+        chunk_specs = self._split_text_chunks(content, max_chars=section_max_chars)
         section_inputs = [chunk_text for chunk_text, _ in chunk_specs if chunk_text.strip()]
         section_map = self.translate_unique_sections(
             sections=section_inputs,
@@ -631,7 +635,9 @@ class TextTranslator(BaseTranslator):
             progress_callback=progress_callback,
             progress_start=10,
             progress_span=80,
-            progress_formatter=lambda done, total, _hits: f"Translated section {done}/{total}...",
+            progress_formatter=lambda done, total, _hits: self._t(
+                "progress_text_section", done=done, total=total
+            ),
         )
 
         parts: List[str] = []
@@ -653,6 +659,6 @@ class TextTranslator(BaseTranslator):
         saved_path = safe_save_file(lambda p: p.write_text(final_content, encoding="utf-8"), out_path)
 
         if progress_callback:
-            progress_callback(100, 100, f"Saved: {saved_path.name}")
+            progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
         return str(saved_path)

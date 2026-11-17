@@ -91,6 +91,15 @@ class TranslatorRegistry:
             return ext in cls._registry
 
     @classmethod
+    def supports_bilingual(cls, file_path_or_ext: Union[str, Path]) -> bool:
+        """Returns True if the registered translator for this file/extension supports bilingual output."""
+        cls._init_registry()
+        ext = cls._extract_extension(file_path_or_ext)
+        with cls._lock:
+            translator_cls = cls._registry.get(ext)
+            return bool(translator_cls and getattr(translator_cls, "SUPPORTS_BILINGUAL", False))
+
+    @classmethod
     def get_translator_class(cls, file_path_or_ext: Union[str, Path]) -> Type[BaseTranslator]:
         """Returns the translator class for a given file or extension."""
         cls._init_registry()
@@ -107,11 +116,15 @@ class TranslatorRegistry:
         file_path_or_ext: Union[str, Path],
         config: AppConfig,
         llm_manager: LLMManager,
-        cache: Optional[TranslationCache] = None
+        cache: Optional[TranslationCache] = None,
+        i18n: Optional[Any] = None,
     ) -> BaseTranslator:
         """Instantiates the appropriate translator for the given file or extension."""
         translator_cls = cls.get_translator_class(file_path_or_ext)
-        return translator_cls(config, llm_manager, cache)
+        translator = translator_cls(config, llm_manager, cache)
+        if i18n is not None and hasattr(translator, "_i18n"):
+            translator._i18n = i18n
+        return translator
 
     @classmethod
     def inspect(cls, file_path: Union[str, Path]) -> Dict[str, Any]:

@@ -30,34 +30,41 @@ fi
 echo "Cleaning previous builds..."
 rm -rf build dist
 
-APP_VERSION="$("$VENV_PY" -c "import config; print(config.APP_VERSION)" 2>/dev/null || echo "1.0.0")"
+APP_NAME="$("$VENV_PY" -c "import config; print(config.APP_NAME)")"
+APP_VERSION="$("$VENV_PY" -c "import config; print(config.APP_VERSION)")"
+APP_EXEC_NAME="$("$VENV_PY" -c "import config; print(config.APP_EXECUTABLE_NAME)")"
+if [ -z "$APP_NAME" ] || [ -z "$APP_VERSION" ] || [ -z "$APP_EXEC_NAME" ]; then
+    echo "[Error] Failed to read app metadata from config.py" >&2
+    exit 1
+fi
+APP_BUNDLE="${APP_EXEC_NAME}.app"
 echo "Compiling standalone application bundle (v$APP_VERSION) via RakuTrans.spec..."
 "$PYINSTALLER" --noconfirm --clean "$SCRIPT_DIR/RakuTrans.spec"
 
 echo ""
 echo "✓ Standalone macOS Application created (v$APP_VERSION):"
-echo "  -> dist/RakuTrans.app"
+echo "  -> dist/$APP_BUNDLE"
 
 # Remove quarantine attribute so macOS doesn't block the app locally
 if [ -x /usr/bin/xattr ]; then
-    /usr/bin/xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
+    /usr/bin/xattr -dr com.apple.quarantine "dist/$APP_BUNDLE" 2>/dev/null || true
 else
-    xattr -dr com.apple.quarantine "dist/RakuTrans.app" 2>/dev/null || true
+    xattr -dr com.apple.quarantine "dist/$APP_BUNDLE" 2>/dev/null || true
 fi
 
 # Package into drag-and-drop .dmg installer with /Applications shortcut
 if command -v hdiutil >/dev/null 2>&1; then
     echo ""
     echo "Creating drag-and-drop installer image (.dmg)..."
-    DMG_PATH="dist/RakuTrans-Installer-macOS.dmg"
+    DMG_PATH="dist/${APP_EXEC_NAME}-Installer-macOS.dmg"
     DMG_STAGE="$(mktemp -d "${TMPDIR:-/tmp}/rakutrans_dmg.XXXXXX")"
     trap 'rm -rf "$DMG_STAGE"' EXIT
 
-    cp -R "dist/RakuTrans.app" "$DMG_STAGE/RakuTrans.app"
+    cp -R "dist/$APP_BUNDLE" "$DMG_STAGE/$APP_BUNDLE"
     ln -s /Applications "$DMG_STAGE/Applications"
 
     rm -f "$DMG_PATH"
-    hdiutil create -volname "RakuTrans AI" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH"
+    hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_PATH"
     rm -rf "$DMG_STAGE"
     trap - EXIT
     echo "✓ Installer DMG created:"

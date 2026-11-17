@@ -85,8 +85,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for /f "delims=" %%V in ('"%VENV_PY%" -c "import config; print(config.APP_VERSION)" 2^>nul') do set "APP_VERSION=%%V"
-if not defined APP_VERSION set "APP_VERSION=1.0.0"
+for /f "delims=" %%V in ('"%VENV_PY%" -c "import config; print(config.APP_VERSION)"') do set "APP_VERSION=%%V"
+if not defined APP_VERSION (
+    echo [Error] Failed to read APP_VERSION from config.py.
+    call :maybe_pause
+    exit /b 1
+)
+for /f "delims=" %%N in ('"%VENV_PY%" -c "import config; print(config.APP_NAME)"') do set "APP_NAME=%%N"
+if not defined APP_NAME (
+    echo [Error] Failed to read APP_NAME from config.py.
+    call :maybe_pause
+    exit /b 1
+)
+for /f "delims=" %%E in ('"%VENV_PY%" -c "import config; print(config.APP_EXECUTABLE_NAME)"') do set "APP_EXEC_NAME=%%E"
+if not defined APP_EXEC_NAME (
+    echo [Error] Failed to read APP_EXECUTABLE_NAME from config.py.
+    call :maybe_pause
+    exit /b 1
+)
 
 set "ISCC_EXE="
 if exist "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe" set "ISCC_EXE=%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"
@@ -96,7 +112,7 @@ if not defined ISCC_EXE if exist "%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
 if defined ISCC_EXE (
     echo.
     echo Creating Windows installer with Inno Setup 6 ^(v!APP_VERSION!^)...
-    "%ISCC_EXE%" "/DMyAppVersion=!APP_VERSION!" "%SCRIPT_DIR%installer_windows.iss"
+    "%ISCC_EXE%" "/DMyAppName=!APP_NAME!" "/DMyAppPublisher=!APP_NAME!" "/DMyAppVersion=!APP_VERSION!" "/DMyAppExecBase=!APP_EXEC_NAME!" "/DMyAppExeName=!APP_EXEC_NAME!.exe" "%SCRIPT_DIR%installer_windows.iss"
     if errorlevel 1 (
         echo.
         echo [Error] Inno Setup installer compilation failed.
@@ -106,17 +122,17 @@ if defined ISCC_EXE (
 ) else (
     echo.
     echo [Notice] Inno Setup 6 not found. Skipping Setup.exe creation.
-    echo          Install from https://jrsoftware.org/isdl.php to build RakuTrans-Installer-Windows.exe.
+    echo          Install from https://jrsoftware.org/isdl.php to build !APP_EXEC_NAME!-Installer-Windows.exe.
 )
 
 echo.
 echo =============================================
 echo    Build completed successfully!
 echo    Standalone executable:
-echo      dist\RakuTrans\RakuTrans.exe
+echo      dist\!APP_EXEC_NAME!\!APP_EXEC_NAME!.exe
 if defined ISCC_EXE (
     echo    Windows installer:
-    echo      dist\RakuTrans-Installer-Windows.exe
+    echo      dist\!APP_EXEC_NAME!-Installer-Windows.exe
 )
 echo =============================================
 call :maybe_pause

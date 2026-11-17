@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +17,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 
-from config import AI_PROVIDERS, AppConfig, APP_VERSION
+from config import AI_PROVIDERS, AppConfig, APP_NAME, APP_VERSION
 from i18n import I18nManager
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from llm_manager import LLMManager
@@ -905,7 +906,10 @@ class RakuTransApp(ctk.CTk):
         if hasattr(self, "append_source_cb"):
             self.append_source_cb.configure(state=state_val)
         if hasattr(self, "bilingual_cb"):
-            bilingual_ok = enabled and (not self.selected_file or Path(self.selected_file).suffix.lower() == ".xlsx")
+            bilingual_ok = enabled and (
+                not self.selected_file
+                or TranslatorRegistry.supports_bilingual(self.selected_file)
+            )
             self.bilingual_cb.configure(state="normal" if bilingual_ok else "disabled")
         if hasattr(self, "custom_prompt_text"):
             self.custom_prompt_text.configure(state=state_val)
@@ -1172,9 +1176,9 @@ class RakuTransApp(ctk.CTk):
                 text=f"{self.i18n.t('status_ready')}: {Path(file_path).name}",
                 text_color=("#18181B", "#FAFAFA")
             )
-            ext = Path(file_path).suffix.lower().lstrip(".")
             if hasattr(self, "bilingual_cb"):
-                self.bilingual_cb.configure(state="normal" if ext == "xlsx" else "disabled")
+                bilingual_ok = TranslatorRegistry.supports_bilingual(file_path)
+                self.bilingual_cb.configure(state="normal" if bilingual_ok else "disabled")
             self._update_button_states("file_ready")
         else:
             self.status_label.configure(text=self.i18n.t("status_ready"), text_color=("#71717A", "#A1A1AA"))
@@ -1634,18 +1638,23 @@ class RakuTransApp(ctk.CTk):
                 file_path_or_ext=path,
                 config=self.config,
                 llm_manager=self.llm_manager,
-                cache=self.cache
+                cache=self.cache,
+                i18n=self.i18n,
             )
             with self._translator_lock:
                 if cancel_event.is_set():
                     raise InterruptedError("Translation cancelled by user.")
                 self.current_translator = translator
 
+            options = self.config.translation_options
+            if options.bilingual_mode and not TranslatorRegistry.supports_bilingual(path):
+                options = replace(options, bilingual_mode=False)
+
             output_file = translator.process_file(
                 file_path=file_path,
                 target_lang=tgt_lang,
                 source_lang=self.config.source_language or "auto",
-                options=self.config.translation_options,
+                options=options,
                 progress_callback=on_progress
             )
 
@@ -1677,6 +1686,9 @@ class RakuTransApp(ctk.CTk):
         self._update_button_states("completed")
 
         # Audio completion cue & native OS notification
+        self._notify_completion(out_name, "notification_completed")
+
+    def _notify_completion(self, out_name: str, subtitle_key: str):
         try:
             import sys
             sys.stdout.write('\a')
@@ -1684,15 +1696,20 @@ class RakuTransApp(ctk.CTk):
         except Exception:
             pass
 
-        system_os = platform.system()
-        if system_os == "Darwin":
+        if platform.system() == "Darwin":
             try:
                 subprocess.Popen([
                     "osascript",
                     "-e",
-                    'on run argv\ndisplay notification (item 1 of argv) with title "RakuTrans AI" subtitle (item 2 of argv)\nend run',
+                    (
+                        "on run argv\n"
+                        "display notification (item 1 of argv) "
+                        "with title (item 3 of argv) subtitle (item 2 of argv)\n"
+                        "end run"
+                    ),
                     out_name,
-                    self.i18n.t("notification_completed"),
+                    self.i18n.t(subtitle_key),
+                    APP_NAME,
                 ])
             except Exception:
                 pass
@@ -1762,25 +1779,7 @@ class RakuTransApp(ctk.CTk):
         self._update_button_states("completed")
 
         # Audio completion cue & notification
-        try:
-            import sys
-            sys.stdout.write('\a')
-            sys.stdout.flush()
-        except Exception:
-            pass
-
-        system_os = platform.system()
-        if system_os == "Darwin":
-            try:
-                subprocess.Popen([
-                    "osascript",
-                    "-e",
-                    'on run argv\ndisplay notification (item 1 of argv) with title "RakuTrans AI" subtitle (item 2 of argv)\nend run',
-                    out_name,
-                    self.i18n.t("notification_convert_completed"),
-                ])
-            except Exception:
-                pass
+        self._notify_completion(out_name, "notification_convert_completed")
 
     def _on_conversion_failed(self, error_msg: str, exc: Optional[Exception] = None):
         self.is_converting = False

@@ -12,9 +12,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
-from config import TranslationOptions, CONFIG_DIR, normalize_language_name
+from config import TranslationOptions, CONFIG_DIR, get_config_dir, normalize_language_name
 
 CACHE_DB_PATH = CONFIG_DIR / "cache.db"
+_INITIAL_CACHE_DB_PATH = CACHE_DB_PATH
 PROMPT_VERSION = "v6"
 _SQL_CHUNK_SIZE = 400
 
@@ -55,7 +56,12 @@ class TranslationCache:
     """
 
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = Path(db_path) if db_path is not None else CACHE_DB_PATH
+        if db_path is not None:
+            self.db_path = Path(db_path)
+        elif CACHE_DB_PATH != _INITIAL_CACHE_DB_PATH:
+            self.db_path = Path(CACHE_DB_PATH)
+        else:
+            self.db_path = get_config_dir() / "cache.db"
         self._write_lock = threading.RLock()
         self._init_db()
 

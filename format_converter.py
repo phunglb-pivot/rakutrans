@@ -38,6 +38,39 @@ _MD_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
 _STRICT_INT_RE = re.compile(r"^-?(?:0|[1-9]\d*)$")
 _STRICT_FLOAT_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d+)$")
 
+SOFFICE_TIMEOUT_SECONDS = 90.0
+SOFFICE_CANDIDATE_PATHS: Tuple[str, ...] = (
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "~/Applications/LibreOffice.app/Contents/MacOS/soffice",
+    "/opt/homebrew/bin/soffice",
+    "/usr/local/bin/soffice",
+    "/usr/bin/soffice",
+    "/usr/bin/libreoffice",
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    r"%ProgramFiles%\LibreOffice\program\soffice.exe",
+    r"%ProgramFiles(x86)%\LibreOffice\program\soffice.exe",
+)
+UNICODE_PDF_FONT_CANDIDATES: Tuple[str, ...] = (
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+    r"C:\Windows\Fonts\arialuni.ttf",
+    r"C:\Windows\Fonts\msyh.ttc",
+    r"C:\Windows\Fonts\meiryo.ttc",
+    r"C:\Windows\Fonts\msgothic.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+    r"C:\Windows\Fonts\arial.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+)
+
 
 # -----------------------------------------------------------------------------
 # Shared Deterministic Markdown & Value Helpers
@@ -494,8 +527,7 @@ def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
                 page_chunks.append("\n".join(p_out).strip())
 
             if not has_h1:
-                doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
-                md_lines.append(f"# {doc_title}\n")
+                md_lines.append(f"# {src.stem}\n")
             md_lines.append("\n\n".join(c for c in page_chunks if c))
         finally:
             doc.close()
@@ -520,8 +552,7 @@ def pdf_to_markdown(pdf_path: str, md_output_path: Optional[str] = None) -> str:
     except Exception:
         pass
 
-    doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
-    md_lines = [f"# {doc_title}\n"]
+    md_lines = [f"# {src.stem}\n"]
     import pypdf
     reader = pypdf.PdfReader(str(src))
     for idx, page in enumerate(reader.pages):
@@ -624,9 +655,7 @@ def excel_to_markdown(xlsx_path: str, md_output_path: Optional[str] = None) -> s
     wb_val = load_workbook_safe(str(src), data_only=True, read_only=True)
     wb_formula = load_workbook_safe(str(src), data_only=False, read_only=True)
 
-    md_lines: List[str] = []
-    doc_title = re.sub(r"^\[Translated\]_", "", src.stem)
-    md_lines.append(f"# {doc_title}\n")
+    md_lines: List[str] = [f"# {src.stem}\n"]
 
     try:
         formula_names = set(wb_formula.sheetnames)
@@ -1096,16 +1125,10 @@ def _find_soffice_binary() -> Optional[str]:
     candidates = [
         shutil.which("soffice"),
         shutil.which("libreoffice"),
-        "/Applications/LibreOffice.app/Contents/MacOS/soffice",
-        os.path.expanduser("~/Applications/LibreOffice.app/Contents/MacOS/soffice"),
-        "/opt/homebrew/bin/soffice",
-        "/usr/local/bin/soffice",
-        "/usr/bin/soffice",
-        "/usr/bin/libreoffice",
-        r"C:\Program Files\LibreOffice\program\soffice.exe",
-        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
-        os.path.expandvars(r"%ProgramFiles%\LibreOffice\program\soffice.exe"),
-        os.path.expandvars(r"%ProgramFiles(x86)%\LibreOffice\program\soffice.exe"),
+        *(
+            os.path.expandvars(os.path.expanduser(raw_path))
+            for raw_path in SOFFICE_CANDIDATE_PATHS
+        ),
     ]
     for c in candidates:
         if c and os.path.exists(c) and os.path.isfile(c):
@@ -1118,26 +1141,7 @@ def _register_unicode_pdf_font() -> str:
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
 
-    font_candidates = [
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
-        r"C:\Windows\Fonts\arialuni.ttf",
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\meiryo.ttc",
-        r"C:\Windows\Fonts\msgothic.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/Library/Fonts/Arial.ttf",
-        r"C:\Windows\Fonts\arial.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-    ]
-    for fp in font_candidates:
+    for fp in UNICODE_PDF_FONT_CANDIDATES:
         if os.path.exists(fp):
             try:
                 fname = f"RakuDocxFont_{re.sub(r'[^A-Za-z0-9_]', '_', os.path.basename(fp))}"
@@ -1256,7 +1260,7 @@ def docx_to_pdf(
                     str(src),
                 ]
                 with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-                    deadline = time.monotonic() + 90.0
+                    deadline = time.monotonic() + SOFFICE_TIMEOUT_SECONDS
                     while True:
                         if cancel_check and cancel_check():
                             proc.terminate()

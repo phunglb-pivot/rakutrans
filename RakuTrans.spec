@@ -7,29 +7,36 @@ from PyInstaller.utils.hooks import collect_all
 
 
 def _read_app_metadata():
-    app_name = 'RakuTrans AI'
-    app_version = '1.0.0'
-    cfg_path = Path(SPECPATH) / 'config.py'
-    try:
-        tree = ast.parse(cfg_path.read_text(encoding='utf-8'))
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if (
-                        isinstance(target, ast.Name)
-                        and isinstance(node.value, ast.Constant)
-                        and isinstance(node.value.value, str)
-                    ):
-                        if target.id == 'APP_NAME':
-                            app_name = node.value.value
-                        elif target.id == 'APP_VERSION':
-                            app_version = node.value.value
-    except Exception:
-        pass
-    return app_name, app_version
+    required_keys = ('APP_NAME', 'APP_VERSION', 'APP_EXECUTABLE_NAME', 'APP_BUNDLE_ID')
+    metadata = {}
+    cfg_path = Path(globals().get('SPECPATH', '.')) / 'config.py'
+    if not cfg_path.is_file():
+        raise RuntimeError(f"Cannot find config.py at {cfg_path}")
+    tree = ast.parse(cfg_path.read_text(encoding='utf-8'))
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id in required_keys
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                ):
+                    metadata[target.id] = node.value.value.strip()
+    missing = [k for k in required_keys if not metadata.get(k)]
+    if missing:
+        raise RuntimeError(
+            f"Missing required metadata in {cfg_path}: {', '.join(missing)}"
+        )
+    return (
+        metadata['APP_NAME'],
+        metadata['APP_VERSION'],
+        metadata['APP_EXECUTABLE_NAME'],
+        metadata['APP_BUNDLE_ID'],
+    )
 
 
-app_name, app_version = _read_app_metadata()
+app_name, app_version, app_exec_name, app_bundle_id = _read_app_metadata()
 codesign_identity = os.environ.get('RAKUTRANS_CODESIGN_IDENTITY') or None
 
 datas = [('assets', 'assets')]
@@ -37,6 +44,7 @@ binaries = []
 hiddenimports = [
     'sqlite3',
     'tkinter',
+    'PIL',
     'fitz',
     'pdf2docx',
     'pypdf',
@@ -94,7 +102,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='RakuTrans',
+    name=app_exec_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -114,15 +122,15 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name='RakuTrans',
+    name=app_exec_name,
 )
 
 if is_mac:
     app = BUNDLE(
         coll,
-        name='RakuTrans.app',
+        name=f'{app_exec_name}.app',
         icon='assets/icon.icns',
-        bundle_identifier='com.rakutrans.app',
+        bundle_identifier=app_bundle_id,
         version=app_version,
         info_plist={
             'CFBundleName': app_name,

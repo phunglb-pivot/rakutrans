@@ -242,7 +242,7 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertEqual(recovered.active_provider, "OpenAI")
                 self.assertEqual(recovered.ui_language, "en")
                 self.assertEqual(recovered.theme_mode, "dark")
-                self.assertEqual(recovered.batch_size, 60)
+                self.assertEqual(recovered.batch_size, 25)
                 self.assertEqual(recovered.max_concurrent_requests, 2)
                 self.assertTrue(recovered.auto_check_updates)
                 self.assertEqual(recovered.skipped_update_version, "")
@@ -286,8 +286,10 @@ class TestConfigAndI18n(unittest.TestCase):
         import main as main_mod
 
         for lang in ("en", "ja", "vi"):
-            self.assertIn(".tsv", TRANSLATIONS[lang]["drag_drop_title"])
-            self.assertIn("*.tsv", TRANSLATIONS[lang]["filetype_supported"])
+            i18n = I18nManager(lang)
+            self.assertIn(".tsv", i18n.t("drag_drop_title"))
+            self.assertIn("*.tsv", i18n.t("filetype_supported"))
+            self.assertIn(".tsv", i18n.t("err_unsupported_file"))
 
         self.assertNotIn("英語", TRANSLATIONS["ja"]["opt_keep_terms"])
 
@@ -369,6 +371,87 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertEqual(captured, {"provider": "OpenAI", "model": "gpt-4o"})
                 self.assertEqual(AppConfig.load().active_provider, "Gemini")
                 self.assertEqual(AppConfig.load().selected_models["OpenAI"], "")
+
+                # 4. CLI --bilingual on non-xlsx file must warn and clamp bilingual_mode to False
+                bilingual_seen = {}
+
+                class _FakeNonExcelTr:
+                    def process_file(self, **kwargs):
+                        bilingual_seen["mode"] = kwargs["options"].bilingual_mode
+                        return str(tmp_path / "sample_vi.txt")
+
+                buf_bi = io.StringIO()
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-env-cli"}), \
+                     patch("sys.stdout", buf_bi), \
+                     patch.object(
+                         TranslatorRegistry,
+                         "create_translator",
+                         side_effect=lambda *a, **kw: _FakeNonExcelTr(),
+                     ):
+                    main_mod.run_cli_translation(
+                        str(sample_txt), provider="OpenAI", model="gpt-4o", bilingual=True
+                    )
+                self.assertFalse(bilingual_seen["mode"])
+                self.assertIn(".xlsx", buf_bi.getvalue())
+
+    def test_rakutrans_home_override_and_advanced_config_persistence(self):
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        import model_fetcher
+        from translation_cache import TranslationCache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "custom_rakutrans_home"
+            with patch.dict(os.environ, {"RAKUTRANS_HOME": str(home_dir)}, clear=False):
+                self.assertEqual(config_mod.get_config_dir(), home_dir.resolve())
+
+                cfg = AppConfig(
+                    base_urls={"OpenAI": "https://proxy.example/v1", "Gemini": "", "Claude": ""},
+                    temperature=0.45,
+                    strict_json_mode=False,
+                    request_timeout=75.0,
+                    model_fetch_timeout=18.0,
+                    batch_size=40,
+                    batch_max_chars=5200,
+                    section_max_chars=4800,
+                    max_concurrent_requests=12,
+                    min_request_interval=0.15,
+                    max_retries_general=4,
+                    max_retries_rate_limit=7,
+                    max_retries_format=3,
+                )
+                cfg.save()
+                self.assertTrue((home_dir / "config.json").is_file())
+
+                loaded = AppConfig.load()
+                self.assertEqual(loaded.base_urls["OpenAI"], "https://proxy.example/v1")
+                self.assertAlmostEqual(loaded.temperature, 0.45)
+                self.assertFalse(loaded.strict_json_mode)
+                self.assertAlmostEqual(loaded.request_timeout, 75.0)
+                self.assertAlmostEqual(loaded.model_fetch_timeout, 18.0)
+                self.assertEqual(loaded.batch_size, 40)
+                self.assertEqual(loaded.batch_max_chars, 5200)
+                self.assertEqual(loaded.section_max_chars, 4800)
+                self.assertEqual(loaded.max_concurrent_requests, 12)
+                self.assertAlmostEqual(loaded.min_request_interval, 0.15)
+                self.assertEqual(loaded.max_retries_general, 4)
+                self.assertEqual(loaded.max_retries_rate_limit, 7)
+                self.assertEqual(loaded.max_retries_format, 3)
+
+                # Config base_url wins over env var; blank falls back to env var
+                with patch.dict(os.environ, {"OPENAI_BASE_URL": "https://env.example/v1", "GEMINI_BASE_URL": "https://gem.env"}, clear=False):
+                    self.assertEqual(loaded.get_effective_base_url("OpenAI"), "https://proxy.example/v1")
+                    self.assertEqual(loaded.get_effective_base_url("Gemini"), "https://gem.env")
+
+                model_fetcher.save_cached_models("Gemini", ["gemini-2.5-flash"])
+                self.assertTrue((home_dir / "models_cache.json").is_file())
+                self.assertEqual(model_fetcher.load_cached_models("Gemini"), ["gemini-2.5-flash"])
+
+                tc = TranslationCache()
+                self.assertEqual(tc.db_path, home_dir.resolve() / "cache.db")
 
 
 if __name__ == "__main__":

@@ -78,6 +78,8 @@ class ExcelTranslator(BaseTranslator):
     Supports safe-save against Excel file locking and optional bilingual sheet export.
     """
 
+    SUPPORTS_BILINGUAL: bool = True
+
     def __init__(
         self,
         config: AppConfig,
@@ -172,7 +174,7 @@ class ExcelTranslator(BaseTranslator):
         is_bilingual = bool(getattr(options, "bilingual_mode", False))
 
         if progress_callback:
-            progress_callback(0, 100, "Loading workbook structure & styles...")
+            progress_callback(0, 100, self._t("progress_loading_excel"))
 
         # Strict requirement: data_only=False preserves formulas (=SUM, etc.)
         workbook = openpyxl.load_workbook(filename=file_path, data_only=False)
@@ -202,7 +204,7 @@ class ExcelTranslator(BaseTranslator):
                 )
                 out_file = safe_save_workbook(workbook, target_path)
                 if progress_callback:
-                    progress_callback(100, 100, "Workbook contains no translatable text.")
+                    progress_callback(100, 100, self._t("progress_no_translatable_excel"))
                 return str(out_file)
 
             unique_texts: List[str] = list(
@@ -218,7 +220,7 @@ class ExcelTranslator(BaseTranslator):
                 progress_callback(
                     5,
                     100,
-                    f"Deduplication: {unique_count} unique texts ({duplicate_saved} duplicate cells saved)...",
+                    self._t("progress_dedup_excel", unique=unique_count, dedup=duplicate_saved),
                 )
 
             unique_translations = self.translate_unique_texts(
@@ -237,7 +239,7 @@ class ExcelTranslator(BaseTranslator):
 
             if is_bilingual:
                 if progress_callback:
-                    progress_callback(90, 100, "Bilingual mode: Archiving original worksheets...")
+                    progress_callback(90, 100, self._t("progress_bilingual_excel"))
                 orig_worksheets = list(workbook.worksheets)
                 existing_names = set(workbook.sheetnames)
                 for orig_ws in orig_worksheets:
@@ -247,7 +249,7 @@ class ExcelTranslator(BaseTranslator):
                     existing_names.add(new_title)
 
             if progress_callback:
-                progress_callback(92, 100, f"Re-injecting {total_cells} cells into workbook...")
+                progress_callback(92, 100, self._t("progress_injecting_excel", total=total_cells))
 
             for cell, orig_val in translatable_cells:
                 trimmed = orig_val.strip()
@@ -270,7 +272,7 @@ class ExcelTranslator(BaseTranslator):
                     cell.comment = new_comment
 
             if progress_callback:
-                progress_callback(96, 100, "Saving translated workbook...")
+                progress_callback(96, 100, self._t("progress_saving_excel"))
 
             target_path = (
                 Path(custom_output_path)
@@ -284,10 +286,9 @@ class ExcelTranslator(BaseTranslator):
             output_path = safe_save_workbook(workbook, target_path)
 
             if progress_callback:
-                note = f"Saved to {output_path.name}"
-                if output_path.name != target_path.name:
-                    note += " (safe-renamed to avoid file lock)"
-                progress_callback(100, 100, f"Completed! {note}")
+                note_key = "progress_saved_lock_note" if output_path.name != target_path.name else "progress_saved_to"
+                note = self._t(note_key, filename=output_path.name)
+                progress_callback(100, 100, self._t("progress_completed_note", note=note))
 
             return str(output_path)
         finally:

@@ -400,10 +400,11 @@ def get_icon(name: str, color: ColorPair = "default", size: int = 16) -> ctk.CTk
     return ctk.CTkImage(light_image=light_img, dark_image=dark_img, size=(size, size))
 
 
+from config import AI_PROVIDERS
+
 _PROVIDER_ICON_MAP = {
-    "Gemini": "provider_gemini",
-    "OpenAI": "provider_openai",
-    "Claude": "provider_claude",
+    prov: meta.get("icon_name", "globe")
+    for prov, meta in AI_PROVIDERS.items()
 }
 
 

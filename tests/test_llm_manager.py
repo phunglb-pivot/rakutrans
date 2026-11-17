@@ -179,11 +179,20 @@ class TestLLMManager(unittest.TestCase):
             )
 
     def test_base_translator_batch_and_worker_bounds(self):
-        config = AppConfig(batch_size=60)
-        translator = _DummyTranslator(config, LLMManager(config))
+        default_cfg = AppConfig()
+        self.assertEqual(default_cfg.batch_size, 25)
+        default_tr = _DummyTranslator(default_cfg, LLMManager(default_cfg))
+        self.assertEqual(
+            [len(b) for b in default_tr.pack_batches([f"item {i}" for i in range(60)])],
+            [25, 25, 10],
+        )
+
+        # Explicit batch_size > 25 is honored directly without silent 25-item cap
+        cfg_large = AppConfig(batch_size=60, batch_max_chars=10000, max_concurrent_requests=12)
+        translator = _DummyTranslator(cfg_large, LLMManager(cfg_large))
         batches = translator.pack_batches([f"item {i}" for i in range(60)])
-        self.assertEqual([len(b) for b in batches], [25, 25, 10])
-        self.assertEqual(translator.get_max_workers(10), 2)
+        self.assertEqual([len(b) for b in batches], [60])
+        self.assertEqual(translator.get_max_workers(20), 12)
         self.assertEqual(translator.get_max_workers(1), 1)
 
     def test_clean_json_text_preserves_embedded_backticks_and_brackets(self):
@@ -828,6 +837,64 @@ class TestLLMManager(unittest.TestCase):
                 with self.assertRaises(LLMError) as mt_ctx:
                     cc2.generate_completion("sys", "usr", "claude-no-limit", is_json=False)
                 self.assertIn("max_tokens", str(mt_ctx.exception))
+
+    def test_gemini_temperature_and_strict_json_mode_configurable(self):
+        from llm_manager import GeminiClient
+
+        captured_configs = []
+
+        class _FakeModels:
+            def generate_content(self, model, contents, config):
+                captured_configs.append((model, config))
+                return SimpleNamespace(text='{"translations": [{"i": 0, "t": "Xin chao"}]}', candidates=[])
+
+        fake_client = SimpleNamespace(models=_FakeModels())
+
+        # Default temperature=None leaves temperature unset cleanly; strict_json_mode=True sets JSON mime type
+        gm_default = GeminiClient("test-key")
+        gm_default._get_client = lambda: fake_client
+        gm_default._call_gemini("sys", "usr", "gemini-2.5-flash", is_json=True)
+        cfg1 = captured_configs[-1][1]
+        self.assertIsNone(getattr(cfg1, "temperature", None))
+        self.assertEqual(getattr(cfg1, "response_mime_type", None), "application/json")
+
+        # Explicit temperature & strict_json_mode=False
+        gm_custom = GeminiClient("test-key", temperature=0.65, strict_json_mode=False)
+        gm_custom._get_client = lambda: fake_client
+        gm_custom._call_gemini("sys", "usr", "gemini-2.5-flash", is_json=True)
+        cfg2 = captured_configs[-1][1]
+        self.assertAlmostEqual(cfg2.temperature, 0.65)
+        self.assertIsNone(getattr(cfg2, "response_mime_type", None))
+
+    def test_llm_manager_config_cache_key_invalidation_and_custom_params(self):
+        cfg = _configured_config()
+        cfg.active_provider = "OpenAI"
+        cfg.api_keys["OpenAI"] = "sk-test"
+        cfg.selected_models["OpenAI"] = "gpt-4o"
+        cfg.base_urls["OpenAI"] = "https://gateway.one/v1"
+        cfg.temperature = 0.3
+        cfg.strict_json_mode = False
+        cfg.request_timeout = 45.0
+
+        mgr = LLMManager(cfg)
+        c1 = mgr._get_client()
+        self.assertEqual(c1.base_url, "https://gateway.one/v1")
+        self.assertAlmostEqual(c1.temperature, 0.3)
+        self.assertFalse(c1.strict_json_mode)
+        self.assertAlmostEqual(c1.timeout, 45.0)
+        self.assertIs(mgr._get_client(), c1)
+
+        # Updating base_url / temperature / strict_json_mode / timeout must invalidate cached client
+        cfg.base_urls["OpenAI"] = "https://gateway.two/v1"
+        cfg.temperature = None
+        cfg.strict_json_mode = True
+        cfg.request_timeout = 90.0
+        c2 = mgr._get_client()
+        self.assertIsNot(c2, c1)
+        self.assertEqual(c2.base_url, "https://gateway.two/v1")
+        self.assertIsNone(c2.temperature)
+        self.assertTrue(c2.strict_json_mode)
+        self.assertAlmostEqual(c2.timeout, 90.0)
 
 
 if __name__ == "__main__":

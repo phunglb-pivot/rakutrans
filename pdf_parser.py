@@ -320,7 +320,7 @@ class PdfTranslator(BaseTranslator):
         )
 
         if progress_callback:
-            progress_callback(5, 100, "Converting PDF to Word (.docx)...")
+            progress_callback(5, 100, self._t("progress_pdf_to_docx"))
 
         temp_dir = tempfile.mkdtemp(prefix="rakutrans_pdf_")
         raw_docx_path = Path(temp_dir) / f"{src.stem}_raw.docx"
@@ -334,9 +334,8 @@ class PdfTranslator(BaseTranslator):
                 raise InterruptedError("Translation cancelled by user.")
 
             if progress_callback:
-                progress_callback(12, 100, "Translating document content...")
+                progress_callback(12, 100, self._t("progress_translating_content"))
 
-            is_bilingual = bool(getattr(options, "bilingual_mode", False))
             if custom_output_path:
                 out_path = Path(custom_output_path)
                 if out_path.suffix.lower() != ".pdf":
@@ -346,7 +345,6 @@ class PdfTranslator(BaseTranslator):
                     source_path=src,
                     target_lang=target_lang,
                     target_format=".pdf",
-                    is_bilingual=is_bilingual,
                 )
 
             def docx_progress(current: int, total: int, msg: str):
@@ -354,7 +352,9 @@ class PdfTranslator(BaseTranslator):
                     pct = 12 + int((current / max(1, total)) * 73)
                     progress_callback(min(85, pct), 100, msg)
 
-            self._docx_translator = DocxTranslator(self.config, self.llm_manager, self.cache)
+            self._docx_translator = DocxTranslator(
+                self.config, self.llm_manager, self.cache, i18n=self._i18n
+            )
             if self.is_cancelled:
                 self._docx_translator.cancel()
                 raise InterruptedError("Translation cancelled by user.")
@@ -374,7 +374,7 @@ class PdfTranslator(BaseTranslator):
                 raise InterruptedError("Translation was cancelled by user.")
 
             if progress_callback:
-                progress_callback(88, 100, "Converting translated document to final PDF...")
+                progress_callback(88, 100, self._t("progress_docx_to_pdf"))
 
             saved_path = safe_save_file(
                 lambda p: docx_to_pdf(
@@ -386,7 +386,7 @@ class PdfTranslator(BaseTranslator):
             )
 
             if progress_callback:
-                progress_callback(100, 100, f"Saved: {saved_path.name}")
+                progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
             return str(saved_path)
 

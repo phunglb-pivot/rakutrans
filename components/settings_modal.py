@@ -12,7 +12,15 @@ import webbrowser
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from config import AppConfig, AI_PROVIDERS, UI_LANGUAGES, APP_VERSION
+from config import (
+    AppConfig,
+    AI_PROVIDERS,
+    UI_LANGUAGES,
+    APP_VERSION,
+    _coerce_float,
+    _coerce_int,
+    _coerce_optional_float,
+)
 from model_fetcher import fetch_models_async
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from components.ui_system import CustomButton, CustomSegmentedButton
@@ -59,6 +67,10 @@ class SettingsView(ctk.CTkFrame):
         self._update_status_state: Optional[str] = None
         self._update_status_error: str = ""
         self._has_auto_fetched_on_open = False
+        self._advanced_expanded = False
+        self._suppress_adv_trace = False
+        self._adv_save_pending = False
+        self._adv_save_after_id = None
 
         self._setup_ui()
 
@@ -368,6 +380,163 @@ class SettingsView(ctk.CTkFrame):
         self.theme_dropdown.grid(row=1, column=1, sticky="ew", padx=(8, 0))
 
         # --------------------------------------------------------------------
+        # 4. Advanced & Performance Settings (Collapsible)
+        # --------------------------------------------------------------------
+        self.advanced_group = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.advanced_group.pack(fill="x", pady=(0, 12), padx=2)
+
+        self.advanced_toggle_btn = ctk.CTkButton(
+            self.advanced_group,
+            text=self.t("advanced_toggle_show"),
+            command=self._toggle_advanced_section,
+            fg_color="transparent",
+            hover_color=("#F4F4F5", "#27272A"),
+            text_color=("#3F3F46", "#D4D4D8"),
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=30,
+        )
+        self.advanced_toggle_btn.pack(fill="x", padx=2, pady=(4, 4))
+
+        self.advanced_card = ctk.CTkFrame(
+            self.advanced_group,
+            fg_color=("#F4F4F5", "#18181B"),
+            border_width=1,
+            border_color=("#E4E4E7", "#27272A"),
+            corner_radius=8
+        )
+        # Collapsed by default; shown on demand via _toggle_advanced_section()
+
+        self.base_url_label = ctk.CTkLabel(
+            self.advanced_card,
+            text=self.t("base_url_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.base_url_label.pack(anchor="w", padx=12, pady=(10, 4))
+
+        self.base_url_var = ctk.StringVar(
+            value=self.config.base_urls.get(current_prov, "")
+        )
+        self.base_url_var.trace_add("write", self._on_base_url_changed)
+        self.base_url_entry = ctk.CTkEntry(
+            self.advanced_card,
+            textvariable=self.base_url_var,
+            placeholder_text=self.t("base_url_placeholder"),
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            border_color=("#D4D4D8", "#3F3F46"),
+        )
+        self.base_url_entry.pack(fill="x", padx=12, pady=(0, 10))
+
+        adv_grid = ctk.CTkFrame(self.advanced_card, fg_color="transparent")
+        adv_grid.pack(fill="x", padx=12, pady=(0, 8))
+        adv_grid.grid_columnconfigure(0, weight=1, uniform="adv_cols")
+        adv_grid.grid_columnconfigure(1, weight=1, uniform="adv_cols")
+
+        self.temperature_label = ctk.CTkLabel(
+            adv_grid,
+            text=self.t("temperature_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.temperature_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
+
+        self.request_timeout_label = ctk.CTkLabel(
+            adv_grid,
+            text=self.t("request_timeout_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.request_timeout_label.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
+
+        self.temperature_var = ctk.StringVar(
+            value="" if self.config.temperature is None else f"{self.config.temperature:g}"
+        )
+        self.temperature_entry = ctk.CTkEntry(
+            adv_grid,
+            textvariable=self.temperature_var,
+            placeholder_text=self.t("temperature_placeholder"),
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            border_color=("#D4D4D8", "#3F3F46"),
+        )
+        self.temperature_entry.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
+
+        self.request_timeout_var = ctk.StringVar(
+            value=f"{self.config.request_timeout:g}"
+        )
+        self.request_timeout_entry = ctk.CTkEntry(
+            adv_grid,
+            textvariable=self.request_timeout_var,
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            border_color=("#D4D4D8", "#3F3F46"),
+        )
+        self.request_timeout_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
+
+        self.batch_size_label = ctk.CTkLabel(
+            adv_grid,
+            text=self.t("batch_size_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.batch_size_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
+
+        self.max_concurrent_label = ctk.CTkLabel(
+            adv_grid,
+            text=self.t("max_concurrent_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.max_concurrent_label.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
+
+        self.batch_size_var = ctk.StringVar(value=str(self.config.batch_size))
+        self.batch_size_entry = ctk.CTkEntry(
+            adv_grid,
+            textvariable=self.batch_size_var,
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            border_color=("#D4D4D8", "#3F3F46"),
+        )
+        self.batch_size_entry.grid(row=3, column=0, sticky="ew", padx=(0, 8), pady=(0, 4))
+
+        self.max_concurrent_var = ctk.StringVar(
+            value=str(self.config.max_concurrent_requests)
+        )
+        self.max_concurrent_entry = ctk.CTkEntry(
+            adv_grid,
+            textvariable=self.max_concurrent_var,
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            border_color=("#D4D4D8", "#3F3F46"),
+        )
+        self.max_concurrent_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(0, 4))
+
+        for entry_widget in (
+            self.base_url_entry,
+            self.temperature_entry,
+            self.request_timeout_entry,
+            self.batch_size_entry,
+            self.max_concurrent_entry,
+        ):
+            entry_widget.bind("<FocusOut>", lambda _e: self._commit_advanced_settings())
+            entry_widget.bind("<Return>", lambda _e: self._commit_advanced_settings())
+
+        self.strict_json_var = ctk.BooleanVar(value=bool(self.config.strict_json_mode))
+        self.strict_json_cb = ctk.CTkCheckBox(
+            self.advanced_card,
+            text=self.t("strict_json_mode_label"),
+            variable=self.strict_json_var,
+            command=self._on_strict_json_toggled,
+            font=ctk.CTkFont(size=12),
+            checkbox_width=18,
+            checkbox_height=18,
+            corner_radius=4,
+            border_width=2,
+            fg_color=("#18181B", "#FAFAFA"),
+            hover_color=("#27272A", "#E4E4E7"),
+            checkmark_color=("#FFFFFF", "#18181B"),
+            border_color=("#D4D4D8", "#52525B")
+        )
+        self.strict_json_cb.pack(anchor="w", padx=12, pady=(2, 10))
+
+        # --------------------------------------------------------------------
         # 5. Application Version & Updates
         # --------------------------------------------------------------------
         self.updates_group = ctk.CTkFrame(self.container, fg_color="transparent")
@@ -514,6 +683,102 @@ class SettingsView(ctk.CTkFrame):
         finally:
             self._suppress_key_trace = False
 
+    def _toggle_advanced_section(self) -> None:
+        self._advanced_expanded = not self._advanced_expanded
+        if self._advanced_expanded:
+            self.advanced_card.pack(fill="x", padx=4, pady=(0, 8))
+        else:
+            self.advanced_card.pack_forget()
+        key = "advanced_toggle_hide" if self._advanced_expanded else "advanced_toggle_show"
+        self.advanced_toggle_btn.configure(text=self.t(key))
+
+    def _sync_advanced_vars(self) -> None:
+        self._suppress_adv_trace = True
+        try:
+            provider = self.provider_var.get()
+            if getattr(self, "base_url_var", None) is not None:
+                self.base_url_var.set(self.config.base_urls.get(provider, ""))
+            if getattr(self, "temperature_var", None) is not None:
+                temp_str = "" if self.config.temperature is None else f"{self.config.temperature:g}"
+                self.temperature_var.set(temp_str)
+            if getattr(self, "request_timeout_var", None) is not None:
+                self.request_timeout_var.set(f"{self.config.request_timeout:g}")
+            if getattr(self, "batch_size_var", None) is not None:
+                self.batch_size_var.set(str(self.config.batch_size))
+            if getattr(self, "max_concurrent_var", None) is not None:
+                self.max_concurrent_var.set(str(self.config.max_concurrent_requests))
+            if getattr(self, "strict_json_var", None) is not None:
+                self.strict_json_var.set(bool(self.config.strict_json_mode))
+        finally:
+            self._suppress_adv_trace = False
+
+    def _on_base_url_changed(self, *_args) -> None:
+        if self._suppress_adv_trace or getattr(self, "base_url_var", None) is None:
+            return
+        provider = self.provider_var.get()
+        self.config.base_urls[provider] = self.base_url_var.get().strip()
+        self._adv_save_pending = True
+        if getattr(self, "_adv_save_after_id", None):
+            try:
+                self.after_cancel(self._adv_save_after_id)
+            except Exception:
+                pass
+        try:
+            self._adv_save_after_id = self.after(300, self._flush_adv_save)
+        except Exception:
+            self._adv_save_after_id = None
+
+    def _commit_advanced_settings(
+        self, normalize_display: bool = True, notify: bool = True
+    ) -> None:
+        if getattr(self, "_adv_save_after_id", None):
+            try:
+                self.after_cancel(self._adv_save_after_id)
+            except Exception:
+                pass
+            self._adv_save_after_id = None
+        provider = self.provider_var.get()
+        if getattr(self, "base_url_var", None) is not None:
+            self.config.base_urls[provider] = self.base_url_var.get().strip()
+        if getattr(self, "temperature_var", None) is not None:
+            self.config.temperature = _coerce_optional_float(
+                self.temperature_var.get(), 0.0, 2.0
+            )
+        if getattr(self, "request_timeout_var", None) is not None:
+            self.config.request_timeout = _coerce_float(
+                self.request_timeout_var.get(), 120.0, 5.0, 600.0
+            )
+        if getattr(self, "batch_size_var", None) is not None:
+            self.config.batch_size = _coerce_int(
+                self.batch_size_var.get(), 25, 1, 500
+            )
+        if getattr(self, "max_concurrent_var", None) is not None:
+            self.config.max_concurrent_requests = _coerce_int(
+                self.max_concurrent_var.get(), 2, 1, 20
+            )
+        if getattr(self, "strict_json_var", None) is not None:
+            self.config.strict_json_mode = bool(self.strict_json_var.get())
+        if normalize_display:
+            self._sync_advanced_vars()
+        self._adv_save_pending = False
+        self.config.save()
+        if notify:
+            self.on_save(self.config)
+
+    def _on_strict_json_toggled(self) -> None:
+        self._commit_advanced_settings(normalize_display=False, notify=True)
+
+    def _flush_adv_save(self) -> None:
+        if getattr(self, "_adv_save_after_id", None):
+            try:
+                self.after_cancel(self._adv_save_after_id)
+            except Exception:
+                pass
+            self._adv_save_after_id = None
+        if self._adv_save_pending:
+            self._adv_save_pending = False
+            self.config.save()
+
     def _flush_key_save(self) -> None:
         if getattr(self, "_key_save_after_id", None):
             try:
@@ -539,6 +804,7 @@ class SettingsView(ctk.CTkFrame):
         self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, "English"))
         self.theme_var.set(self._get_current_theme_display())
         self.auto_update_var.set(bool(self.config.auto_check_updates))
+        self._sync_advanced_vars()
         if not self._has_auto_fetched_on_open:
             self._has_auto_fetched_on_open = True
             self._schedule_model_autofetch(150)
@@ -568,6 +834,16 @@ class SettingsView(ctk.CTkFrame):
         self.theme_label_elem.configure(text=self.t("theme_mode"))
         self.theme_dropdown.configure(values=self._get_theme_display_names())
         self.theme_var.set(self._get_current_theme_display())
+        adv_toggle_key = "advanced_toggle_hide" if self._advanced_expanded else "advanced_toggle_show"
+        self.advanced_toggle_btn.configure(text=self.t(adv_toggle_key))
+        self.base_url_label.configure(text=self.t("base_url_label"))
+        self.base_url_entry.configure(placeholder_text=self.t("base_url_placeholder"))
+        self.temperature_label.configure(text=self.t("temperature_label"))
+        self.temperature_entry.configure(placeholder_text=self.t("temperature_placeholder"))
+        self.request_timeout_label.configure(text=self.t("request_timeout_label"))
+        self.batch_size_label.configure(text=self.t("batch_size_label"))
+        self.max_concurrent_label.configure(text=self.t("max_concurrent_label"))
+        self.strict_json_cb.configure(text=self.t("strict_json_mode_label"))
         self.updates_title_label.configure(text=self.t("updates_section_title"))
         self.version_label.configure(text=self.t("current_version_label", version=APP_VERSION))
         self.check_updates_btn.set_text(self.t("check_updates_btn"))
@@ -656,7 +932,18 @@ class SettingsView(ctk.CTkFrame):
 
             self.after(0, update_ui)
 
-        fetch_models_async(provider, key, on_done)
+        base_url = (
+            self.base_url_var.get().strip()
+            if getattr(self, "base_url_var", None) is not None
+            else ""
+        ) or self.config.get_effective_base_url(provider)
+        fetch_models_async(
+            provider,
+            key,
+            on_done,
+            base_url=base_url or None,
+            timeout=float(self.config.model_fetch_timeout),
+        )
 
     def _on_key_focus_out(self, _event=None):
         self._flush_key_save()
@@ -678,6 +965,8 @@ class SettingsView(ctk.CTkFrame):
 
         old_prov = self.config.active_provider
         self.config.api_keys[old_prov] = self.key_var.get().strip()
+        if getattr(self, "base_url_var", None) is not None:
+            self.config.base_urls[old_prov] = self.base_url_var.get().strip()
 
         self.config.active_provider = new_provider
         self.provider_var.set(new_provider)
@@ -686,6 +975,7 @@ class SettingsView(ctk.CTkFrame):
         self._apply_model_options(available_models, saved_model)
 
         self._set_key_var_silently(self.config.api_keys.get(new_provider, ""))
+        self._sync_advanced_vars()
         self.guide_text_label.configure(text=self._get_guide_text(new_provider))
         self.model_hint_label.configure(text=self.t("model_hint"), text_color="gray")
 
@@ -765,6 +1055,12 @@ class SettingsView(ctk.CTkFrame):
             )
             return
 
+        self._commit_advanced_settings(normalize_display=True, notify=False)
+        base_url = self.config.get_effective_base_url(provider) or None
+        timeout = float(self.config.request_timeout)
+        temperature = self.config.temperature
+        strict_json_mode = bool(self.config.strict_json_mode)
+
         self.test_conn_btn.start_loading(self.t("testing_connection"))
         self.test_conn_status.configure(
             text=self.t("testing_connection"),
@@ -780,7 +1076,14 @@ class SettingsView(ctk.CTkFrame):
             try:
                 from llm_manager import create_llm_client
 
-                client = create_llm_client(provider, key)
+                client = create_llm_client(
+                    provider,
+                    key,
+                    timeout=timeout,
+                    base_url=base_url,
+                    temperature=temperature,
+                    strict_json_mode=strict_json_mode,
+                )
                 res = client.generate_completion(
                     system_prompt="You are a ping test assistant. Reply with one word.",
                     user_prompt="Ping",
@@ -900,14 +1203,15 @@ class SettingsView(ctk.CTkFrame):
         self._fetch_request_id += 1
         self._test_conn_request_id += 1
         self._update_check_request_id += 1
-        for attr in ("_fetch_after_id", "_key_save_after_id"):
+        for attr in ("_fetch_after_id", "_key_save_after_id", "_adv_save_after_id"):
             after_id = getattr(self, attr, None)
             if after_id:
                 try:
                     self.after_cancel(after_id)
                 except Exception:
                     pass
-                if attr != "_key_save_after_id":
+                if attr not in ("_key_save_after_id", "_adv_save_after_id"):
                     setattr(self, attr, None)
         self._flush_key_save()
+        self._flush_adv_save()
         super().destroy()

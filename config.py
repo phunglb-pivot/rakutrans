@@ -13,17 +13,38 @@ from pathlib import Path
 from dataclasses import dataclass, asdict, field
 from typing import Dict, Optional, Union
 
-from model_fetcher import load_cached_models
-
 _CONFIG_IO_LOCK = threading.RLock()
 
 APP_NAME = "RakuTrans AI"
 APP_VERSION = "1.0.0"
+APP_EXECUTABLE_NAME = "RakuTrans"
+APP_BUNDLE_ID = "com.rakutrans.app"
 GITHUB_REPO = "phunglb-pivot/rakutrans"
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases"
 LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-CONFIG_DIR = Path.home() / ".rakutrans"
+
+
+def get_config_dir() -> Path:
+    """Returns the application data/config directory, honoring RAKUTRANS_HOME when set."""
+    env_home = (os.getenv("RAKUTRANS_HOME") or "").strip()
+    if env_home:
+        return Path(env_home).expanduser()
+    return Path.home() / ".rakutrans"
+
+
+CONFIG_DIR = get_config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
+_INITIAL_CONFIG_DIR = CONFIG_DIR
+_INITIAL_CONFIG_FILE = CONFIG_FILE
+
+
+def _resolve_config_file() -> Path:
+    """Resolves config.json honoring both test monkeypatches and runtime RAKUTRANS_HOME."""
+    if CONFIG_FILE != _INITIAL_CONFIG_FILE:
+        return CONFIG_FILE
+    if CONFIG_DIR != _INITIAL_CONFIG_DIR:
+        return CONFIG_DIR / "config.json"
+    return get_config_dir() / "config.json"
 
 UI_LANGUAGES = {
     "en": "English",
@@ -141,6 +162,8 @@ AI_PROVIDERS = {
     "Gemini": {
         "name": "Google Gemini",
         "env_key": "GEMINI_API_KEY",
+        "env_base_url_key": "GEMINI_BASE_URL",
+        "icon_name": "provider_gemini",
         "api_url_guide": "https://aistudio.google.com/app/apikey",
         "guide_key": "guide_gemini",
         "guide_text": "Get a free API key from Google AI Studio (aistudio.google.com)."
@@ -148,6 +171,8 @@ AI_PROVIDERS = {
     "OpenAI": {
         "name": "OpenAI (GPT)",
         "env_key": "OPENAI_API_KEY",
+        "env_base_url_key": "OPENAI_BASE_URL",
+        "icon_name": "provider_openai",
         "api_url_guide": "https://platform.openai.com/api-keys",
         "guide_key": "guide_openai",
         "guide_text": "Create an API key in your OpenAI Platform dashboard (platform.openai.com)."
@@ -155,6 +180,8 @@ AI_PROVIDERS = {
     "Claude": {
         "name": "Anthropic Claude",
         "env_key": "ANTHROPIC_API_KEY",
+        "env_base_url_key": "ANTHROPIC_BASE_URL",
+        "icon_name": "provider_claude",
         "api_url_guide": "https://console.anthropic.com/settings/keys",
         "guide_key": "guide_claude",
         "guide_text": "Generate an API key in your Anthropic Console (console.anthropic.com)."
@@ -163,6 +190,7 @@ AI_PROVIDERS = {
 
 def get_provider_models(provider: str) -> list[str]:
     """Returns live-fetched models for provider from local cache."""
+    from model_fetcher import load_cached_models
     return load_cached_models(provider)
 
 
@@ -208,6 +236,46 @@ def normalize_language_name(lang_name_or_code: Optional[str]) -> str:
     return query
 
 
+def _coerce_int(raw_val: object, default: int, min_val: int, max_val: int) -> int:
+    if raw_val is None or isinstance(raw_val, bool):
+        return default
+    if isinstance(raw_val, str) and not raw_val.strip():
+        return default
+    try:
+        parsed = int(raw_val)
+    except (TypeError, ValueError):
+        return default
+    return max(min_val, min(parsed, max_val))
+
+
+def _coerce_float(raw_val: object, default: float, min_val: float, max_val: float) -> float:
+    if raw_val is None or isinstance(raw_val, bool):
+        return default
+    if isinstance(raw_val, str) and not raw_val.strip():
+        return default
+    try:
+        parsed = float(raw_val)
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed:  # NaN guard
+        return default
+    return max(min_val, min(parsed, max_val))
+
+
+def _coerce_optional_float(raw_val: object, min_val: float, max_val: float) -> Optional[float]:
+    if raw_val is None or isinstance(raw_val, bool):
+        return None
+    if isinstance(raw_val, str) and not raw_val.strip():
+        return None
+    try:
+        parsed = float(raw_val)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed:
+        return None
+    return max(min_val, min(parsed, max_val))
+
+
 @dataclass
 class AppConfig:
     """Application configuration and state persistence."""
@@ -217,11 +285,24 @@ class AppConfig:
     api_keys: Dict[str, str] = field(default_factory=lambda: {
         prov: "" for prov in AI_PROVIDERS
     })
+    base_urls: Dict[str, str] = field(default_factory=lambda: {
+        prov: "" for prov in AI_PROVIDERS
+    })
     selected_models: Dict[str, str] = field(default_factory=lambda: {
         prov: "" for prov in AI_PROVIDERS
     })
-    batch_size: int = 60
+    temperature: Optional[float] = None
+    strict_json_mode: bool = True
+    request_timeout: float = 120.0
+    model_fetch_timeout: float = 30.0
+    batch_size: int = 25
+    batch_max_chars: int = 3500
+    section_max_chars: int = 3500
     max_concurrent_requests: int = 2
+    min_request_interval: float = 0.35
+    max_retries_general: int = 3
+    max_retries_rate_limit: int = 5
+    max_retries_format: int = 2
     target_language: str = DEFAULT_TARGET_LANGUAGE
     recent_target_languages: list[str] = field(default_factory=lambda: list(DEFAULT_RECENT_TARGET_LANGUAGES))
     source_language: Optional[str] = None
@@ -253,12 +334,28 @@ class AppConfig:
 
         return ""
 
+    def get_effective_base_url(self, provider: Optional[str] = None) -> str:
+        """Returns the configured custom base URL for provider, or falls back to env var."""
+        target_provider = provider or self.active_provider
+        user_url = (self.base_urls.get(target_provider) or "").strip()
+        if user_url:
+            return user_url
+
+        env_var = AI_PROVIDERS.get(target_provider, {}).get("env_base_url_key")
+        if env_var:
+            env_val = os.getenv(env_var)
+            if env_val is not None:
+                return env_val.strip()
+
+        return ""
+
     def get_active_model(self) -> str:
         """Returns the explicitly selected model for the active provider, or '' if unset."""
         return (self.selected_models.get(self.active_provider) or "").strip()
 
     def get_available_models(self, provider: Optional[str] = None) -> list[str]:
         """Returns cached/fresh available models for the given or active provider."""
+        from model_fetcher import load_cached_models
         prov = provider or self.active_provider
         return load_cached_models(prov)
 
@@ -267,7 +364,8 @@ class AppConfig:
         tmp_path: Optional[Path] = None
         try:
             with _CONFIG_IO_LOCK:
-                CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+                cfg_file = _resolve_config_file()
+                cfg_file.parent.mkdir(parents=True, exist_ok=True)
                 data = {
                     "ui_language": self.ui_language,
                     "theme_mode": self.theme_mode,
@@ -276,12 +374,26 @@ class AppConfig:
                         prov: str(self.api_keys.get(prov) or "")
                         for prov in AI_PROVIDERS
                     },
+                    "base_urls": {
+                        prov: str(self.base_urls.get(prov) or "")
+                        for prov in AI_PROVIDERS
+                    },
                     "selected_models": {
                         prov: str(self.selected_models.get(prov) or "")
                         for prov in AI_PROVIDERS
                     },
+                    "temperature": self.temperature,
+                    "strict_json_mode": bool(self.strict_json_mode),
+                    "request_timeout": float(self.request_timeout),
+                    "model_fetch_timeout": float(self.model_fetch_timeout),
                     "batch_size": self.batch_size,
+                    "batch_max_chars": self.batch_max_chars,
+                    "section_max_chars": self.section_max_chars,
                     "max_concurrent_requests": self.max_concurrent_requests,
+                    "min_request_interval": float(self.min_request_interval),
+                    "max_retries_general": self.max_retries_general,
+                    "max_retries_rate_limit": self.max_retries_rate_limit,
+                    "max_retries_format": self.max_retries_format,
                     "target_language": self.target_language,
                     "recent_target_languages": self.recent_target_languages,
                     "translation_options": asdict(self.translation_options),
@@ -294,7 +406,7 @@ class AppConfig:
                 fd, tmp_name = tempfile.mkstemp(
                     prefix=".config_",
                     suffix=".tmp",
-                    dir=str(CONFIG_FILE.parent),
+                    dir=str(cfg_file.parent),
                 )
                 tmp_path = Path(tmp_name)
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -305,7 +417,7 @@ class AppConfig:
                     os.chmod(tmp_path, 0o600)
                 except OSError:
                     pass
-                os.replace(str(tmp_path), str(CONFIG_FILE))
+                os.replace(str(tmp_path), str(cfg_file))
                 tmp_path = None
         except Exception as e:
             if tmp_path is not None and tmp_path.exists():
@@ -319,13 +431,14 @@ class AppConfig:
     def load(cls) -> "AppConfig":
         """Load settings from disk or return default config."""
         with _CONFIG_IO_LOCK:
-            if not CONFIG_FILE.exists():
+            cfg_file = _resolve_config_file()
+            if not cfg_file.exists():
                 config = cls()
                 config.save()
                 return config
 
             try:
-                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                with open(cfg_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if not isinstance(data, dict):
                     return cls()
@@ -356,6 +469,14 @@ class AppConfig:
                     for prov in AI_PROVIDERS
                 }
 
+                loaded_base_urls = data.get("base_urls", {})
+                if not isinstance(loaded_base_urls, dict):
+                    loaded_base_urls = {}
+                resolved_base_urls = {
+                    prov: str(loaded_base_urls.get(prov) or "").strip()
+                    for prov in AI_PROVIDERS
+                }
+
                 raw_provider = str(data.get("active_provider", "Gemini") or "Gemini")
                 active_provider = raw_provider if raw_provider in AI_PROVIDERS else "Gemini"
 
@@ -365,17 +486,20 @@ class AppConfig:
                 raw_theme = str(data.get("theme_mode", "dark") or "dark").lower()
                 theme_mode = raw_theme if raw_theme in ("dark", "light", "system") else "dark"
 
-                try:
-                    batch_size = max(1, int(data.get("batch_size", 60) or 60))
-                except (TypeError, ValueError):
-                    batch_size = 60
+                temperature = _coerce_optional_float(data.get("temperature"), 0.0, 2.0)
+                raw_strict_json = data.get("strict_json_mode", True)
+                strict_json_mode = raw_strict_json if isinstance(raw_strict_json, bool) else True
+                request_timeout = _coerce_float(data.get("request_timeout"), 120.0, 5.0, 600.0)
+                model_fetch_timeout = _coerce_float(data.get("model_fetch_timeout"), 30.0, 3.0, 120.0)
 
-                try:
-                    max_concurrent_requests = max(
-                        1, min(int(data.get("max_concurrent_requests", 2) or 2), 5)
-                    )
-                except (TypeError, ValueError):
-                    max_concurrent_requests = 2
+                batch_size = _coerce_int(data.get("batch_size"), 25, 1, 500)
+                batch_max_chars = _coerce_int(data.get("batch_max_chars"), 3500, 200, 100000)
+                section_max_chars = _coerce_int(data.get("section_max_chars"), 3500, 200, 100000)
+                max_concurrent_requests = _coerce_int(data.get("max_concurrent_requests"), 2, 1, 20)
+                min_request_interval = _coerce_float(data.get("min_request_interval"), 0.35, 0.0, 10.0)
+                max_retries_general = _coerce_int(data.get("max_retries_general"), 3, 1, 10)
+                max_retries_rate_limit = _coerce_int(data.get("max_retries_rate_limit"), 5, 1, 15)
+                max_retries_format = _coerce_int(data.get("max_retries_format"), 2, 1, 10)
 
                 raw_target = data.get("target_language", DEFAULT_TARGET_LANGUAGE)
                 normalized_target = normalize_language_name(
@@ -412,9 +536,20 @@ class AppConfig:
                     theme_mode=theme_mode,
                     active_provider=active_provider,
                     api_keys=resolved_keys,
+                    base_urls=resolved_base_urls,
                     selected_models=resolved_models,
+                    temperature=temperature,
+                    strict_json_mode=strict_json_mode,
+                    request_timeout=request_timeout,
+                    model_fetch_timeout=model_fetch_timeout,
                     batch_size=batch_size,
+                    batch_max_chars=batch_max_chars,
+                    section_max_chars=section_max_chars,
                     max_concurrent_requests=max_concurrent_requests,
+                    min_request_interval=min_request_interval,
+                    max_retries_general=max_retries_general,
+                    max_retries_rate_limit=max_retries_rate_limit,
+                    max_retries_format=max_retries_format,
                     target_language=normalized_target,
                     recent_target_languages=recents,
                     source_language=source_language,

@@ -561,6 +561,46 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.app._update_button_states("idle_no_file")
             self.app._refresh_status_text()
 
+    def test_bilingual_checkbox_enabled_only_for_xlsx(self):
+        """bilingual_cb stays enabled only for .xlsx (or no file) and disabled for .docx/.pdf/.txt; worker clamps non-.xlsx."""
+        from pathlib import Path
+        from unittest.mock import patch
+        from translator_registry import TranslatorRegistry
+
+        prev_bilingual = self.app.config.translation_options.bilingual_mode
+        try:
+            self.app.current_screen = "main"
+            self.app._on_file_selected(str(Path(self._tmp_dir.name) / "sheet.xlsx"))
+            self.assertEqual(self.app.bilingual_cb.cget("state"), "normal")
+
+            for non_xlsx in ("report.docx", "slides.pptx", "doc.pdf", "notes.txt", "README.md"):
+                self.app._on_file_selected(str(Path(self._tmp_dir.name) / non_xlsx))
+                self.assertEqual(
+                    self.app.bilingual_cb.cget("state"),
+                    "disabled",
+                    f"Expected bilingual_cb disabled for {non_xlsx}",
+                )
+
+            # Worker also strips bilingual_mode=True when translating non-.xlsx
+            self.app.config.translation_options.bilingual_mode = True
+            seen = {}
+
+            class _FakeDocxTr:
+                def process_file(self, **kwargs):
+                    seen["bilingual"] = kwargs["options"].bilingual_mode
+                    return str(Path(self._tmp_dir.name) / "report_vi.docx") if False else "out.docx"
+
+            fake_docx = Path(self._tmp_dir.name) / "report.docx"
+            fake_docx.write_bytes(b"PK")
+            cancel_ev = __import__("threading").Event()
+            with patch.object(TranslatorRegistry, "create_translator", return_value=_FakeDocxTr()), \
+                 patch.object(self.app, "_safe_after"):
+                self.app._run_translation_worker(str(fake_docx), "Vietnamese", cancel_ev)
+            self.assertFalse(seen["bilingual"])
+        finally:
+            self.app.config.translation_options.bilingual_mode = prev_bilingual
+            self.app._on_file_selected("")
+
 
 if __name__ == "__main__":
     unittest.main()

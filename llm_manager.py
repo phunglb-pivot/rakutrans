@@ -5,6 +5,7 @@ Features strict indexed JSON batching, automatic batch splitting on structural m
 robust retries with exponential backoff, and error handling.
 """
 
+import inspect
 import json
 import random
 import re
@@ -638,9 +639,19 @@ class GeminiClient(BaseLLMClient):
         "IMAGE_RECITATION",
     })
 
-    def __init__(self, api_key: str, timeout: float = 120.0):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 120.0,
+        base_url: Optional[str] = None,
+        temperature: Optional[float] = None,
+        strict_json_mode: bool = True,
+    ):
         self.api_key = api_key
         self.timeout = timeout
+        self.base_url = (base_url or "").strip()
+        self.temperature = temperature
+        self.strict_json_mode = bool(strict_json_mode)
         self._lock = threading.Lock()
         self._genai_client = None
 
@@ -651,12 +662,26 @@ class GeminiClient(BaseLLMClient):
             from google import genai
             from google.genai import types
 
-            http_options = types.HttpOptions(
-                timeout=int(self.timeout * 1000),
-                retry_options=types.HttpRetryOptions(attempts=1),
-            )
+            http_kwargs: Dict[str, Any] = {
+                "timeout": int(self.timeout * 1000),
+                "retry_options": types.HttpRetryOptions(attempts=1),
+            }
+            if self.base_url:
+                http_kwargs["base_url"] = self.base_url
+            http_options = types.HttpOptions(**http_kwargs)
             self._genai_client = genai.Client(api_key=self.api_key, http_options=http_options)
             return self._genai_client
+
+    def _resolve_temperature(self, model_name: str) -> Optional[float]:
+        """Returns explicitly configured temperature clamped to API-reported max_temperature if known."""
+        if self.temperature is None:
+            return None
+        temp = max(0.0, float(self.temperature))
+        meta = get_model_metadata("Gemini", model_name)
+        max_temp = meta.get("max_temperature")
+        if isinstance(max_temp, (int, float)) and not isinstance(max_temp, bool) and max_temp > 0:
+            temp = min(temp, float(max_temp))
+        return temp
 
     @classmethod
     def _validate_gemini_response(cls, response: Any) -> str:
@@ -695,12 +720,15 @@ class GeminiClient(BaseLLMClient):
         from google.genai import types
 
         client = self._get_genai_client()
-        config = types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            response_mime_type="application/json" if is_json else "text/plain",
-            temperature=0.2,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        )
+        cfg_kwargs: Dict[str, Any] = {
+            "system_instruction": system_prompt,
+            "response_mime_type": "application/json" if (is_json and self.strict_json_mode) else "text/plain",
+            "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
+        }
+        resolved_temp = self._resolve_temperature(model_name)
+        if resolved_temp is not None:
+            cfg_kwargs["temperature"] = resolved_temp
+        config = types.GenerateContentConfig(**cfg_kwargs)
         response = client.models.generate_content(
             model=model_name,
             contents=user_prompt,
@@ -736,9 +764,19 @@ class GeminiClient(BaseLLMClient):
 class OpenAIClient(BaseLLMClient):
     """Direct OpenAI Chat Completions API client without parameter guessing or 400 retry loops."""
 
-    def __init__(self, api_key: str, timeout: float = 120.0):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 120.0,
+        base_url: Optional[str] = None,
+        temperature: Optional[float] = None,
+        strict_json_mode: bool = True,
+    ):
         self.api_key = api_key
         self.timeout = timeout
+        self.base_url = (base_url or "").strip()
+        self.temperature = temperature
+        self.strict_json_mode = bool(strict_json_mode)
         self._lock = threading.Lock()
         self._client = None
 
@@ -746,7 +784,14 @@ class OpenAIClient(BaseLLMClient):
         with self._lock:
             if self._client is None:
                 from openai import OpenAI
-                self._client = OpenAI(api_key=self.api_key, timeout=self.timeout, max_retries=0)
+                client_kwargs: Dict[str, Any] = {
+                    "api_key": self.api_key,
+                    "timeout": self.timeout,
+                    "max_retries": 0,
+                }
+                if self.base_url:
+                    client_kwargs["base_url"] = self.base_url
+                self._client = OpenAI(**client_kwargs)
             return self._client
 
     def generate_completion(
@@ -774,8 +819,10 @@ class OpenAIClient(BaseLLMClient):
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if is_json:
+        if is_json and self.strict_json_mode:
             req_kwargs["response_format"] = {"type": "json_object"}
+        if self.temperature is not None:
+            req_kwargs["temperature"] = float(self.temperature)
 
         try:
             response = client.chat.completions.create(**req_kwargs)
@@ -803,9 +850,17 @@ class OpenAIClient(BaseLLMClient):
 class ClaudeClient(BaseLLMClient):
     """Direct Anthropic Claude API client using official ModelInfo limits and standard SDK calls."""
 
-    def __init__(self, api_key: str, timeout: float = 120.0):
+    def __init__(
+        self,
+        api_key: str,
+        timeout: float = 120.0,
+        base_url: Optional[str] = None,
+        temperature: Optional[float] = None,
+    ):
         self.api_key = api_key
         self.timeout = timeout
+        self.base_url = (base_url or "").strip()
+        self.temperature = temperature
         self._lock = threading.Lock()
         self._client = None
         self._model_max_tokens: Dict[str, int] = {}
@@ -814,7 +869,14 @@ class ClaudeClient(BaseLLMClient):
         with self._lock:
             if self._client is None:
                 import anthropic
-                self._client = anthropic.Anthropic(api_key=self.api_key, timeout=self.timeout, max_retries=0)
+                client_kwargs: Dict[str, Any] = {
+                    "api_key": self.api_key,
+                    "timeout": self.timeout,
+                    "max_retries": 0,
+                }
+                if self.base_url:
+                    client_kwargs["base_url"] = self.base_url
+                self._client = anthropic.Anthropic(**client_kwargs)
             return self._client
 
     def _resolve_model_max_tokens(self, client: Any, model_name: str) -> int:
@@ -885,13 +947,20 @@ class ClaudeClient(BaseLLMClient):
         client = self._get_client()
         try:
             max_tokens = self._resolve_model_max_tokens(client, target_model)
-            message = client.messages.create(
-                model=target_model,
-                max_tokens=max_tokens,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_prompt}],
-                timeout=self.timeout,
-            )
+            create_kwargs: Dict[str, Any] = {
+                "model": target_model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}],
+                "timeout": self.timeout,
+            }
+            if self.temperature is not None:
+                try:
+                    if "temperature" in inspect.signature(client.messages.create).parameters:
+                        create_kwargs["temperature"] = float(self.temperature)
+                except (TypeError, ValueError):
+                    pass
+            message = client.messages.create(**create_kwargs)
         except LLMError:
             raise
         except Exception as e:
@@ -906,12 +975,27 @@ class ClaudeClient(BaseLLMClient):
         return self._extract_message_text(message)
 
 
-def create_llm_client(provider: str, api_key: str, timeout: float = 120.0) -> BaseLLMClient:
+def create_llm_client(
+    provider: str,
+    api_key: str,
+    timeout: float = 120.0,
+    base_url: Optional[str] = None,
+    temperature: Optional[float] = None,
+    strict_json_mode: bool = True,
+) -> BaseLLMClient:
     """Shared factory creating the provider client for translation or connection tests."""
+    if provider not in AI_PROVIDERS:
+        raise LLMError(f"Unsupported AI provider: {provider}")
     factories: Dict[str, Callable[[str], BaseLLMClient]] = {
-        "Gemini": lambda k: GeminiClient(k, timeout=timeout),
-        "OpenAI": lambda k: OpenAIClient(k, timeout=timeout),
-        "Claude": lambda k: ClaudeClient(k, timeout=timeout),
+        "Gemini": lambda k: GeminiClient(
+            k, timeout=timeout, base_url=base_url, temperature=temperature, strict_json_mode=strict_json_mode
+        ),
+        "OpenAI": lambda k: OpenAIClient(
+            k, timeout=timeout, base_url=base_url, temperature=temperature, strict_json_mode=strict_json_mode
+        ),
+        "Claude": lambda k: ClaudeClient(
+            k, timeout=timeout, base_url=base_url, temperature=temperature
+        ),
     }
     factory = factories.get(provider)
     if factory is None:
@@ -934,11 +1018,16 @@ class LLMManager:
         self.config = config
         self._rate_lock = threading.Lock()
         self._client_lock = threading.Lock()
-        self._cached_client_key: Optional[Tuple[str, str]] = None
+        self._cached_client_key: Optional[Tuple[Any, ...]] = None
         self._cached_client: Optional[BaseLLMClient] = None
         self._cooldown_until: float = 0.0
         self._next_dispatch_at: float = 0.0
-        self._min_interval: float = 0.35
+        raw_interval = getattr(config, "min_request_interval", 0.35)
+        try:
+            self._base_min_interval: float = max(0.0, float(0.35 if raw_interval is None else raw_interval))
+        except (TypeError, ValueError):
+            self._base_min_interval = 0.35
+        self._min_interval: float = self._base_min_interval
 
     def _sleep_with_cancel(
         self,
@@ -1000,12 +1089,15 @@ class LLMManager:
         with self._rate_lock:
             now = time.monotonic()
             self._cooldown_until = max(self._cooldown_until, now + delay_seconds)
-            self._min_interval = min(4.0, max(1.0, self._min_interval * 2.0))
+            self._min_interval = min(
+                max(4.0, self._base_min_interval),
+                max(max(1.0, self._base_min_interval), self._min_interval * 2.0),
+            )
 
     def _record_success(self) -> None:
         """Gradually restore dispatch pacing after successful API responses."""
         with self._rate_lock:
-            self._min_interval = max(0.35, self._min_interval * 0.85)
+            self._min_interval = max(self._base_min_interval, self._min_interval * 0.85)
 
     @staticmethod
     def _compute_backoff(attempt: int, err: Exception) -> Tuple[float, bool]:
@@ -1028,9 +1120,22 @@ class LLMManager:
         error_context: str = "translate batch",
     ) -> T:
         """Execute an LLM operation with 429-aware shared cooldown and separate retry budgets."""
-        general_limit = max(1, max_retries) if max_retries is not None else 3
-        rate_limit_max = max(1, max_retries) if max_retries is not None else 5
-        format_limit = min(general_limit, 2) if max_retries != 1 else 1
+        try:
+            cfg_general = max(1, int(getattr(self.config, "max_retries_general", 3) or 3))
+        except (TypeError, ValueError):
+            cfg_general = 3
+        try:
+            cfg_rate = max(1, int(getattr(self.config, "max_retries_rate_limit", 5) or 5))
+        except (TypeError, ValueError):
+            cfg_rate = 5
+        try:
+            cfg_format = max(1, int(getattr(self.config, "max_retries_format", 2) or 2))
+        except (TypeError, ValueError):
+            cfg_format = 2
+
+        general_limit = max(1, max_retries) if max_retries is not None else cfg_general
+        rate_limit_max = max(1, max_retries) if max_retries is not None else cfg_rate
+        format_limit = min(general_limit, cfg_format) if max_retries != 1 else 1
         total_limit = max_retries if max_retries is not None else (rate_limit_max + general_limit)
 
         rate_attempts = 0
@@ -1129,18 +1234,37 @@ class LLMManager:
     def _get_client(self) -> BaseLLMClient:
         provider = self.config.active_provider
         api_key = self.config.get_effective_api_key(provider)
-        cache_key = (provider, api_key)
+        base_url = (
+            self.config.get_effective_base_url(provider)
+            if hasattr(self.config, "get_effective_base_url")
+            else ""
+        )
+        raw_timeout = getattr(self.config, "request_timeout", 120.0)
+        try:
+            timeout = max(5.0, float(120.0 if raw_timeout is None else raw_timeout))
+        except (TypeError, ValueError):
+            timeout = 120.0
+        temperature = getattr(self.config, "temperature", None)
+        strict_json_mode = bool(getattr(self.config, "strict_json_mode", True))
+        cache_key = (provider, api_key, base_url, timeout, temperature, strict_json_mode)
 
         with self._client_lock:
             if self._cached_client is not None and self._cached_client_key == cache_key:
                 return self._cached_client
 
-            client = create_llm_client(provider, api_key)
+            client = create_llm_client(
+                provider,
+                api_key,
+                timeout=timeout,
+                base_url=base_url or None,
+                temperature=temperature,
+                strict_json_mode=strict_json_mode,
+            )
             self._cached_client = client
             self._cached_client_key = cache_key
             with self._rate_lock:
                 self._cooldown_until = 0.0
-                self._min_interval = 0.35
+                self._min_interval = self._base_min_interval
             return client
 
     @staticmethod
@@ -1271,18 +1395,24 @@ class LLMManager:
 
         options = options or self.config.translation_options
 
-        MAX_SAFE_BATCH_ITEMS = 25
-        MAX_SAFE_BATCH_CHARS = 3500
+        try:
+            max_batch_items = max(1, int(getattr(self.config, "batch_size", 25) or 25))
+        except (TypeError, ValueError):
+            max_batch_items = 25
+        try:
+            max_batch_chars = max(200, int(getattr(self.config, "batch_max_chars", 3500) or 3500))
+        except (TypeError, ValueError):
+            max_batch_chars = 3500
 
         total_chars = sum(len(t) for t in texts)
-        if len(texts) > MAX_SAFE_BATCH_ITEMS or total_chars > MAX_SAFE_BATCH_CHARS:
+        if len(texts) > max_batch_items or total_chars > max_batch_chars:
             if len(texts) > 1:
                 sub_batches: List[List[str]] = []
                 curr_sub: List[str] = []
                 curr_chars = 0
                 for t in texts:
                     t_len = len(t)
-                    if curr_sub and (len(curr_sub) >= MAX_SAFE_BATCH_ITEMS or (curr_chars + t_len > MAX_SAFE_BATCH_CHARS)):
+                    if curr_sub and (len(curr_sub) >= max_batch_items or (curr_chars + t_len > max_batch_chars)):
                         sub_batches.append(curr_sub)
                         curr_sub = [t]
                         curr_chars = t_len

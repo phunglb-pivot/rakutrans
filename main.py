@@ -17,7 +17,7 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from config import AI_PROVIDERS, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
+from config import AI_PROVIDERS, APP_NAME, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
 
 
 def run_cli_translation(
@@ -79,14 +79,6 @@ def run_cli_translation(
         )
         sys.exit(1)
 
-    llm_manager = LLMManager(config)
-    options = TranslationOptions(
-        keep_it_terms=keep_it,
-        append_original_words=append_source,
-        custom_context=custom_context,
-        bilingual_mode=bilingual,
-    )
-
     path = Path(file_path)
     if not path.exists():
         print(f"Error: File '{file_path}' does not exist.")
@@ -97,8 +89,23 @@ def run_cli_translation(
         print(f"Error: Unsupported file format '{path.suffix}'. Supported formats: {supported}")
         sys.exit(1)
 
+    if bilingual and not TranslatorRegistry.supports_bilingual(path):
+        print(
+            "Note: Bilingual mode is only supported for .xlsx files; "
+            "proceeding without bilingual output."
+        )
+        bilingual = False
+
+    llm_manager = LLMManager(config)
+    options = TranslationOptions(
+        keep_it_terms=keep_it,
+        append_original_words=append_source,
+        custom_context=custom_context,
+        bilingual_mode=bilingual,
+    )
+
     src_label = src_lang if src_lang else "Auto-detect mixed"
-    print("=== RakuTrans AI CLI ===")
+    print(f"=== {APP_NAME} CLI ===")
     print(f"File: {file_path}")
     print(f"Provider: {active_provider} ({active_model})")
     print(f"Target Language: {tgt_lang} (Source: {src_label})")

@@ -90,6 +90,16 @@ class DropZone(ctk.CTkFrame):
         self._setup_ui()
         self._setup_dnd()
 
+    def _sorted_supported_extensions(self) -> List[str]:
+        return sorted({e.lower() for e in self._supported_extensions_fn()})
+
+    def _format_supported_extensions(self) -> str:
+        return ", ".join(self._sorted_supported_extensions())
+
+    def _format_supported_patterns(self) -> str:
+        exts = self._sorted_supported_extensions()
+        return " ".join(f"*{ext}" for ext in exts) or "*.*"
+
     def _setup_ui(self):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -109,7 +119,7 @@ class DropZone(ctk.CTkFrame):
         # Title prompt
         self.title_label = ctk.CTkLabel(
             self.inner_frame,
-            text=self.t("drag_drop_title"),
+            text=self.t("drag_drop_title", formats=self._format_supported_extensions()),
             font=ctk.CTkFont(size=15, weight="bold"),
             text_color=("#18181B", "#FAFAFA"),
             cursor="hand2"
@@ -239,7 +249,11 @@ class DropZone(ctk.CTkFrame):
             self._border_reset_after_id = None
 
         msg_key = "err_unsupported_file" if reason == "unsupported" else "err_no_file"
-        msg = self.t(msg_key)
+        msg = (
+            self.t(msg_key, formats=self._format_supported_extensions())
+            if reason == "unsupported"
+            else self.t(msg_key)
+        )
         if not self.selected_file:
             self.inspector_label.configure(text=msg, text_color=("#DC2626", "#EF4444"))
             self.inspector_label.pack(pady=(6, 2))
@@ -260,9 +274,9 @@ class DropZone(ctk.CTkFrame):
     def _browse_file(self):
         if not self._enabled:
             return
-        supported_exts = {e.lower() for e in self._supported_extensions_fn()}
-        all_pattern = " ".join(f"*{ext}" for ext in sorted(supported_exts)) or "*.*"
-        filetypes = [(self.t("filetype_supported"), all_pattern)]
+        supported_exts = set(self._sorted_supported_extensions())
+        all_pattern = self._format_supported_patterns()
+        filetypes = [(self.t("filetype_supported", patterns=all_pattern), all_pattern)]
 
         def _filter_exts(label_key: str, exts: list[str]):
             allowed = [f"*{e}" for e in exts if e in supported_exts]
@@ -429,7 +443,7 @@ class DropZone(ctk.CTkFrame):
         self._last_inspect_suffix = ""
         self.selected_file = None
         self.icon_label.configure(text="", image=get_icon("folder_hero", "default", 44))
-        self.title_label.configure(text=self.t("drag_drop_title"))
+        self.title_label.configure(text=self.t("drag_drop_title", formats=self._format_supported_extensions()))
         self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
         self.file_info_label.pack_forget()
         self.inspector_label.pack_forget()
@@ -443,7 +457,7 @@ class DropZone(ctk.CTkFrame):
         self.browse_btn.set_text(self.t("browse_button"))
         self.clear_btn.set_text(self.t("clear_file"))
         if not self.selected_file:
-            self.title_label.configure(text=self.t("drag_drop_title"))
+            self.title_label.configure(text=self.t("drag_drop_title", formats=self._format_supported_extensions()))
             self.subtitle_label.configure(text=self.t("drag_drop_subtitle"))
         elif self.selected_file:
             path = Path(self.selected_file)

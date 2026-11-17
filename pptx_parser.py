@@ -447,7 +447,7 @@ class PptxTranslator(BaseTranslator):
         )
 
         if progress_callback:
-            progress_callback(5, 100, "Reading PowerPoint presentation...")
+            progress_callback(5, 100, self._t("progress_reading_pptx"))
 
         prs = Presentation(str(src))
         paragraphs_to_process: List[_Paragraph] = [
@@ -460,7 +460,7 @@ class PptxTranslator(BaseTranslator):
             )
             saved_path = safe_save_file(lambda p: prs.save(str(p)), out_path)
             if progress_callback:
-                progress_callback(100, 100, "Presentation contains no text to translate.")
+                progress_callback(100, 100, self._t("progress_no_translatable_pptx"))
             return str(saved_path)
 
         prepared_items = [_prepare_pptx_paragraph_item(p) for p in paragraphs_to_process]
@@ -468,7 +468,7 @@ class PptxTranslator(BaseTranslator):
         total_unique = len(unique_texts)
 
         if progress_callback:
-            progress_callback(10, 100, f"Found {total_unique} unique text blocks. Checking cache...")
+            progress_callback(10, 100, self._t("progress_found_blocks", count=total_unique))
 
         translation_map = self.translate_unique_texts(
             unique_texts=unique_texts,
@@ -484,7 +484,7 @@ class PptxTranslator(BaseTranslator):
             raise InterruptedError("Translation cancelled by user.")
 
         if progress_callback:
-            progress_callback(90, 100, "Applying translations to PowerPoint presentation...")
+            progress_callback(90, 100, self._t("progress_applying_pptx"))
 
         for p, query, groups, prefix, suffix in prepared_items:
             translated = translation_map.get(query)
@@ -494,7 +494,7 @@ class PptxTranslator(BaseTranslator):
                 )
 
         if progress_callback:
-            progress_callback(95, 100, "Saving translated presentation...")
+            progress_callback(95, 100, self._t("progress_saving_pptx"))
 
         out_path = get_smart_output_path(
             source_path=src,
@@ -505,6 +505,6 @@ class PptxTranslator(BaseTranslator):
         saved_path = safe_save_file(lambda p: prs.save(str(p)), out_path)
 
         if progress_callback:
-            progress_callback(100, 100, f"Saved: {saved_path.name}")
+            progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
         return str(saved_path)

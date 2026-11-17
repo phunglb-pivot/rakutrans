@@ -36,9 +36,6 @@ _P_TAG = f"{_W_NS}p"
 _T_TAG = f"{_W_NS}t"
 _TAB_TAG = f"{_W_NS}tab"
 _BR_TAG = f"{_W_NS}br"
-_DRAWING_TAG = f"{_W_NS}drawing"
-_PICT_TAG = f"{_W_NS}pict"
-_SECTPR_TAG = f"{_W_NS}sectPr"
 
 
 def _should_translate(text: Optional[str]) -> bool:
@@ -530,10 +527,9 @@ class DocxTranslator(BaseTranslator):
         target_lang, source_lang, options = self._resolve_params(
             target_lang, source_lang, options, kwargs
         )
-        is_bilingual = bool(getattr(options, "bilingual_mode", False))
 
         if progress_callback:
-            progress_callback(5, 100, "Reading Word document structure...")
+            progress_callback(5, 100, self._t("progress_reading_docx"))
 
         doc = Document(str(src))
         paragraphs_to_process: List[Paragraph] = [
@@ -544,12 +540,11 @@ class DocxTranslator(BaseTranslator):
             out_path = get_smart_output_path(
                 src,
                 target_lang=target_lang,
-                is_bilingual=is_bilingual,
                 custom_output_path=custom_output_path,
             )
             saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)
             if progress_callback:
-                progress_callback(100, 100, "Document contains no text to translate.")
+                progress_callback(100, 100, self._t("progress_no_translatable_doc"))
             return str(saved_path)
 
         prepared_items = [_prepare_paragraph_item(p) for p in paragraphs_to_process]
@@ -557,7 +552,7 @@ class DocxTranslator(BaseTranslator):
         total_unique = len(unique_texts)
 
         if progress_callback:
-            progress_callback(10, 100, f"Found {total_unique} unique text blocks. Checking cache...")
+            progress_callback(10, 100, self._t("progress_found_blocks", count=total_unique))
 
         translation_map = self.translate_unique_texts(
             unique_texts=unique_texts,
@@ -573,39 +568,25 @@ class DocxTranslator(BaseTranslator):
             raise InterruptedError("Translation cancelled by user.")
 
         if progress_callback:
-            progress_callback(90, 100, "Applying translations to Word document...")
+            progress_callback(90, 100, self._t("progress_applying_docx"))
 
         for p, query, groups, prefix, suffix in prepared_items:
             translated = translation_map.get(query)
             if translated is not None:
-                if is_bilingual:
-                    orig_clone = copy.deepcopy(p._p)
-                    for tag_rm in (_DRAWING_TAG, _PICT_TAG, _SECTPR_TAG):
-                        for node in orig_clone.findall(f".//{tag_rm}"):
-                            parent = node.getparent()
-                            if parent is not None:
-                                parent.remove(node)
-                    for br in orig_clone.findall(f".//{_BR_TAG}"):
-                        if _is_structural_break(br):
-                            parent = br.getparent()
-                            if parent is not None:
-                                parent.remove(br)
-                    p._p.addprevious(orig_clone)
                 _apply_paragraph_translation(p, translated, groups=groups, prefix=prefix, suffix=suffix)
 
         if progress_callback:
-            progress_callback(95, 100, "Saving translated Word document...")
+            progress_callback(95, 100, self._t("progress_saving_docx"))
 
         out_path = get_smart_output_path(
             source_path=src,
             target_lang=target_lang,
             target_format=".docx",
-            is_bilingual=is_bilingual,
             custom_output_path=custom_output_path,
         )
         saved_path = safe_save_file(lambda p: doc.save(str(p)), out_path)
 
         if progress_callback:
-            progress_callback(100, 100, f"Saved: {saved_path.name}")
+            progress_callback(100, 100, self._t("progress_saved_file", filename=saved_path.name))
 
         return str(saved_path)

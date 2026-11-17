@@ -152,13 +152,46 @@ class TestUpdateChecker(unittest.TestCase):
         self.assertIn("[InstallDelete]", iss_text)
         self.assertIn('Name: "{app}\\_internal"', iss_text)
 
-        # 2. PyInstaller spec syncs APP_VERSION & Info.plist fields for macOS bundle
+        # 2. PyInstaller spec syncs config metadata, Info.plist fields, and covers requirements.txt packages
+        from config import APP_BUNDLE_ID, APP_EXECUTABLE_NAME, APP_NAME
+
         spec_text = (root / "RakuTrans.spec").read_text(encoding="utf-8")
         ast.parse(spec_text)  # Must remain valid Python syntax
+        self.assertIn("APP_EXECUTABLE_NAME", spec_text)
+        self.assertIn("APP_BUNDLE_ID", spec_text)
         self.assertIn("CFBundleShortVersionString", spec_text)
         self.assertIn("CFBundleVersion", spec_text)
         self.assertIn("NSHighResolutionCapable", spec_text)
-        self.assertIn(APP_VERSION, (root / "config.py").read_text(encoding="utf-8"))
+        cfg_text = (root / "config.py").read_text(encoding="utf-8")
+        self.assertIn(APP_VERSION, cfg_text)
+        self.assertIn(APP_NAME, cfg_text)
+        self.assertIn(APP_EXECUTABLE_NAME, cfg_text)
+        self.assertIn(APP_BUNDLE_ID, cfg_text)
+
+        req_pkg_to_spec_token = {
+            "customtkinter": "customtkinter",
+            "tkinterdnd2": "tkinterdnd2",
+            "pillow": "PIL",
+            "openpyxl": "openpyxl",
+            "markitdown": "markitdown",
+            "python-docx": "docx",
+            "python-pptx": "pptx",
+            "pymupdf": "pymupdf",
+            "pdf2docx": "pdf2docx",
+            "pypdf": "pypdf",
+            "reportlab": "reportlab",
+            "google-genai": "google.genai",
+            "openai": "openai",
+            "anthropic": "anthropic",
+        }
+        req_lines = [
+            line.split(">=")[0].split("==")[0].strip().lower()
+            for line in (root / "requirements.txt").read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        for req_pkg in req_lines:
+            self.assertIn(req_pkg, req_pkg_to_spec_token)
+            self.assertIn(req_pkg_to_spec_token[req_pkg], spec_text)
 
         # 3. GitHub Actions release workflow exists and references real build artifacts
         wf_path = root / ".github" / "workflows" / "release.yml"

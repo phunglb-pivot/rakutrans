@@ -14,11 +14,24 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-CACHE_DIR = Path.home() / ".rakutrans"
+from config import AI_PROVIDERS, get_config_dir
+
+CACHE_DIR = get_config_dir()
 MODELS_CACHE_FILE = CACHE_DIR / "models_cache.json"
+_INITIAL_CACHE_DIR = CACHE_DIR
+_INITIAL_MODELS_CACHE_FILE = MODELS_CACHE_FILE
 _CACHE_LOCK = threading.RLock()
 
-SUPPORTED_PROVIDERS = ("Gemini", "OpenAI", "Claude")
+SUPPORTED_PROVIDERS = tuple(AI_PROVIDERS.keys())
+
+
+def _resolve_models_cache_file() -> Path:
+    """Resolves models_cache.json honoring both test monkeypatches and runtime RAKUTRANS_HOME."""
+    if MODELS_CACHE_FILE != _INITIAL_MODELS_CACHE_FILE:
+        return MODELS_CACHE_FILE
+    if CACHE_DIR != _INITIAL_CACHE_DIR:
+        return CACHE_DIR / "models_cache.json"
+    return get_config_dir() / "models_cache.json"
 
 
 def _to_timestamp(value: Any) -> float:
@@ -57,10 +70,11 @@ def _is_past_date(date_str: Optional[str]) -> bool:
 def _read_cache_data() -> Dict[str, Any]:
     """Reads the local models cache JSON safely under lock."""
     with _CACHE_LOCK:
-        if not MODELS_CACHE_FILE.exists():
+        cache_file = _resolve_models_cache_file()
+        if not cache_file.exists():
             return {}
         try:
-            with open(MODELS_CACHE_FILE, "r", encoding="utf-8") as f:
+            with open(cache_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 return data if isinstance(data, dict) else {}
         except Exception as e:
@@ -73,11 +87,12 @@ def _write_cache_data(data: Dict[str, Any]) -> None:
     tmp_path: Optional[Path] = None
     try:
         with _CACHE_LOCK:
-            MODELS_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            cache_file = _resolve_models_cache_file()
+            cache_file.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp_name = tempfile.mkstemp(
                 prefix=".models_cache_",
                 suffix=".tmp",
-                dir=str(MODELS_CACHE_FILE.parent),
+                dir=str(cache_file.parent),
             )
             tmp_path = Path(tmp_name)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -88,7 +103,7 @@ def _write_cache_data(data: Dict[str, Any]) -> None:
                 os.chmod(tmp_path, 0o600)
             except OSError:
                 pass
-            os.replace(str(tmp_path), str(MODELS_CACHE_FILE))
+            os.replace(str(tmp_path), str(cache_file))
             tmp_path = None
     except Exception as e:
         if tmp_path is not None and tmp_path.exists():
@@ -211,23 +226,39 @@ def _extract_gemini_model_meta(model_obj: Any) -> Dict[str, Any]:
     return meta
 
 
-def _build_gemini_client(api_key: str, timeout_s: float = 30.0):
+def _build_gemini_client(
+    api_key: str,
+    timeout_s: float = 30.0,
+    base_url: Optional[str] = None,
+):
     """Instantiates google.genai.Client with explicit timeout and single-attempt HTTP retry options."""
     from google import genai
     from google.genai import types
 
-    http_options = types.HttpOptions(
-        timeout=int(timeout_s * 1000),
-        retry_options=types.HttpRetryOptions(attempts=1),
-    )
+    http_kwargs: Dict[str, Any] = {
+        "timeout": int(timeout_s * 1000),
+        "retry_options": types.HttpRetryOptions(attempts=1),
+    }
+    clean_url = (base_url or "").strip()
+    if clean_url:
+        http_kwargs["base_url"] = clean_url
+    http_options = types.HttpOptions(**http_kwargs)
     return genai.Client(api_key=api_key, http_options=http_options)
 
 
-def _fetch_gemini_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+def _fetch_gemini_models(
+    api_key: str,
+    timeout_s: float = 30.0,
+    base_url: Optional[str] = None,
+) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     models: List[str] = []
     meta_map: Dict[str, Dict[str, Any]] = {}
 
-    client = _build_gemini_client(api_key, timeout_s=30.0)
+    clean_url = (base_url or "").strip()
+    if clean_url:
+        client = _build_gemini_client(api_key, timeout_s=timeout_s, base_url=clean_url)
+    else:
+        client = _build_gemini_client(api_key, timeout_s=timeout_s)
     for m in client.models.list():
         name = _strip_gemini_prefix(getattr(m, "name", "") or "")
         if not name:
@@ -242,10 +273,22 @@ def _fetch_gemini_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, A
     return deduped, meta_map
 
 
-def _fetch_openai_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+def _fetch_openai_models(
+    api_key: str,
+    timeout_s: float = 30.0,
+    base_url: Optional[str] = None,
+) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, timeout=30.0, max_retries=0)
+    client_kwargs: Dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": timeout_s,
+        "max_retries": 0,
+    }
+    clean_url = (base_url or "").strip()
+    if clean_url:
+        client_kwargs["base_url"] = clean_url
+    client = OpenAI(**client_kwargs)
     entries: List[Tuple[float, int, str, Dict[str, Any]]] = []
 
     for idx, m in enumerate(client.models.list()):
@@ -301,10 +344,22 @@ def _extract_claude_model_meta(model_info: Any) -> Dict[str, Any]:
     return meta
 
 
-def _fetch_claude_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
+def _fetch_claude_models(
+    api_key: str,
+    timeout_s: float = 30.0,
+    base_url: Optional[str] = None,
+) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     import anthropic
 
-    client = anthropic.Anthropic(api_key=api_key, timeout=30.0, max_retries=0)
+    client_kwargs: Dict[str, Any] = {
+        "api_key": api_key,
+        "timeout": timeout_s,
+        "max_retries": 0,
+    }
+    clean_url = (base_url or "").strip()
+    if clean_url:
+        client_kwargs["base_url"] = clean_url
+    client = anthropic.Anthropic(**client_kwargs)
     entries: List[Tuple[int, float, int, str, Dict[str, Any]]] = []
 
     for idx, m in enumerate(client.models.list()):
@@ -338,18 +393,25 @@ def _fetch_claude_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, A
     return models, meta_map
 
 
-_PROVIDER_FETCHERS: Dict[str, Callable[[str], Tuple[List[str], Dict[str, Dict[str, Any]]]]] = {
+_PROVIDER_FETCHERS: Dict[str, Callable[..., Tuple[List[str], Dict[str, Dict[str, Any]]]]] = {
     "Gemini": _fetch_gemini_models,
     "OpenAI": _fetch_openai_models,
     "Claude": _fetch_claude_models,
 }
 
 
-def fetch_live_models(provider: str, api_key: str) -> List[str]:
+def fetch_live_models(
+    provider: str,
+    api_key: str,
+    base_url: Optional[str] = None,
+    timeout: float = 30.0,
+) -> List[str]:
     """
     Directly queries the provider's official Models API to retrieve available models
     and persists both model IDs and official model metadata to local disk cache.
     """
+    if provider not in AI_PROVIDERS:
+        raise ValueError(f"Unsupported AI provider: {provider}")
     fetcher = _PROVIDER_FETCHERS.get(provider)
     if fetcher is None:
         raise ValueError(f"Unsupported AI provider: {provider}")
@@ -358,7 +420,7 @@ def fetch_live_models(provider: str, api_key: str) -> List[str]:
     if not key:
         return []
 
-    models, meta_map = fetcher(key)
+    models, meta_map = fetcher(key, timeout_s=timeout, base_url=base_url)
     if models:
         save_cached_models(provider, models, models_meta=meta_map)
     return models
@@ -368,6 +430,8 @@ def fetch_models_async(
     provider: str,
     api_key: str,
     callback: Optional[Callable[[List[str], Optional[str]], None]] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 30.0,
 ) -> threading.Thread:
     """
     Spawns a daemon thread to fetch live models asynchronously.
@@ -375,7 +439,7 @@ def fetch_models_async(
     """
     def _worker():
         try:
-            models = fetch_live_models(provider, api_key)
+            models = fetch_live_models(provider, api_key, base_url=base_url, timeout=timeout)
             if callback:
                 callback(models, None)
         except Exception as e:

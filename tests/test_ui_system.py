@@ -140,11 +140,51 @@ class TestUISystem(unittest.TestCase):
                 # Background / manual fetch completion must NOT overwrite user's choice or auto-pick models[0]
                 cfg.selected_models["OpenAI"] = ""
                 sv._apply_model_options(["gpt-4o-mini", "gpt-4o"], "")
-                with patch("components.settings_modal.fetch_models_async", side_effect=lambda p, k, cb: cb(["gpt-4o-mini", "gpt-4o"], None)):
+                with patch(
+                    "components.settings_modal.fetch_models_async",
+                    side_effect=lambda p, k, cb, **_kw: cb(["gpt-4o-mini", "gpt-4o"], None),
+                ):
                     sv._fetch_live_models(is_manual=True)
                     root.update()
                 self.assertEqual(cfg.selected_models["OpenAI"], "")
                 self.assertEqual(sv.model_combo.cget("values"), ["gpt-4o-mini", "gpt-4o"])
+
+                # Advanced section starts collapsed and persists base_url, temperature, batch/concurrency, strict JSON
+                self.assertFalse(sv._advanced_expanded)
+                sv._toggle_advanced_section()
+                self.assertTrue(sv._advanced_expanded)
+                sv.base_url_var.set("https://custom.openai.local/v1")
+                sv.temperature_var.set("0.4")
+                sv.batch_size_var.set("40")
+                sv.max_concurrent_var.set("8")
+                sv.request_timeout_var.set("90")
+                sv.strict_json_var.set(False)
+                sv._commit_advanced_settings()
+
+                self.assertEqual(cfg.base_urls["OpenAI"], "https://custom.openai.local/v1")
+                self.assertAlmostEqual(cfg.temperature, 0.4)
+                self.assertEqual(cfg.batch_size, 40)
+                self.assertEqual(cfg.max_concurrent_requests, 8)
+                self.assertAlmostEqual(cfg.request_timeout, 90.0)
+                self.assertFalse(cfg.strict_json_mode)
+
+                # Per-provider base_url switches cleanly and fetch_models_async receives base_url & timeout
+                with patch("components.settings_modal.fetch_models_async") as mock_fetch_adv:
+                    sv._fetch_live_models(is_manual=True)
+                    mock_fetch_adv.assert_called_once()
+                    self.assertEqual(
+                        mock_fetch_adv.call_args.kwargs.get("base_url"),
+                        "https://custom.openai.local/v1",
+                    )
+                    self.assertAlmostEqual(
+                        mock_fetch_adv.call_args.kwargs.get("timeout"),
+                        cfg.model_fetch_timeout,
+                    )
+
+                sv._on_provider_changed("Gemini")
+                self.assertEqual(sv.base_url_var.get(), "")
+                sv._on_provider_changed("OpenAI")
+                self.assertEqual(sv.base_url_var.get(), "https://custom.openai.local/v1")
 
                 root.destroy()
 

@@ -5,6 +5,7 @@ Provides a unified contract for all document and data format parsers.
 
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 import errno
 from pathlib import Path
 import re
@@ -230,17 +231,31 @@ class BaseTranslator(ABC):
     must adhere to this interface.
     """
 
+    SUPPORTS_BILINGUAL: bool = False
+
     def __init__(
         self,
         config: AppConfig,
         llm_manager: LLMManager,
         cache: Optional[TranslationCache] = None,
+        i18n: Optional[Any] = None,
     ):
         self.config = config
         self.llm_manager = llm_manager
         self.cache = cache or TranslationCache()
+        self._i18n = i18n
         self._cancel_flag = False
         self._cancel_event = threading.Event()
+
+    def _t(self, key: str, **kwargs: Any) -> str:
+        """Formats localized status/progress strings honoring config.ui_language."""
+        lang = getattr(self.config, "ui_language", "en") or "en"
+        if self._i18n is None:
+            from i18n import I18nManager
+            self._i18n = I18nManager(lang)
+        elif hasattr(self._i18n, "set_language"):
+            self._i18n.set_language(lang)
+        return self._i18n.t(key, **kwargs)
 
     @property
     def _is_cancelled(self) -> bool:
@@ -275,6 +290,8 @@ class BaseTranslator(ABC):
         resolved_target = target_lang or kwargs.get("target_lang") or self.config.target_language
         resolved_source = (source_lang or kwargs.get("source_lang") or "auto").strip() or "auto"
         resolved_options = options if options is not None else self.config.translation_options
+        if not self.SUPPORTS_BILINGUAL and getattr(resolved_options, "bilingual_mode", False):
+            resolved_options = replace(resolved_options, bilingual_mode=False)
         return resolved_target, resolved_source, resolved_options
 
     def _get_cache_model_id(self) -> str:
@@ -301,19 +318,26 @@ class BaseTranslator(ABC):
         self,
         items: List[T],
         text_fn: Callable[[T], str] = lambda x: str(x),
-        max_items: int = 25,
-        max_chars: int = 3500,
+        max_items: Optional[int] = None,
+        max_chars: Optional[int] = None,
     ) -> List[List[T]]:
-        """Partitions uncached items into batches bounded by item count and character budget."""
+        """Partitions uncached items into batches bounded by configured item count and character budget."""
         if not items:
             return []
 
-        raw_batch_size = getattr(self.config, "batch_size", max_items)
+        raw_batch_size = getattr(self.config, "batch_size", 25)
         try:
-            configured_items = int(raw_batch_size)
+            configured_items = max(1, int(raw_batch_size))
         except (TypeError, ValueError):
-            configured_items = max_items
-        item_limit = max(1, min(configured_items, max_items))
+            configured_items = 25
+        item_limit = max(1, min(configured_items, max_items)) if max_items is not None else configured_items
+
+        raw_max_chars = getattr(self.config, "batch_max_chars", 3500)
+        try:
+            configured_chars = max(200, int(raw_max_chars))
+        except (TypeError, ValueError):
+            configured_chars = 3500
+        char_limit = max(200, min(configured_chars, max_chars)) if max_chars is not None else configured_chars
 
         batches: List[List[T]] = []
         curr_batch: List[T] = []
@@ -321,7 +345,7 @@ class BaseTranslator(ABC):
 
         for item in items:
             item_chars = len(text_fn(item))
-            if curr_batch and (len(curr_batch) >= item_limit or (curr_chars + item_chars > max_chars)):
+            if curr_batch and (len(curr_batch) >= item_limit or (curr_chars + item_chars > char_limit)):
                 batches.append(curr_batch)
                 curr_batch = [item]
                 curr_chars = item_chars
@@ -341,7 +365,7 @@ class BaseTranslator(ABC):
 
         raw_workers = getattr(self.config, "max_concurrent_requests", 2)
         try:
-            configured_workers = max(1, min(int(raw_workers), 5))
+            configured_workers = max(1, min(int(raw_workers), 20))
         except (TypeError, ValueError):
             configured_workers = 2
 
@@ -475,12 +499,19 @@ class BaseTranslator(ABC):
             pct = progress_start + int((completed_batches / total_batches) * progress_span)
             if progress_callback:
                 if duplicate_saved > 0:
-                    msg = (
-                        f"Batch {completed_batches}/{total_batches} completed "
-                        f"({cache_hits} cached | {duplicate_saved} deduplicated)"
+                    msg = self._t(
+                        "progress_batch_dedup",
+                        done=completed_batches,
+                        total=total_batches,
+                        cached=cache_hits,
+                        dedup=duplicate_saved,
                     )
                 else:
-                    msg = f"Translating batch {completed_batches}/{total_batches}..."
+                    msg = self._t(
+                        "progress_batch",
+                        done=completed_batches,
+                        total=total_batches,
+                    )
                 progress_callback(pct, 100, msg)
 
         self._run_concurrent_tasks(batches, translate_worker, on_batch_done)
@@ -568,7 +599,12 @@ class BaseTranslator(ABC):
                 msg = (
                     progress_formatter(completed_count, total_unique, cache_hits)
                     if progress_formatter
-                    else f"Section {completed_count}/{total_unique} completed ({cache_hits} cached)..."
+                    else self._t(
+                        "progress_section",
+                        done=completed_count,
+                        total=total_unique,
+                        cached=cache_hits,
+                    )
                 )
                 progress_callback(pct, 100, msg)
 

@@ -6,9 +6,21 @@
   #define MyAppVersion "1.0.0"
 #endif
 
-#define MyAppName "RakuTrans AI"
-#define MyAppPublisher "RakuTrans AI"
-#define MyAppExeName "RakuTrans.exe"
+#ifndef MyAppName
+  #define MyAppName "RakuTrans AI"
+#endif
+
+#ifndef MyAppPublisher
+  #define MyAppPublisher "RakuTrans AI"
+#endif
+
+#ifndef MyAppExecBase
+  #define MyAppExecBase "RakuTrans"
+#endif
+
+#ifndef MyAppExeName
+  #define MyAppExeName "RakuTrans.exe"
+#endif
 
 [Setup]
 ; Keep this GUID fixed across all future releases!
@@ -27,7 +39,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 
 ; Output installer path & filename
 OutputDir=dist
-OutputBaseFilename=RakuTrans-Installer-Windows
+OutputBaseFilename={#MyAppExecBase}-Installer-Windows
 
 ; Icons & UI style
 SetupIconFile=assets\icon.ico
@@ -57,7 +69,7 @@ Type: files; Name: "{app}\{#MyAppExeName}"
 
 [Files]
 ; Copy the entire PyInstaller --onedir output including _internal\
-Source: "dist\RakuTrans\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\{#MyAppExecBase}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

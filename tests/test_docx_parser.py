@@ -213,8 +213,8 @@ class TestDocxTranslator(unittest.TestCase):
         self.assertEqual(out_doc.paragraphs[1].text, "TR:ABC")
         self.assertEqual(out_doc.paragraphs[2].text, "Đậm đuôi")
 
-    def test_tabs_soft_breaks_content_controls_and_bilingual_mode(self):
-        from docx.oxml import OxmlElement, parse_xml
+    def test_tabs_soft_breaks_content_controls_and_ignores_bilingual_mode(self):
+        from docx.oxml import parse_xml
         from docx.oxml.ns import nsdecls
         from config import TranslationOptions
 
@@ -244,20 +244,21 @@ class TestDocxTranslator(unittest.TestCase):
             target_lang="Vietnamese",
             options=TranslationOptions(bilingual_mode=True),
         )
-        self.assertTrue(out.endswith("_vi_bilingual.docx"))
+        # Bilingual mode is .xlsx-only; DocxTranslator must clamp bilingual_mode to False
+        self.assertTrue(out.endswith("_vi.docx"))
+        self.assertFalse(out.endswith("_bilingual.docx"))
 
         out_doc = Document(out)
-        # Bilingual keeps original paragraph AND translated paragraph right below it
         body_texts = [par.text for par in out_doc.paragraphs]
-        self.assertIn("Title\tValue\nNext line", body_texts)
+        self.assertNotIn("Title\tValue\nNext line", body_texts)
         self.assertTrue(any("[Vietnamese]" in t and "\t" in t and "\n" in t for t in body_texts))
         # Verify genuine <w:tab/> and <w:br/> elements were emitted (not duplicated or collapsed)
         translated_p = next(par for par in out_doc.paragraphs if "[Vietnamese]" in par.text and "\t" in par.text)
         self.assertEqual(len(translated_p._p.xpath(".//w:tab")), 1)
         self.assertEqual(len(translated_p._p.xpath(".//w:br")), 1)
-        # Verify SDT text translated too
+        # Verify SDT text translated in-place without duplicating source text
         sdt_texts = [el.text for el in out_doc.element.body.xpath(".//w:sdtContent//w:t") if el.text]
-        self.assertIn("SDT Text", sdt_texts)
+        self.assertNotIn("SDT Text", sdt_texts)
         self.assertTrue(any("[Vietnamese] SDT Text" in s for s in sdt_texts))
 
 

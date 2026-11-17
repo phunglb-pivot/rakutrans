@@ -91,6 +91,23 @@ class TestTranslatorRegistry(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(results, [True] * 8)
 
+    def test_bilingual_only_supported_for_xlsx(self):
+        self.assertTrue(TranslatorRegistry.supports_bilingual("workbook.xlsx"))
+        self.assertTrue(TranslatorRegistry.supports_bilingual("REPORT.XLSX"))
+        for path in (
+            "doc.docx",
+            "slides.pptx",
+            "manual.pdf",
+            "notes.md",
+            "readme.txt",
+            "data.csv",
+            "data.tsv",
+            "locale.json",
+            "unknown.bin",
+            "/tmp/README",
+        ):
+            self.assertFalse(TranslatorRegistry.supports_bilingual(path), f"Unexpected bilingual support for {path}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,12 +119,32 @@ class TestUISystem(unittest.TestCase):
                     self.assertIsNotNone(sv.provider_selector._buttons_dict[prov].cget("image"))
 
                 # 3. Direct changes immediately persist to isolated temp config (never user's ~/.rakutrans)
+                model_fetcher.save_cached_models("OpenAI", ["gpt-4o-mini", "gpt-4o"])
                 sv._on_provider_changed("OpenAI")
                 self.assertEqual(cfg.active_provider, "OpenAI")
+                # Must NOT auto-select models[0] when switching provider
+                self.assertEqual(cfg.selected_models["OpenAI"], "")
+                self.assertEqual(cfg.get_active_model(), "")
                 self.assertTrue(len(save_events) >= 1)
+
+                # Test connection without selected model must fail early without fetching models[0]
+                sv.key_var.set("sk-test-key")
+                with patch("llm_manager.create_llm_client") as mock_client:
+                    sv._test_api_connection()
+                    mock_client.assert_not_called()
+                    self.assertEqual(sv.test_conn_status.cget("text"), "err_select_model")
 
                 sv._on_model_changed("gpt-4o")
                 self.assertEqual(cfg.selected_models["OpenAI"], "gpt-4o")
+
+                # Background / manual fetch completion must NOT overwrite user's choice or auto-pick models[0]
+                cfg.selected_models["OpenAI"] = ""
+                sv._apply_model_options(["gpt-4o-mini", "gpt-4o"], "")
+                with patch("components.settings_modal.fetch_models_async", side_effect=lambda p, k, cb: cb(["gpt-4o-mini", "gpt-4o"], None)):
+                    sv._fetch_live_models(is_manual=True)
+                    root.update()
+                self.assertEqual(cfg.selected_models["OpenAI"], "")
+                self.assertEqual(sv.model_combo.cget("values"), ["gpt-4o-mini", "gpt-4o"])
 
                 root.destroy()
 

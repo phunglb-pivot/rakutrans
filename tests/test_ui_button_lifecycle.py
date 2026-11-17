@@ -528,6 +528,39 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app._update_button_states("idle_no_file")
         self.app._refresh_status_text()
 
+    def test_start_translation_requires_explicit_model_before_running(self):
+        """When API key is set but no model is selected, _start_translation blocks and opens Settings."""
+        from unittest.mock import patch
+
+        prev_prov = self.app.config.active_provider
+        prev_key = self.app.config.api_keys.get(prev_prov, "")
+        prev_model = self.app.config.selected_models.get(prev_prov, "")
+        try:
+            self.app.current_screen = "main"
+            self.app.selected_file = "/fake/sample.docx"
+            self.app.config.active_provider = "OpenAI"
+            self.app.config.api_keys["OpenAI"] = "sk-test-key"
+            self.app.config.selected_models["OpenAI"] = ""
+            self.app._on_settings_changed(self.app.config)
+
+            self.assertIn("No model", self.app.provider_badge.cget("text"))
+
+            with patch.object(self.app, "_open_settings") as mock_settings, \
+                 patch.object(self.app, "_run_translation_worker") as mock_worker:
+                self.app._start_translation()
+                mock_worker.assert_not_called()
+                mock_settings.assert_called_once()
+                self.assertFalse(self.app.is_translating)
+                self.assertIn("OpenAI", self.app.status_label.cget("text"))
+        finally:
+            self.app.config.active_provider = prev_prov
+            self.app.config.api_keys[prev_prov] = prev_key
+            self.app.config.selected_models[prev_prov] = prev_model
+            self.app.selected_file = None
+            self.app._on_settings_changed(self.app.config)
+            self.app._update_button_states("idle_no_file")
+            self.app._refresh_status_text()
+
 
 if __name__ == "__main__":
     unittest.main()

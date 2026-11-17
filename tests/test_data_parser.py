@@ -182,12 +182,12 @@ class TestDataParsers(unittest.TestCase):
         t2.process_file(str(txt_file), target_lang="Vietnamese")
         self.assertGreater(spy.call_count, calls_1)
 
-    def test_text_first_run_resolves_model_before_caching(self):
+    def test_text_requires_explicit_model_and_caches_per_model(self):
         from types import SimpleNamespace
         from unittest.mock import patch
         import config as config_mod
         import model_fetcher
-        from llm_manager import LLMManager
+        from llm_manager import LLMError, LLMManager
         from translation_cache import TranslationCache
 
         txt_file = self.dir_path / "first_run.txt"
@@ -211,11 +211,17 @@ class TestDataParsers(unittest.TestCase):
             mgr._get_client = lambda: SimpleNamespace(generate_completion=_complete)
             cache = TranslationCache(db_path=self.dir_path / "txt_first_run.db")
             tr = TextTranslator(cfg, mgr, cache=cache)
-            with patch("llm_manager.fetch_live_models", return_value=["gpt-live-1"]):
+
+            # Empty selected model must fail explicitly instead of auto-fetching/picking models[0]
+            with self.assertRaises(LLMError):
                 tr.process_file(str(txt_file), target_lang="Vietnamese")
-                self.assertEqual(calls["count"], 1)
-                tr.process_file(str(txt_file), target_lang="Vietnamese")
-                self.assertEqual(calls["count"], 1)
+            self.assertEqual(calls["count"], 0)
+
+            cfg.selected_models["OpenAI"] = "gpt-live-1"
+            tr.process_file(str(txt_file), target_lang="Vietnamese")
+            self.assertEqual(calls["count"], 1)
+            tr.process_file(str(txt_file), target_lang="Vietnamese")
+            self.assertEqual(calls["count"], 1)
 
     def test_single_row_semicolon_csv_deep_json_and_long_line_txt_split(self):
         # 1. Single-row semicolon CSV detection

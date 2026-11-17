@@ -301,6 +301,75 @@ class TestConfigAndI18n(unittest.TestCase):
             mock_gui.assert_not_called()
             self.assertIn("--convert requires --file", buf.getvalue())
 
+    def test_explicit_provider_and_model_required_without_magic_guessing(self):
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        import model_fetcher
+        import main as main_mod
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
+                 patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
+                 patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+                 patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
+                model_fetcher.save_cached_models("Gemini", ["gemini-cached-0"])
+                cfg = AppConfig()
+                cfg.active_provider = "Gemini"
+                cfg.api_keys["Gemini"] = "k-gem"
+                cfg.selected_models["Gemini"] = ""
+                cfg.save()
+
+                # Cached models must NOT be silently picked as active model
+                self.assertEqual(cfg.get_active_model(), "")
+
+                sample_txt = tmp_path / "sample.txt"
+                sample_txt.write_text("Hello", encoding="utf-8")
+
+                # 1. CLI --model without --provider must fail explicitly
+                buf_no_prov = io.StringIO()
+                with patch("sys.stdout", buf_no_prov):
+                    with self.assertRaises(SystemExit) as cm1:
+                        main_mod.run_cli_translation(str(sample_txt), model="gpt-4o")
+                self.assertEqual(cm1.exception.code, 1)
+                self.assertIn("--model requires --provider", buf_no_prov.getvalue())
+
+                # 2. CLI without selected model must fail explicitly
+                buf_no_model = io.StringIO()
+                with patch("sys.stdout", buf_no_model):
+                    with self.assertRaises(SystemExit) as cm2:
+                        main_mod.run_cli_translation(str(sample_txt), provider="Gemini")
+                self.assertEqual(cm2.exception.code, 1)
+                self.assertIn("No model selected for provider 'Gemini'", buf_no_model.getvalue())
+
+                # 3. CLI with explicit --provider and --model runs cleanly without mutating config.json
+                from translator_registry import TranslatorRegistry
+                captured = {}
+
+                class _FakeTr:
+                    def process_file(self, **kwargs):
+                        captured["provider"] = cfg_seen["obj"].active_provider
+                        captured["model"] = cfg_seen["obj"].get_active_model()
+                        return str(tmp_path / "sample_vi.txt")
+
+                cfg_seen = {}
+
+                def _fake_create(path, cfg_obj, llm_mgr):
+                    cfg_seen["obj"] = cfg_obj
+                    return _FakeTr()
+
+                buf_ok = io.StringIO()
+                with patch.dict("os.environ", {"OPENAI_API_KEY": "sk-env-cli"}), \
+                     patch("sys.stdout", buf_ok), \
+                     patch.object(TranslatorRegistry, "create_translator", side_effect=_fake_create):
+                    main_mod.run_cli_translation(str(sample_txt), provider="OpenAI", model="gpt-4o")
+                self.assertEqual(captured, {"provider": "OpenAI", "model": "gpt-4o"})
+                self.assertEqual(AppConfig.load().active_provider, "Gemini")
+                self.assertEqual(AppConfig.load().selected_models["OpenAI"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

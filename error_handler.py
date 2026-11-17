@@ -272,7 +272,7 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
         requires_settings=(
             status_code == 404
             or "NotFoundError" in class_names
-            or bool(codes & {"not_found", "not_found_error", "model_not_found"})
+            or bool(codes & {"not_found", "not_found_error", "model_not_found", "model_not_selected"})
         ),
         technical_details=f"{raw_str}\n\n{full_trace}"
     )

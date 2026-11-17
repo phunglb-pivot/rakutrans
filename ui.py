@@ -16,7 +16,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 
-from config import AppConfig, APP_VERSION
+from config import AI_PROVIDERS, AppConfig, APP_VERSION
 from i18n import I18nManager
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from llm_manager import LLMManager
@@ -1388,7 +1388,7 @@ class RakuTransApp(ctk.CTk):
         model = (self.config.get_active_model() or "").strip()
         if model:
             return f" {self.config.active_provider} ({model})"
-        return f" {self.config.active_provider}"
+        return f" {self.config.active_provider} ({self.i18n.t('no_model_selected_short')})"
 
     def _on_settings_changed(self, updated_config: AppConfig):
         self.config = updated_config
@@ -1435,8 +1435,9 @@ class RakuTransApp(ctk.CTk):
             )
             self.update_banner_btn.set_text(self.i18n.t("update_details_btn"))
 
-        # Provider badge visibility according to active mode
+        # Provider badge visibility and text according to active mode
         if hasattr(self, "provider_badge"):
+            self.provider_badge.configure(text=self._format_provider_badge())
             if self.current_mode == "convert":
                 self.provider_badge.pack_forget()
             elif not self.provider_badge.winfo_ismapped():
@@ -1565,11 +1566,26 @@ class RakuTransApp(ctk.CTk):
 
         tgt_lang = self.tgt_select.get() if hasattr(self, "tgt_select") else self.tgt_var.get()
 
-        # Check API key
-        active_key = self.config.get_effective_api_key()
+        # Check provider, API key, and selected model explicitly
+        active_provider = (self.config.active_provider or "").strip()
+        if active_provider not in AI_PROVIDERS:
+            self._set_status(self.i18n.t("err_no_provider"), is_error=True)
+            self._open_settings()
+            return
+
+        active_key = self.config.get_effective_api_key(active_provider)
         if not active_key:
             self._set_status(
-                self.i18n.t("err_no_api_key", provider=self.config.active_provider),
+                self.i18n.t("err_no_api_key", provider=active_provider),
+                is_error=True
+            )
+            self._open_settings()
+            return
+
+        active_model = (self.config.get_active_model() or "").strip()
+        if not active_model:
+            self._set_status(
+                self.i18n.t("err_no_model", provider=active_provider),
                 is_error=True
             )
             self._open_settings()

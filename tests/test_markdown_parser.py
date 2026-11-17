@@ -152,12 +152,12 @@ For more info, visit [Documentation](https://api.example.com).
         out_text = Path(out_path).read_text(encoding="utf-8")
         self.assertEqual(out_text, table_md)
 
-    def test_markdown_first_run_resolves_model_before_caching(self):
+    def test_markdown_requires_explicit_model_and_caches_per_model(self):
         from types import SimpleNamespace
         from unittest.mock import patch
         import config as config_mod
         import model_fetcher
-        from llm_manager import LLMManager
+        from llm_manager import LLMError, LLMManager
         from translation_cache import TranslationCache
 
         tmp_path = Path(self.temp_dir.name)
@@ -179,12 +179,17 @@ For more info, visit [Documentation](https://api.example.com).
             mgr._get_client = lambda: SimpleNamespace(generate_completion=_complete)
             cache = TranslationCache(db_path=tmp_path / "md_first_run.db")
             tr = MarkdownTranslator(cfg, mgr, cache=cache)
-            with patch("llm_manager.fetch_live_models", return_value=["gpt-live-1"]):
+
+            with self.assertRaises(LLMError):
                 tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
-                first_calls = calls["count"]
-                self.assertGreater(first_calls, 0)
-                tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
-                self.assertEqual(calls["count"], first_calls)
+            self.assertEqual(calls["count"], 0)
+
+            cfg.selected_models["OpenAI"] = "gpt-live-1"
+            tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
+            first_calls = calls["count"]
+            self.assertGreater(first_calls, 0)
+            tr.process_file(file_path=str(self.test_md_path), target_lang="Vietnamese")
+            self.assertEqual(calls["count"], first_calls)
 
     def test_inline_backticks_leading_blanks_and_code_only_chunk_skipped(self):
         from translation_cache import TranslationCache

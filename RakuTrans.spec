@@ -43,7 +43,6 @@ hiddenimports = [
     'openpyxl',
     'openai',
     'anthropic',
-    'google.generativeai',
 ]
 
 for pkg in (

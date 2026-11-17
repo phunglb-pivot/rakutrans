@@ -293,23 +293,8 @@ class BaseTranslator(ABC):
 
     def _resolve_cache_model_id(self) -> str:
         """
-        Resolves the active model before cache lookup/save so run 1 and subsequent runs
-        compute the exact same provider:model cache key.
+        Returns the stable provider:model cache key from the explicitly configured provider and model.
         """
-        current = self._get_cache_model_id()
-        provider = getattr(self.config, "active_provider", "") or ""
-        has_model = bool(
-            provider and current.startswith(f"{provider}:") and len(current) > len(provider) + 1
-        )
-        if not has_model and hasattr(self.llm_manager, "_resolve_active_model"):
-            try:
-                resolved = (self.llm_manager._resolve_active_model() or "").strip()
-                if provider and resolved:
-                    return f"{provider}:{resolved}"
-                if resolved:
-                    return resolved
-            except Exception:
-                pass
         return self._get_cache_model_id()
 
     def pack_batches(

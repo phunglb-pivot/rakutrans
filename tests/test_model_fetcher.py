@@ -14,7 +14,6 @@ from model_fetcher import (
     fetch_live_models,
     get_model_metadata,
     load_cached_models,
-    resolve_provider_for_model,
     save_cached_models,
 )
 
@@ -152,37 +151,25 @@ class TestModelFetcher(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 fetch_live_models("Claude", "bad-key")
 
-    def test_resolve_provider_uses_cache_and_live_lookup_without_prefix_guessing(self):
+    def test_no_provider_guessing_or_stale_cache_fallback_on_fetch(self):
+        self.assertFalse(hasattr(model_fetcher, "resolve_provider_for_model"))
+        self.assertFalse(hasattr(model_fetcher, "check_model_exists_live"))
+
         with tempfile.TemporaryDirectory() as tmpdir:
             test_cache_file = Path(tmpdir) / "models_cache.json"
             with patch.object(model_fetcher, "MODELS_CACHE_FILE", test_cache_file), \
                  patch.object(model_fetcher, "CACHE_DIR", Path(tmpdir)):
-                save_cached_models("Gemini", ["gemma-3-27b-it"])
-                save_cached_models("Claude", ["mythos-preview"])
+                save_cached_models("Gemini", ["cached-gemini-model"])
+                # Empty API key must NOT silently return stale cached models
+                self.assertEqual(fetch_live_models("Gemini", ""), [])
 
-                self.assertEqual(resolve_provider_for_model("gemma-3-27b-it"), "Gemini")
-                self.assertEqual(resolve_provider_for_model("mythos-preview"), "Claude")
+                # Empty live API result must NOT silently return stale cached models
+                empty_client = SimpleNamespace(models=SimpleNamespace(list=lambda: _FakeGeminiPager([])))
+                with patch.object(model_fetcher, "_build_gemini_client", return_value=empty_client):
+                    self.assertEqual(fetch_live_models("Gemini", "test-key"), [])
 
-                # When uncached, queries live API rather than guessing from prefixes
-                with patch.object(
-                    model_fetcher,
-                    "check_model_exists_live",
-                    side_effect=lambda prov, key, m: prov == "OpenAI" and m == "custom-proxy-model",
-                ):
-                    self.assertEqual(
-                        resolve_provider_for_model(
-                            "custom-proxy-model",
-                            api_keys={"Gemini": "k1", "OpenAI": "k2"},
-                            fallback="Gemini",
-                        ),
-                        "OpenAI",
-                    )
-
-                # Unknown model without API match returns fallback instead of prefix guessing
-                self.assertEqual(
-                    resolve_provider_for_model("gpt-unknown-uncached", fallback="Claude"),
-                    "Claude",
-                )
+                with self.assertRaises(ValueError):
+                    fetch_live_models("UnknownProvider", "test-key")
 
     def test_concurrent_save_and_update_model_metadata_no_corruption(self):
         import threading

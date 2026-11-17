@@ -5,7 +5,6 @@ Features strict indexed JSON batching, automatic batch splitting on structural m
 robust retries with exponential backoff, and error handling.
 """
 
-import inspect
 import json
 import random
 import re
@@ -17,7 +16,7 @@ from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 from config import AI_PROVIDERS, AppConfig, TranslationOptions
-from model_fetcher import fetch_live_models, get_model_metadata, update_model_metadata
+from model_fetcher import get_model_metadata, update_model_metadata
 
 T = TypeVar("T")
 
@@ -627,6 +626,18 @@ class BaseLLMClient(ABC):
 class GeminiClient(BaseLLMClient):
     """Client for Google Gemini API using official google-genai SDK configuration and response metadata."""
 
+    _POLICY_FINISH_REASONS = frozenset({
+        "SAFETY",
+        "RECITATION",
+        "LANGUAGE",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_RECITATION",
+    })
+
     def __init__(self, api_key: str, timeout: float = 120.0):
         self.api_key = api_key
         self.timeout = timeout
@@ -640,28 +651,15 @@ class GeminiClient(BaseLLMClient):
             from google import genai
             from google.genai import types
 
-            http_options = None
-            if hasattr(types, "HttpOptions"):
-                try:
-                    kwargs: Dict[str, Any] = {"timeout": int(self.timeout * 1000)}
-                    if hasattr(types, "HttpRetryOptions"):
-                        kwargs["retry_options"] = types.HttpRetryOptions(attempts=1)
-                    http_options = types.HttpOptions(**kwargs)
-                except Exception:
-                    http_options = None
-
-            if http_options is not None:
-                try:
-                    self._genai_client = genai.Client(api_key=self.api_key, http_options=http_options)
-                    return self._genai_client
-                except TypeError:
-                    pass
-
-            self._genai_client = genai.Client(api_key=self.api_key)
+            http_options = types.HttpOptions(
+                timeout=int(self.timeout * 1000),
+                retry_options=types.HttpRetryOptions(attempts=1),
+            )
+            self._genai_client = genai.Client(api_key=self.api_key, http_options=http_options)
             return self._genai_client
 
-    @staticmethod
-    def _validate_gemini_response(response: Any) -> str:
+    @classmethod
+    def _validate_gemini_response(cls, response: Any) -> str:
         """Inspect official prompt_feedback and candidate finish_reason before returning text."""
         prompt_feedback = getattr(response, "prompt_feedback", None)
         block_reason = getattr(prompt_feedback, "block_reason", None)
@@ -673,12 +671,12 @@ class GeminiClient(BaseLLMClient):
             finish_reason = getattr(candidates[0], "finish_reason", None)
             finish_name = getattr(finish_reason, "name", None) or str(finish_reason or "")
             upper_finish = finish_name.upper()
-            if "MAX_TOKENS" in upper_finish:
+            if upper_finish == "MAX_TOKENS":
                 raise LLMError(
                     "Gemini response truncated (finish_reason=MAX_TOKENS).",
                     is_format_error=True,
                 )
-            if any(flag in upper_finish for flag in ("SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED", "SPII")):
+            if upper_finish in cls._POLICY_FINISH_REASONS:
                 raise LLMError(
                     f"Gemini stopped generation due to policy ({finish_name}).",
                     status_code=400,
@@ -694,35 +692,14 @@ class GeminiClient(BaseLLMClient):
         model_name: str,
         is_json: bool = True,
     ) -> str:
-        try:
-            from google.genai import types
-        except ImportError:
-            import warnings
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", category=FutureWarning)
-                import google.generativeai as genai_legacy
-            genai_legacy.configure(api_key=self.api_key)
-            generation_config: Dict[str, Any] = {"temperature": 0.2}
-            if is_json:
-                generation_config["response_mime_type"] = "application/json"
-            model = genai_legacy.GenerativeModel(
-                model_name=model_name,
-                system_instruction=system_prompt,
-                generation_config=generation_config,
-            )
-            response = model.generate_content(user_prompt)
-            return self._validate_gemini_response(response)
+        from google.genai import types
 
         client = self._get_genai_client()
-        afc_config = None
-        if hasattr(types, "AutomaticFunctionCallingConfig"):
-            afc_config = types.AutomaticFunctionCallingConfig(disable=True)
-
         config = types.GenerateContentConfig(
             system_instruction=system_prompt,
             response_mime_type="application/json" if is_json else "text/plain",
             temperature=0.2,
-            automatic_function_calling=afc_config,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
         response = client.models.generate_content(
             model=model_name,
@@ -742,7 +719,11 @@ class GeminiClient(BaseLLMClient):
             raise LLMError("Gemini API key is missing. Please configure it in Settings.", status_code=401)
         target_model = (model_name or "").strip()
         if not target_model:
-            raise LLMError("No Gemini model selected. Please fetch and select a model in Settings.", status_code=400)
+            raise LLMError(
+                "No Gemini model selected. Please fetch and select a model in Settings.",
+                status_code=400,
+                error_code="model_not_selected",
+            )
 
         try:
             return self._call_gemini(system_prompt, user_prompt, target_model, is_json=is_json)
@@ -753,14 +734,13 @@ class GeminiClient(BaseLLMClient):
 
 
 class OpenAIClient(BaseLLMClient):
-    """Client for OpenAI API using structured error parameter reporting and finish_reason checks."""
+    """Direct OpenAI Chat Completions API client without parameter guessing or 400 retry loops."""
 
     def __init__(self, api_key: str, timeout: float = 120.0):
         self.api_key = api_key
         self.timeout = timeout
         self._lock = threading.Lock()
         self._client = None
-        self._unsupported_params: Dict[str, Set[str]] = {}
 
     def _get_client(self):
         with self._lock:
@@ -768,21 +748,6 @@ class OpenAIClient(BaseLLMClient):
                 from openai import OpenAI
                 self._client = OpenAI(api_key=self.api_key, timeout=self.timeout, max_retries=0)
             return self._client
-
-    @staticmethod
-    def _rejected_param_from_error(err: Exception, active_kwargs: Dict[str, Any]) -> Optional[str]:
-        """Extract exact rejected parameter name from OpenAI structured error.param metadata."""
-        signals = _collect_structured_error_signals(err)
-        for candidate in ("temperature", "response_format"):
-            if candidate in signals["params"] and candidate in active_kwargs:
-                return candidate
-        # Fallback only when gateway/mock omits structured `param`
-        if not signals["params"]:
-            lower = str(err).lower()
-            for candidate in ("temperature", "response_format"):
-                if candidate in lower and candidate in active_kwargs:
-                    return candidate
-        return None
 
     def generate_completion(
         self,
@@ -795,12 +760,13 @@ class OpenAIClient(BaseLLMClient):
             raise LLMError("OpenAI API key is missing. Please configure it in Settings.", status_code=401)
         target_model = (model_name or "").strip()
         if not target_model:
-            raise LLMError("No OpenAI model selected. Please fetch and select a model in Settings.", status_code=400)
+            raise LLMError(
+                "No OpenAI model selected. Please fetch and select a model in Settings.",
+                status_code=400,
+                error_code="model_not_selected",
+            )
 
         client = self._get_client()
-        with self._lock:
-            unsupported = set(self._unsupported_params.get(target_model, ()))
-
         req_kwargs: Dict[str, Any] = {
             "model": target_model,
             "messages": [
@@ -808,46 +774,34 @@ class OpenAIClient(BaseLLMClient):
                 {"role": "user", "content": user_prompt},
             ],
         }
-        if "temperature" not in unsupported:
-            req_kwargs["temperature"] = 0.2
-        if is_json and "response_format" not in unsupported:
+        if is_json:
             req_kwargs["response_format"] = {"type": "json_object"}
 
-        for _ in range(3):
-            try:
-                response = client.chat.completions.create(**req_kwargs)
-                choices = getattr(response, "choices", None) or []
-                if not choices:
-                    return ""
-                choice = choices[0]
-                finish_reason = getattr(choice, "finish_reason", None)
-                message = getattr(choice, "message", None)
-                refusal = getattr(message, "refusal", None) if message is not None else None
-                if refusal:
-                    raise LLMError(f"OpenAI refused request: {refusal}", status_code=400)
-                if finish_reason == "content_filter":
-                    raise LLMError("OpenAI blocked output due to content_filter.", status_code=400)
-                if finish_reason == "length":
-                    raise LLMError("OpenAI response truncated (finish_reason=length).", is_format_error=True)
-                return (getattr(message, "content", None) or "") if message is not None else ""
-            except LLMError:
-                raise
-            except Exception as e:
-                status = _get_http_status_code(e)
-                if status == 400:
-                    rejected = self._rejected_param_from_error(e, req_kwargs)
-                    if rejected:
-                        req_kwargs.pop(rejected, None)
-                        with self._lock:
-                            self._unsupported_params.setdefault(target_model, set()).add(rejected)
-                        continue
-                raise _wrap_provider_error("OpenAI API Error", e) from e
+        try:
+            response = client.chat.completions.create(**req_kwargs)
+        except LLMError:
+            raise
+        except Exception as e:
+            raise _wrap_provider_error("OpenAI API Error", e) from e
 
-        raise LLMError("OpenAI API Error: failed after adjusting request parameters.")
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        choice = choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        message = getattr(choice, "message", None)
+        refusal = getattr(message, "refusal", None) if message is not None else None
+        if refusal:
+            raise LLMError(f"OpenAI refused request: {refusal}", status_code=400)
+        if finish_reason == "content_filter":
+            raise LLMError("OpenAI blocked output due to content_filter.", status_code=400)
+        if finish_reason == "length":
+            raise LLMError("OpenAI response truncated (finish_reason=length).", is_format_error=True)
+        return (getattr(message, "content", None) or "") if message is not None else ""
 
 
 class ClaudeClient(BaseLLMClient):
-    """Client for Anthropic Claude API using official ModelInfo limits and SDK signature checks."""
+    """Direct Anthropic Claude API client using official ModelInfo limits and standard SDK calls."""
 
     def __init__(self, api_key: str, timeout: float = 120.0):
         self.api_key = api_key
@@ -867,6 +821,7 @@ class ClaudeClient(BaseLLMClient):
         """
         Resolves the model's authoritative max_tokens from Anthropic ModelInfo metadata
         (in-memory cache -> disk cache -> live `client.models.retrieve`).
+        Raises LLMError if max_tokens is not reported by Anthropic API.
         """
         with self._lock:
             if model_name in self._model_max_tokens:
@@ -879,24 +834,23 @@ class ClaudeClient(BaseLLMClient):
                 self._model_max_tokens[model_name] = cached_max
             return cached_max
 
-        models_api = getattr(client, "models", None)
-        retrieve_fn = getattr(models_api, "retrieve", None) if models_api is not None else None
-        if callable(retrieve_fn):
-            info = retrieve_fn(model_name)
-            api_max = getattr(info, "max_tokens", None)
-            if isinstance(api_max, int) and api_max > 0:
-                with self._lock:
-                    self._model_max_tokens[model_name] = api_max
-                meta_update: Dict[str, Any] = {"max_tokens": api_max}
-                if getattr(info, "max_input_tokens", None) is not None:
-                    meta_update["max_input_tokens"] = info.max_input_tokens
-                if getattr(info, "lifecycle", None) is not None:
-                    meta_update["lifecycle"] = info.lifecycle
-                update_model_metadata("Claude", model_name, meta_update)
-                return api_max
+        info = client.models.retrieve(model_name)
+        api_max = getattr(info, "max_tokens", None)
+        if isinstance(api_max, int) and api_max > 0:
+            with self._lock:
+                self._model_max_tokens[model_name] = api_max
+            meta_update: Dict[str, Any] = {"max_tokens": api_max}
+            if getattr(info, "max_input_tokens", None) is not None:
+                meta_update["max_input_tokens"] = info.max_input_tokens
+            if getattr(info, "lifecycle", None) is not None:
+                meta_update["lifecycle"] = info.lifecycle
+            update_model_metadata("Claude", model_name, meta_update)
+            return api_max
 
-        # Minimal fallback only when a non-standard/mock client omits ModelInfo.max_tokens
-        return 4096
+        raise LLMError(
+            f"Claude model '{model_name}' metadata did not report max_tokens.",
+            status_code=400,
+        )
 
     @staticmethod
     def _extract_message_text(message: Any) -> str:
@@ -922,35 +876,22 @@ class ClaudeClient(BaseLLMClient):
             raise LLMError("Anthropic Claude API key is missing. Please configure it in Settings.", status_code=401)
         target_model = (model_name or "").strip()
         if not target_model:
-            raise LLMError("No Claude model selected. Please fetch and select a model in Settings.", status_code=400)
+            raise LLMError(
+                "No Claude model selected. Please fetch and select a model in Settings.",
+                status_code=400,
+                error_code="model_not_selected",
+            )
 
         client = self._get_client()
         try:
             max_tokens = self._resolve_model_max_tokens(client, target_model)
-            create_fn = client.messages.create
-            req_kwargs: Dict[str, Any] = {
-                "model": target_model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": [{"role": "user", "content": user_prompt}],
-            }
-            try:
-                sig_params = inspect.signature(create_fn).parameters
-                if "temperature" in sig_params:
-                    req_kwargs["temperature"] = 0.2
-                if "timeout" in sig_params:
-                    req_kwargs["timeout"] = self.timeout
-            except (TypeError, ValueError):
-                pass
-
-            try:
-                message = create_fn(**req_kwargs)
-            except ValueError as ve:
-                if "streaming is required" in str(ve).lower() and hasattr(client.messages, "stream"):
-                    with client.messages.stream(**req_kwargs) as stream:
-                        message = stream.get_final_message()
-                else:
-                    raise LLMError(f"Claude API Error: {ve}", status_code=400) from ve
+            message = client.messages.create(
+                model=target_model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
+                timeout=self.timeout,
+            )
         except LLMError:
             raise
         except Exception as e:
@@ -993,7 +934,6 @@ class LLMManager:
         self.config = config
         self._rate_lock = threading.Lock()
         self._client_lock = threading.Lock()
-        self._model_resolve_lock = threading.Lock()
         self._cached_client_key: Optional[Tuple[str, str]] = None
         self._cached_client: Optional[BaseLLMClient] = None
         self._cooldown_until: float = 0.0
@@ -1169,38 +1109,22 @@ class LLMManager:
         )
         raise err from last_error
 
-    def _resolve_active_model(self) -> str:
-        """
-        Returns the configured model or, if none has been selected/cached yet
-        and an API key is configured, discovers live models from the provider API.
-        """
+    def _get_selected_model(self) -> str:
+        """Returns the explicitly configured model for the active provider, or raises LLMError."""
+        provider = (self.config.active_provider or "").strip()
+        if provider not in AI_PROVIDERS:
+            raise LLMError(
+                f"Unsupported or missing AI provider: {provider!r}. Please select a valid provider in Settings.",
+                status_code=400,
+            )
         model_name = (self.config.get_active_model() or "").strip()
-        if model_name:
-            return model_name
-
-        provider = self.config.active_provider
-        api_key = (self.config.get_effective_api_key(provider) or "").strip()
-        if not api_key:
-            return ""
-
-        with self._model_resolve_lock:
-            model_name = (self.config.get_active_model() or "").strip()
-            if model_name:
-                return model_name
-            try:
-                live_models = fetch_live_models(provider, api_key)
-            except Exception as e:
-                raise _wrap_provider_error(f"{provider} Model Fetch Error", e) from e
-            if not live_models:
-                raise LLMError(
-                    f"No usable models returned by {provider} API. Please check your account or select a model in Settings.",
-                    status_code=404,
-                )
-            chosen = live_models[0]
-            self.config.selected_models[provider] = chosen
-            if hasattr(self.config, "save"):
-                self.config.save()
-            return chosen
+        if not model_name:
+            raise LLMError(
+                f"No model selected for {provider}. Please select a model in Settings.",
+                status_code=400,
+                error_code="model_not_selected",
+            )
+        return model_name
 
     def _get_client(self) -> BaseLLMClient:
         provider = self.config.active_provider
@@ -1391,8 +1315,8 @@ class LLMManager:
             f"containing every index i from 0 to {len(texts) - 1}:\n{user_input_json}"
         )
 
+        model_name = self._get_selected_model()
         client = self._get_client()
-        model_name = self._resolve_active_model()
 
         def _run_batch() -> List[str]:
             raw_response = client.generate_completion(system_prompt, user_prompt, model_name, is_json=True)
@@ -1507,8 +1431,8 @@ class LLMManager:
         if options.custom_context and options.custom_context.strip():
             system_prompt += f"\n\nCUSTOM GLOSSARY & CONTEXT:\n{options.custom_context.strip()}"
 
+        model_name = self._get_selected_model()
         client = self._get_client()
-        model_name = self._resolve_active_model()
         try:
             return self._execute_with_retry(
                 lambda: client.generate_completion(system_prompt, markdown_text, model_name, is_json=False),

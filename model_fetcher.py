@@ -216,56 +216,23 @@ def _build_gemini_client(api_key: str, timeout_s: float = 30.0):
     from google import genai
     from google.genai import types
 
-    http_options = None
-    if hasattr(types, "HttpOptions"):
-        try:
-            kwargs: Dict[str, Any] = {"timeout": int(timeout_s * 1000)}
-            if hasattr(types, "HttpRetryOptions"):
-                kwargs["retry_options"] = types.HttpRetryOptions(attempts=1)
-            http_options = types.HttpOptions(**kwargs)
-        except Exception:
-            http_options = None
-
-    return (
-        genai.Client(api_key=api_key, http_options=http_options)
-        if http_options is not None
-        else genai.Client(api_key=api_key)
+    http_options = types.HttpOptions(
+        timeout=int(timeout_s * 1000),
+        retry_options=types.HttpRetryOptions(attempts=1),
     )
+    return genai.Client(api_key=api_key, http_options=http_options)
 
 
 def _fetch_gemini_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
     models: List[str] = []
     meta_map: Dict[str, Dict[str, Any]] = {}
 
-    try:
-        client = _build_gemini_client(api_key, timeout_s=30.0)
-    except ImportError:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=FutureWarning)
-            import google.generativeai as genai_legacy
-        genai_legacy.configure(api_key=api_key)
-        for m in genai_legacy.list_models():
-            name = _strip_gemini_prefix(getattr(m, "name", "") or "")
-            if not name:
-                continue
-            methods = getattr(m, "supported_generation_methods", None) or []
-            if "generateContent" not in methods:
-                continue
-            models.append(name)
-            meta_map[name] = _extract_gemini_model_meta(m)
-        deduped = list(dict.fromkeys(models))
-        return deduped, meta_map
-
+    client = _build_gemini_client(api_key, timeout_s=30.0)
     for m in client.models.list():
         name = _strip_gemini_prefix(getattr(m, "name", "") or "")
         if not name:
             continue
-        actions = (
-            getattr(m, "supported_actions", None)
-            or getattr(m, "supported_generation_methods", None)
-            or []
-        )
+        actions = getattr(m, "supported_actions", None) or []
         if "generateContent" not in actions:
             continue
         models.append(name)
@@ -371,110 +338,30 @@ def _fetch_claude_models(api_key: str) -> Tuple[List[str], Dict[str, Dict[str, A
     return models, meta_map
 
 
+_PROVIDER_FETCHERS: Dict[str, Callable[[str], Tuple[List[str], Dict[str, Dict[str, Any]]]]] = {
+    "Gemini": _fetch_gemini_models,
+    "OpenAI": _fetch_openai_models,
+    "Claude": _fetch_claude_models,
+}
+
+
 def fetch_live_models(provider: str, api_key: str) -> List[str]:
     """
     Directly queries the provider's official Models API to retrieve available models
     and persists both model IDs and official model metadata to local disk cache.
     """
-    key = (api_key or "").strip()
-    if not key:
-        return load_cached_models(provider)
-
-    if provider == "Gemini":
-        models, meta_map = _fetch_gemini_models(key)
-    elif provider == "OpenAI":
-        models, meta_map = _fetch_openai_models(key)
-    elif provider == "Claude":
-        models, meta_map = _fetch_claude_models(key)
-    else:
+    fetcher = _PROVIDER_FETCHERS.get(provider)
+    if fetcher is None:
         raise ValueError(f"Unsupported AI provider: {provider}")
 
+    key = (api_key or "").strip()
+    if not key:
+        return []
+
+    models, meta_map = fetcher(key)
     if models:
         save_cached_models(provider, models, models_meta=meta_map)
-        return models
-
-    return load_cached_models(provider)
-
-
-def check_model_exists_live(provider: str, api_key: str, model_name: str) -> bool:
-    """
-    Queries the provider's official single-model endpoint to confirm whether
-    model_name belongs to that provider (without name-prefix guessing).
-    """
-    key = (api_key or "").strip()
-    target = (model_name or "").strip()
-    if not key or not target:
-        return False
-
-    try:
-        if provider == "Gemini":
-            client = _build_gemini_client(key, timeout_s=15.0)
-            info = client.models.get(model=target)
-            actions = getattr(info, "supported_actions", None) or []
-            if "generateContent" not in actions:
-                return False
-            update_model_metadata("Gemini", target, _extract_gemini_model_meta(info))
-            return True
-        elif provider == "OpenAI":
-            from openai import OpenAI
-            client = OpenAI(api_key=key, timeout=15.0, max_retries=0)
-            info = client.models.retrieve(target)
-            meta: Dict[str, Any] = {}
-            if getattr(info, "created", None) is not None:
-                meta["created"] = info.created
-            if getattr(info, "owned_by", None) is not None:
-                meta["owned_by"] = info.owned_by
-            if meta:
-                update_model_metadata("OpenAI", target, meta)
-            return True
-        elif provider == "Claude":
-            import anthropic
-            client = anthropic.Anthropic(api_key=key, timeout=15.0, max_retries=0)
-            info = client.models.retrieve(target)
-            if getattr(info, "lifecycle", None) == "retired":
-                return False
-            update_model_metadata("Claude", target, _extract_claude_model_meta(info))
-            return True
-    except Exception:
-        return False
-    return False
-
-
-def resolve_provider_for_model(
-    model_name: str,
-    api_keys: Optional[Dict[str, str]] = None,
-    fallback: Optional[str] = None,
-) -> Optional[str]:
-    """
-    Deterministically resolves which provider owns model_name by checking cached live
-    models first, then querying configured providers' live APIs if keys are supplied.
-    Never guesses ownership from model-name prefixes.
-    """
-    target = (model_name or "").strip()
-    if not target:
-        return fallback
-
-    cache_data = _read_cache_data()
-    cached_matches = [
-        prov for prov in SUPPORTED_PROVIDERS if target in _extract_provider_models(cache_data, prov)
-    ]
-    if len(cached_matches) == 1:
-        return cached_matches[0]
-    if cached_matches:
-        return fallback if fallback in cached_matches else cached_matches[0]
-
-    if api_keys:
-        live_matches: List[str] = []
-        for prov in SUPPORTED_PROVIDERS:
-            key = (api_keys.get(prov) or "").strip()
-            if key and check_model_exists_live(prov, key, target):
-                live_matches.append(prov)
-        if len(live_matches) == 1:
-            return live_matches[0]
-        if live_matches:
-            return fallback if fallback in live_matches else live_matches[0]
-
-    return fallback
+    return models
 
 
 def fetch_models_async(

@@ -41,6 +41,14 @@ class _DummyTranslator(BaseTranslator):
         return file_path
 
 
+def _configured_config(provider: str = "Gemini", model: str = "gemini-test", api_key: str = "test-key") -> AppConfig:
+    cfg = AppConfig()
+    cfg.active_provider = provider
+    cfg.api_keys[provider] = api_key
+    cfg.selected_models[provider] = model
+    return cfg
+
+
 class TestLLMManager(unittest.TestCase):
 
     def test_build_system_prompt_options(self):
@@ -93,7 +101,7 @@ class TestLLMManager(unittest.TestCase):
 
     @patch("llm_manager.time.sleep")
     def test_translate_batch_retries_on_429_and_adapts_pacing(self, mock_sleep):
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         dummy_client = _DummyClient([
             Exception("429 RESOURCE_EXHAUSTED. Please retry in 12s"),
@@ -110,7 +118,7 @@ class TestLLMManager(unittest.TestCase):
 
     @patch("llm_manager.time.sleep")
     def test_non_retryable_error_fails_immediately(self, mock_sleep):
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         dummy_client = _DummyClient([
             Exception("401 invalid_api_key"),
@@ -126,7 +134,7 @@ class TestLLMManager(unittest.TestCase):
 
     @patch("llm_manager.time.sleep")
     def test_translate_markdown_text_retries_on_429(self, mock_sleep):
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         dummy_client = _DummyClient([
             Exception("429 rate_limit reached, try again in 5s"),
@@ -140,7 +148,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertGreaterEqual(mock_sleep.call_count, 1)
 
     def test_shared_cooldown_pauses_subsequent_slot(self):
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         manager._record_rate_limit(10.0)
         sleep_durations = []
@@ -152,7 +160,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertGreater(sleep_durations[0], 9.0)
 
     def test_cancel_during_retry_raises_interrupted(self):
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         cancelled = {"flag": False}
 
@@ -191,7 +199,7 @@ class TestLLMManager(unittest.TestCase):
         prompt = build_system_prompt("Vietnamese", TranslationOptions(), source_lang="Japanese")
         self.assertIn("Japanese", prompt)
 
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
         # Reordered indices from model should map back to exact input positions
         out_of_order = json.dumps({"translations": [{"i": 1, "t": "Thế giới"}, {"i": 0, "t": "Xin chào"}]})
@@ -202,7 +210,7 @@ class TestLLMManager(unittest.TestCase):
     @patch("llm_manager.time.sleep")
     def test_length_mismatch_retries_and_splits_instead_of_padding_source(self, _mock_sleep):
         import json
-        config = AppConfig()
+        config = _configured_config()
         manager = LLMManager(config)
 
         class _SplittingClient:
@@ -239,7 +247,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertFalse(should_translate_text("---"))
         self.assertFalse(should_translate_text("=SUM(A1:A5)"))
 
-    def test_openai_client_structured_param_discovery_and_finish_reasons(self):
+    def test_openai_client_direct_sdk_call_and_finish_reasons(self):
         from llm_manager import OpenAIClient
 
         calls = []
@@ -247,11 +255,6 @@ class TestLLMManager(unittest.TestCase):
         class _FakeCompletions:
             def create(self, **kwargs):
                 calls.append(dict(kwargs))
-                if "temperature" in kwargs:
-                    err = Exception("Unsupported parameter")
-                    err.status_code = 400
-                    err.param = "temperature"
-                    raise err
                 return SimpleNamespace(
                     choices=[
                         SimpleNamespace(
@@ -264,11 +267,27 @@ class TestLLMManager(unittest.TestCase):
         oa = OpenAIClient("test-key")
         oa._get_client = lambda: SimpleNamespace(chat=SimpleNamespace(completions=_FakeCompletions()))
         oa.generate_completion("sys", "usr", "o4-mini", is_json=True)
-        oa.generate_completion("sys", "usr", "o4-mini", is_json=True)
-        self.assertEqual(len(calls), 3)
-        self.assertIn("temperature", calls[0])
-        self.assertNotIn("temperature", calls[1])
-        self.assertNotIn("temperature", calls[2])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["model"], "o4-mini")
+        self.assertEqual(calls[0]["response_format"], {"type": "json_object"})
+        self.assertNotIn("temperature", calls[0])
+
+        # HTTP 400 must be reported directly without catching to strip params and retry
+        err_calls = []
+
+        class _RejectingCompletions:
+            def create(self, **kwargs):
+                err_calls.append(dict(kwargs))
+                err = Exception("Unsupported parameter")
+                err.status_code = 400
+                err.param = "response_format"
+                raise err
+
+        oa._get_client = lambda: SimpleNamespace(chat=SimpleNamespace(completions=_RejectingCompletions()))
+        with self.assertRaises(LLMError) as bad_ctx:
+            oa.generate_completion("sys", "usr", "o1-mini", is_json=True)
+        self.assertEqual(bad_ctx.exception.status_code, 400)
+        self.assertEqual(len(err_calls), 1)
 
         # Length truncation triggers format error so batch translator can split
         trunc_completions = SimpleNamespace(
@@ -382,8 +401,11 @@ class TestLLMManager(unittest.TestCase):
                 if "temperature" not in real_create_params:
                     self.assertNotIn("temperature", msg_payloads[0])
 
-    def test_structured_headers_retry_info_and_auto_model_resolution(self):
+    def test_structured_headers_retry_info_and_explicit_model_required(self):
+        import tempfile
+        from pathlib import Path
         import httpx2
+        import model_fetcher
         from llm_manager import _wrap_provider_error
 
         # 1. retry-after-ms header takes precedence
@@ -423,20 +445,23 @@ class TestLLMManager(unittest.TestCase):
         self.assertTrue(is_non_retryable_error(wrapped_quota))
         self.assertFalse(is_rate_limit_error(wrapped_quota))
 
-        # 5. Auto-discover live model when config has no model selected yet
-        cfg = AppConfig()
-        cfg.active_provider = "OpenAI"
-        cfg.api_keys["OpenAI"] = "sk-live-key"
-        cfg.selected_models["OpenAI"] = ""
-        cfg.save = lambda: None
-        manager = LLMManager(cfg)
+        # 5. Missing model must fail explicitly without auto-fetching or picking cached[0]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            with patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
+                 patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
+                model_fetcher.save_cached_models("OpenAI", ["gpt-cached-first"])
+                cfg = AppConfig()
+                cfg.active_provider = "OpenAI"
+                cfg.api_keys["OpenAI"] = "sk-live-key"
+                cfg.selected_models["OpenAI"] = ""
+                self.assertEqual(cfg.get_active_model(), "")
 
-        with patch("llm_manager.fetch_live_models", return_value=["gpt-live-first"]) as mock_fetch, \
-             patch("config.load_cached_models", return_value=[]):
-            resolved = manager._resolve_active_model()
-            self.assertEqual(resolved, "gpt-live-first")
-            self.assertEqual(cfg.selected_models["OpenAI"], "gpt-live-first")
-            mock_fetch.assert_called_once_with("OpenAI", "sk-live-key")
+                manager = LLMManager(cfg)
+                with self.assertRaises(LLMError) as missing_ctx:
+                    manager.translate_batch(["Hello"], target_lang="Vietnamese")
+                self.assertEqual(missing_ctx.exception.error_code, "model_not_selected")
+                self.assertEqual(cfg.selected_models["OpenAI"], "")
 
     def test_real_third_party_sdk_exceptions_and_mock_transport(self):
         import json
@@ -447,19 +472,13 @@ class TestLLMManager(unittest.TestCase):
         from error_handler import diagnose_error
         from llm_manager import OpenAIClient, _wrap_provider_error
 
-        # 1. Real OpenAI BadRequestError with structured param='temperature' (even when message prose omits 'temperature')
+        # 1. Real OpenAI direct SDK call works cleanly and 400 propagates immediately without retry-stripping
         oai_req = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
         calls = []
 
         def oai_handler(request: httpx2.Request) -> httpx2.Response:
             body = json.loads(request.content.decode())
             calls.append(body)
-            if "temperature" in body:
-                return httpx2.Response(
-                    400,
-                    json={"error": {"message": "Parameter rejected", "type": "invalid_request_error", "param": "temperature", "code": "unsupported_parameter"}},
-                    request=request,
-                )
             return httpx2.Response(
                 200,
                 json={
@@ -480,9 +499,28 @@ class TestLLMManager(unittest.TestCase):
         oa = OpenAIClient("sk-test")
         oa._get_client = lambda: real_oai
         self.assertEqual(oa.generate_completion("sys", "usr", "reasoning-model", is_json=False), "ok")
-        self.assertEqual(len(calls), 2)
-        self.assertIn("temperature", calls[0])
-        self.assertNotIn("temperature", calls[1])
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("temperature", calls[0])
+
+        bad_calls = []
+
+        def oai_400_handler(request: httpx2.Request) -> httpx2.Response:
+            bad_calls.append(json.loads(request.content.decode()))
+            return httpx2.Response(
+                400,
+                json={"error": {"message": "Parameter rejected", "type": "invalid_request_error", "param": "response_format", "code": "unsupported_parameter"}},
+                request=request,
+            )
+
+        oa._get_client = lambda: openai.OpenAI(
+            api_key="sk-test",
+            max_retries=0,
+            http_client=httpx2.Client(transport=httpx2.MockTransport(oai_400_handler)),
+        )
+        with self.assertRaises(LLMError) as bad_ctx:
+            oa.generate_completion("sys", "usr", "legacy-model", is_json=True)
+        self.assertEqual(bad_ctx.exception.status_code, 400)
+        self.assertEqual(len(bad_calls), 1)
 
         # 2. Real OpenAI RateLimitError with insufficient_quota -> non-retryable & diagnosed as quota
         quota_resp = httpx2.Response(
@@ -539,7 +577,7 @@ class TestLLMManager(unittest.TestCase):
             self.assertEqual(billing_diag.category, "quota")
             self.assertIn("402", billing_diag.message)
 
-            cfg_402 = AppConfig()
+            cfg_402 = _configured_config()
             mgr_402 = LLMManager(cfg_402)
             dummy_402 = _DummyClient([wrapped_g_402, '["Should not reach"]'])
             mgr_402._get_client = lambda: dummy_402
@@ -563,10 +601,7 @@ class TestLLMManager(unittest.TestCase):
                  patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
                  patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
                  patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"):
-                cfg = AppConfig()
-                cfg.active_provider = "OpenAI"
-                cfg.api_keys["OpenAI"] = "sk-test-key"
-                cfg.selected_models["OpenAI"] = ""
+                cfg = _configured_config("OpenAI", "gpt-live-first", "sk-test-key")
 
                 mgr = LLMManager(cfg)
                 client_calls = {"count": 0}
@@ -580,25 +615,24 @@ class TestLLMManager(unittest.TestCase):
                 cache = TranslationCache(db_path=tmp_path / "cache.db")
                 translator = _DummyTranslator(cfg, mgr, cache=cache)
 
-                with patch("llm_manager.fetch_live_models", return_value=["gpt-live-first"]):
-                    res1 = translator.translate_unique_texts(
-                        ["Hello", "World"],
-                        target_lang="Vietnamese",
-                        source_lang="English",
-                        options=TranslationOptions(),
-                    )
-                    self.assertEqual(res1, {"Hello": "VI:Hello", "World": "VI:World"})
-                    self.assertEqual(client_calls["count"], 1)
+                res1 = translator.translate_unique_texts(
+                    ["Hello", "World"],
+                    target_lang="Vietnamese",
+                    source_lang="English",
+                    options=TranslationOptions(),
+                )
+                self.assertEqual(res1, {"Hello": "VI:Hello", "World": "VI:World"})
+                self.assertEqual(client_calls["count"], 1)
 
-                    # Second run must hit cache 100% with matching OpenAI:gpt-live-first key
-                    res2 = translator.translate_unique_texts(
-                        ["Hello", "World"],
-                        target_lang="Vietnamese",
-                        source_lang="English",
-                        options=TranslationOptions(),
-                    )
-                    self.assertEqual(res2, {"Hello": "VI:Hello", "World": "VI:World"})
-                    self.assertEqual(client_calls["count"], 1)
+                # Second run must hit cache 100% with matching OpenAI:gpt-live-first key
+                res2 = translator.translate_unique_texts(
+                    ["Hello", "World"],
+                    target_lang="Vietnamese",
+                    source_lang="English",
+                    options=TranslationOptions(),
+                )
+                self.assertEqual(res2, {"Hello": "VI:Hello", "World": "VI:World"})
+                self.assertEqual(client_calls["count"], 1)
 
     def test_cancel_returns_promptly_without_waiting_for_slow_worker(self):
         import tempfile
@@ -644,7 +678,7 @@ class TestLLMManager(unittest.TestCase):
 
     def test_format_error_splits_immediately_without_wasted_retries(self):
         import json
-        cfg = AppConfig()
+        cfg = _configured_config()
         manager = LLMManager(cfg)
         calls = []
 
@@ -666,7 +700,7 @@ class TestLLMManager(unittest.TestCase):
 
     @patch("llm_manager.time.sleep")
     def test_separate_retry_budgets_and_no_cooldown_leak_on_failure(self, _mock_sleep):
-        cfg = AppConfig()
+        cfg = _configured_config()
         manager = LLMManager(cfg)
         dummy_client = _DummyClient([
             Exception("429 RESOURCE_EXHAUSTED"),
@@ -735,7 +769,7 @@ class TestLLMManager(unittest.TestCase):
             gm.generate_completion("sys", "usr", "gemini-2.5-flash")
         self.assertIsNot(ctx.exception.__cause__, ctx.exception)
 
-        cfg = AppConfig()
+        cfg = _configured_config()
         mgr = LLMManager(cfg)
 
         def _split_md_complete(sys_p, usr_p, model_name, is_json=False):
@@ -750,23 +784,24 @@ class TestLLMManager(unittest.TestCase):
         )
         self.assertEqual(out, "VI:Part One is long enough to split safely.\n\nVI:Part Two is also long enough.")
 
-    def test_claude_client_streaming_fallback_on_value_error(self):
+    def test_claude_client_requires_api_max_tokens_and_no_streaming_fallback(self):
+        import tempfile
+        from pathlib import Path
+        import model_fetcher
         from llm_manager import ClaudeClient
 
-        final_msg = SimpleNamespace(
-            stop_reason="end_turn",
-            content=[SimpleNamespace(type="text", text="Streamed OK")],
-        )
+        stream_called = {"flag": False}
 
         class _FakeStreamCtx:
             def __enter__(self):
+                stream_called["flag"] = True
                 return self
 
             def __exit__(self, *args):
                 return False
 
             def get_final_message(self):
-                return final_msg
+                return SimpleNamespace(stop_reason="end_turn", content=[SimpleNamespace(type="text", text="Streamed")])
 
         fake_messages = SimpleNamespace(
             create=lambda **kw: (_ for _ in ()).throw(ValueError("Streaming is required for operations that may take longer than 10 minutes")),
@@ -776,7 +811,23 @@ class TestLLMManager(unittest.TestCase):
         cc._model_max_tokens["claude-test"] = 64000
         cc._get_client = lambda: SimpleNamespace(messages=fake_messages)
 
-        self.assertEqual(cc.generate_completion("sys", "usr", "claude-test", is_json=False), "Streamed OK")
+        with self.assertRaises(LLMError) as err_ctx:
+            cc.generate_completion("sys", "usr", "claude-test", is_json=False)
+        self.assertIn("Streaming is required", str(err_ctx.exception))
+        self.assertFalse(stream_called["flag"])
+
+        # Missing max_tokens in ModelInfo must raise LLMError instead of falling back to hardcoded 4096
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(model_fetcher, "MODELS_CACHE_FILE", Path(tmpdir) / "models_cache.json"), \
+                 patch.object(model_fetcher, "CACHE_DIR", Path(tmpdir)):
+                cc2 = ClaudeClient("sk-ant-test")
+                cc2._get_client = lambda: SimpleNamespace(
+                    models=SimpleNamespace(retrieve=lambda m: SimpleNamespace(id=m, max_tokens=None)),
+                    messages=SimpleNamespace(create=lambda **kw: None),
+                )
+                with self.assertRaises(LLMError) as mt_ctx:
+                    cc2.generate_completion("sys", "usr", "claude-no-limit", is_json=False)
+                self.assertIn("max_tokens", str(mt_ctx.exception))
 
 
 if __name__ == "__main__":

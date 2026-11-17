@@ -18,7 +18,6 @@ from pathlib import Path
 from typing import Optional
 
 from config import AI_PROVIDERS, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
-from model_fetcher import resolve_provider_for_model
 
 
 def run_cli_translation(
@@ -39,23 +38,47 @@ def run_cli_translation(
 
     config = AppConfig.load()
     tgt_lang = tgt_lang or config.target_language
-    if provider:
-        config.active_provider = provider
-    elif model:
-        api_keys = {prov: config.get_effective_api_key(prov) for prov in AI_PROVIDERS}
-        resolved_provider = resolve_provider_for_model(
-            model,
-            api_keys=api_keys,
-            fallback=config.active_provider,
-        )
-        if resolved_provider in AI_PROVIDERS:
-            config.active_provider = resolved_provider
 
-    if provider or model:
+    clean_model = (model or "").strip()
+    clean_provider = (provider or "").strip()
+    if clean_model and not clean_provider:
+        print("Error: --model requires --provider to be specified explicitly.")
+        sys.exit(1)
+
+    if clean_provider:
+        if clean_provider not in AI_PROVIDERS:
+            print(f"Error: Unsupported AI provider '{clean_provider}'.")
+            sys.exit(1)
+        config.active_provider = clean_provider
+
+    if clean_provider or clean_model:
         # Never persist temporary CLI --provider/--model overrides into GUI config.json
         config.save = lambda: None
-    if model:
-        config.selected_models[config.active_provider] = model
+    if clean_model:
+        config.selected_models[config.active_provider] = clean_model
+
+    active_provider = (config.active_provider or "").strip()
+    if active_provider not in AI_PROVIDERS:
+        print("Error: No valid AI provider configured. Specify --provider or configure Settings.")
+        sys.exit(1)
+
+    active_model = (config.get_active_model() or "").strip()
+    if not active_model:
+        print(
+            f"Error: No model selected for provider '{active_provider}'. "
+            f"Pass --provider {active_provider} --model <model_id> or select a model in Settings."
+        )
+        sys.exit(1)
+
+    active_key = (config.get_effective_api_key(active_provider) or "").strip()
+    if not active_key:
+        env_var = AI_PROVIDERS[active_provider].get("env_key", "")
+        print(
+            f"Error: No API key configured for provider '{active_provider}'. "
+            f"Set {env_var} or configure it in Settings."
+        )
+        sys.exit(1)
+
     llm_manager = LLMManager(config)
     options = TranslationOptions(
         keep_it_terms=keep_it,
@@ -75,10 +98,9 @@ def run_cli_translation(
         sys.exit(1)
 
     src_label = src_lang if src_lang else "Auto-detect mixed"
-    active_model_label = config.get_active_model() or "auto (live API)"
     print("=== RakuTrans AI CLI ===")
     print(f"File: {file_path}")
-    print(f"Provider: {config.active_provider} ({active_model_label})")
+    print(f"Provider: {active_provider} ({active_model})")
     print(f"Target Language: {tgt_lang} (Source: {src_label})")
 
     def on_progress(current: int, total: int, msg: str):

@@ -165,14 +165,6 @@ def get_provider_models(provider: str) -> list[str]:
     """Returns live-fetched models for provider from local cache."""
     return load_cached_models(provider)
 
-# Fallback default demo keys or placeholders if user has not provided their own.
-# Environment variables will override these.
-DEFAULT_FALLBACK_KEYS = {
-    "Gemini": os.getenv("GEMINI_API_KEY", ""),
-    "OpenAI": os.getenv("OPENAI_API_KEY", ""),
-    "Claude": os.getenv("ANTHROPIC_API_KEY", "")
-}
-
 
 @dataclass
 class TranslationOptions:
@@ -258,17 +250,12 @@ class AppConfig:
             env_val = os.getenv(env_var)
             if env_val is not None:
                 return env_val.strip()
-            return ""
 
-        return (DEFAULT_FALLBACK_KEYS.get(target_provider) or "").strip()
+        return ""
 
     def get_active_model(self) -> str:
-        """Returns selected model for the active provider, or first cached live model if unset."""
-        selected = (self.selected_models.get(self.active_provider) or "").strip()
-        if selected:
-            return selected
-        cached = self.get_available_models(self.active_provider)
-        return cached[0] if cached else ""
+        """Returns the explicitly selected model for the active provider, or '' if unset."""
+        return (self.selected_models.get(self.active_provider) or "").strip()
 
     def get_available_models(self, provider: Optional[str] = None) -> list[str]:
         """Returns cached/fresh available models for the given or active provider."""

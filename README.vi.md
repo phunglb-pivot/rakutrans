@@ -17,7 +17,7 @@
 - **Xử lý tài liệu**: PyMuPDF & pdf2docx (PDF), python-docx (Word), OpenPyXL (Excel), python-pptx (PowerPoint), MarkItDown (Markdown)
 - **Nền tảng AI**: Google GenAI (`google-genai`), OpenAI (`openai`), Anthropic Claude (`anthropic`)
 - **Lưu trữ & Cache**: SQLite3 (Bộ nhớ dịch thuật), JSON (Cấu hình & Cache model)
-- **Đóng gói ứng dụng**: PyInstaller
+- **Đóng gói ứng dụng**: PyInstaller, Inno Setup 6 (Windows)
 
 ---
 
@@ -46,9 +46,26 @@ Nếu bạn muốn chuẩn bị trước môi trường hoặc kiểm tra tươn
 
 ---
 
-## Đóng gói ứng dụng độc lập
+## Đóng gói & Phát hành ứng dụng
 
-Tạo file chạy trực tiếp không cần người dùng cuối phải cài đặt Python:
+Tạo bộ cài đặt chạy trực tiếp không cần người dùng cuối phải cài đặt Python:
 
-- **macOS (`.app` & `.dmg`)**: `./build_macos.sh`
-- **Windows (`.exe`)**: `build_windows.bat`
+- **macOS (`.app` & `.dmg`)**: `./build_macos.sh` → tạo `dist/RakuTrans.app` và `dist/RakuTrans-Installer-macOS.dmg`
+- **Windows (`.exe` & Installer)**: `build_windows.bat` → tạo `dist\RakuTrans\RakuTrans.exe` và `dist\RakuTrans-Installer-Windows.exe` (khi đã cài Inno Setup 6, xem [WINDOWS_INSTALLER_GUIDE.md](WINDOWS_INSTALLER_GUIDE.md))
+
+### Tải về & Cập nhật phiên bản mới (Người dùng cuối)
+
+Tải phiên bản mới nhất tại [GitHub Releases](https://github.com/phunglb-pivot/rakutrans/releases). **Không cần xoá/gỡ phiên bản cũ trước** — API key, cài đặt và bộ nhớ đệm dịch thuật trong `~/.rakutrans/` luôn được giữ nguyên:
+
+- **Windows (`RakuTrans-Installer-Windows.exe`)**: Chạy thẳng bộ cài mới để cài đè nâng cấp (tự động đóng app cũ nếu đang chạy và dọn file runtime cũ trước khi chép bản mới). *(Nếu Windows SmartScreen hiện cảnh báo trên bản chưa ký số, chọn **More info → Run anyway**.)*
+- **macOS (`RakuTrans-Installer-macOS.dmg`)**: Thoát RakuTrans AI (`⌘Q`), mở file `.dmg`, kéo **RakuTrans.app** vào **Applications** và chọn **Replace**. *(Trên bản chưa ký số/notarize, nếu macOS Gatekeeper chặn ở lần mở đầu tiên, chọn **System Settings → Privacy & Security → Open Anyway** hoặc chạy `xattr -cr /Applications/RakuTrans.app`.)*
+- **Kiểm tra cập nhật trong app**: Ứng dụng tự động kiểm tra phiên bản mới từ GitHub Releases khi khởi động (có thể bật/tắt hoặc kiểm tra thủ công trong **Cài đặt → Phiên bản & Cập nhật**).
+
+### Quy trình phát hành phiên bản mới (Dành cho maintainer)
+
+1. Tăng `APP_VERSION` trong `config.py` (ví dụ `"1.0.1"`) và commit lên `main`.
+2. Tạo và đẩy tag trùng khớp với version:
+   ```bash
+   git tag v1.0.1 && git push origin main v1.0.1
+   ```
+3. GitHub Actions ([.github/workflows/release.yml](.github/workflows/release.yml)) sẽ tự động chạy unit test, build `RakuTrans-Installer-macOS.dmg` và `RakuTrans-Installer-Windows.exe`, tạo `SHA256SUMS.txt` và đăng lên GitHub Releases.

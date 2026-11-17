@@ -15,6 +15,11 @@ except ImportError:
     HAS_TKDND = False
 
 
+from base_translator import (
+    HIGH_REQUEST_WARNING_THRESHOLD,
+    LARGE_FILE_SIZE_BYTES,
+    estimate_translation_requests,
+)
 from translator_registry import TranslatorRegistry
 from components.ui_system import CustomButton
 from components.icons import get_icon
@@ -65,6 +70,7 @@ class DropZone(ctk.CTkFrame):
         is_file_supported: Optional[Callable[[Path], bool]] = None,
         supported_extensions_fn: Optional[Callable[[], List[str]]] = None,
         on_invalid_file: Optional[Callable[[str, str], None]] = None,
+        config_provider: Optional[Callable[[], object]] = None,
         **kwargs
     ):
         super().__init__(
@@ -80,11 +86,13 @@ class DropZone(ctk.CTkFrame):
         self._is_file_supported = is_file_supported or TranslatorRegistry.is_supported
         self._supported_extensions_fn = supported_extensions_fn or TranslatorRegistry.get_supported_extensions
         self.on_invalid_file = on_invalid_file
+        self._config_provider = config_provider
         self.selected_file: Optional[str] = None
         self._enabled = True
         self._inspect_token = 0
         self._last_inspect_info: Optional[dict] = None
         self._last_inspect_suffix: str = ""
+        self._last_file_size: int = 0
         self._border_reset_after_id = None
 
         self._setup_ui()
@@ -177,6 +185,20 @@ class DropZone(ctk.CTkFrame):
             corner_radius=6,
             padx=10,
             pady=4
+        )
+
+        # Large file / high request count warning badge
+        self.workload_warning_label = ctk.CTkLabel(
+            self.inner_frame,
+            text="",
+            font=ctk.CTkFont(size=11),
+            fg_color=("#FEF3C7", "#451A03"),
+            text_color=("#B45309", "#FBBF24"),
+            corner_radius=6,
+            padx=10,
+            pady=4,
+            wraplength=540,
+            justify="center",
         )
 
         # Bind click to browse when no file is selected
@@ -311,7 +333,11 @@ class DropZone(ctk.CTkFrame):
         self._last_inspect_suffix = suffix
         self.inspector_label.pack_forget()
         self.inspector_label.configure(text="", text_color=("#71717A", "#A1A1AA"))
-        size_str = format_file_size(path.stat().st_size)
+        self.workload_warning_label.pack_forget()
+        self.workload_warning_label.configure(text="")
+        file_size = path.stat().st_size
+        self._last_file_size = file_size
+        size_str = format_file_size(file_size)
         
         # Display file info with dynamic badge
         icon_name, badge = get_file_type_badge(suffix, self.t)
@@ -326,6 +352,7 @@ class DropZone(ctk.CTkFrame):
         self.configure(border_color=("#71717A", "#A1A1AA"))
 
         # Run Pre-scan File Inspection in background thread
+        self._update_workload_warning()
         self._run_inspection(self.selected_file, suffix)
 
         self.on_file_selected(self.selected_file)
@@ -413,6 +440,36 @@ class DropZone(ctk.CTkFrame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _update_workload_warning(self):
+        if not self.selected_file or self._config_provider is None:
+            self.workload_warning_label.pack_forget()
+            self.workload_warning_label.configure(text="")
+            return
+
+        size_bytes = self._last_file_size
+        size_str = format_file_size(size_bytes)
+        if self._last_inspect_info is None:
+            if size_bytes >= LARGE_FILE_SIZE_BYTES:
+                self.workload_warning_label.configure(
+                    text=self.t("large_file_badge_scanning", size=size_str)
+                )
+                self.workload_warning_label.pack(pady=(4, 2))
+            else:
+                self.workload_warning_label.pack_forget()
+                self.workload_warning_label.configure(text="")
+            return
+
+        cfg = self._config_provider()
+        est_reqs = estimate_translation_requests(self._last_inspect_info, cfg)
+        if size_bytes >= LARGE_FILE_SIZE_BYTES or est_reqs >= HIGH_REQUEST_WARNING_THRESHOLD:
+            self.workload_warning_label.configure(
+                text=self.t("large_file_badge_warning", size=size_str, reqs=est_reqs)
+            )
+            self.workload_warning_label.pack(pady=(4, 2))
+        else:
+            self.workload_warning_label.pack_forget()
+            self.workload_warning_label.configure(text="")
+
     def _on_inspection_ready(self, token: int, file_path: str, suffix: str, info: dict):
         try:
             if not self.winfo_exists():
@@ -425,6 +482,7 @@ class DropZone(ctk.CTkFrame):
         self._last_inspect_suffix = suffix
         msg = self._format_inspection_text(suffix, info)
         self._show_inspection(msg)
+        self._update_workload_warning()
 
     def _show_inspection(self, text: str):
         if self.selected_file and text:
@@ -441,6 +499,7 @@ class DropZone(ctk.CTkFrame):
         self._inspect_token += 1
         self._last_inspect_info = None
         self._last_inspect_suffix = ""
+        self._last_file_size = 0
         self.selected_file = None
         self.icon_label.configure(text="", image=get_icon("folder_hero", "default", 44))
         self.title_label.configure(text=self.t("drag_drop_title", formats=self._format_supported_extensions()))
@@ -448,6 +507,8 @@ class DropZone(ctk.CTkFrame):
         self.file_info_label.pack_forget()
         self.inspector_label.pack_forget()
         self.inspector_label.configure(text="", text_color=("#71717A", "#A1A1AA"))
+        self.workload_warning_label.pack_forget()
+        self.workload_warning_label.configure(text="")
         self.clear_btn.pack_forget()
         self.configure(border_color=("#E4E4E7", "#27272A"))
         self.on_file_selected("")
@@ -464,7 +525,9 @@ class DropZone(ctk.CTkFrame):
             if not path.exists() or not path.is_file():
                 self.clear()
                 return
-            size_str = format_file_size(path.stat().st_size)
+            file_size = path.stat().st_size
+            self._last_file_size = file_size
+            size_str = format_file_size(file_size)
             suffix = path.suffix.lower()
             icon_name, badge = get_file_type_badge(suffix, self.t)
             self.icon_label.configure(text="", image=get_icon(icon_name, "default", 44))
@@ -474,7 +537,9 @@ class DropZone(ctk.CTkFrame):
             if self._last_inspect_info and self._last_inspect_suffix == suffix:
                 msg = self._format_inspection_text(suffix, self._last_inspect_info)
                 self._show_inspection(msg)
+                self._update_workload_warning()
             else:
+                self._update_workload_warning()
                 self._run_inspection(self.selected_file, suffix)
 
     def destroy(self):

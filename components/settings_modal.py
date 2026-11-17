@@ -15,6 +15,7 @@ import customtkinter as ctk
 from config import (
     AppConfig,
     AI_PROVIDERS,
+    RATE_LIMIT_PRESETS,
     UI_LANGUAGES,
     APP_VERSION,
     _coerce_float,
@@ -407,12 +408,47 @@ class SettingsView(ctk.CTkFrame):
         )
         # Collapsed by default; shown on demand via _toggle_advanced_section()
 
+        self.rate_profile_label = ctk.CTkLabel(
+            self.advanced_card,
+            text=self.t("rate_profile_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.rate_profile_label.pack(anchor="w", padx=12, pady=(10, 4))
+
+        self.rate_profile_var = ctk.StringVar(value=self._get_rate_profile_display())
+        self.rate_profile_dropdown = ctk.CTkOptionMenu(
+            self.advanced_card,
+            values=self._get_rate_profile_display_names(),
+            variable=self.rate_profile_var,
+            command=self._on_rate_profile_changed,
+            height=32,
+            fg_color=("#FFFFFF", "#09090B"),
+            button_color=("#E4E4E7", "#27272A"),
+            button_hover_color=("#D4D4D8", "#3F3F46"),
+            text_color=("#18181B", "#FAFAFA"),
+            dropdown_fg_color=("#FFFFFF", "#18181B"),
+            dropdown_hover_color=("#F4F4F5", "#27272A"),
+            dropdown_text_color=("#18181B", "#FAFAFA")
+        )
+        self.rate_profile_dropdown.pack(fill="x", padx=12, pady=(0, 4))
+
+        self.rate_profile_hint_label = ctk.CTkLabel(
+            self.advanced_card,
+            text=self.t("rate_profile_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=500,
+            justify="left",
+            anchor="w",
+        )
+        self.rate_profile_hint_label.pack(fill="x", padx=12, pady=(0, 8))
+
         self.base_url_label = ctk.CTkLabel(
             self.advanced_card,
             text=self.t("base_url_label"),
             font=ctk.CTkFont(size=12, weight="bold")
         )
-        self.base_url_label.pack(anchor="w", padx=12, pady=(10, 4))
+        self.base_url_label.pack(anchor="w", padx=12, pady=(2, 4))
 
         self.base_url_var = ctk.StringVar(
             value=self.config.base_urls.get(current_prov, "")
@@ -506,7 +542,45 @@ class SettingsView(ctk.CTkFrame):
             fg_color=("#FFFFFF", "#09090B"),
             border_color=("#D4D4D8", "#3F3F46"),
         )
-        self.max_concurrent_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(0, 4))
+        self.max_concurrent_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
+
+        self.batch_max_chars_var = ctk.StringVar(value=str(self.config.batch_max_chars))
+        self.section_max_chars_var = ctk.StringVar(value=str(self.config.section_max_chars))
+        self.min_interval_var = ctk.StringVar(value=f"{self.config.min_request_interval:g}")
+        self.rate_retries_var = ctk.StringVar(value=str(self.config.max_retries_rate_limit))
+        self.rpm_limit_var = ctk.StringVar(value=str(self.config.rpm_limit))
+        self.tpm_limit_var = ctk.StringVar(value=str(self.config.tpm_limit))
+
+        extra_adv_pairs = [
+            (4, "batch_max_chars_label", self.batch_max_chars_var, "batch_max_chars_entry"),
+            (4, "section_max_chars_label", self.section_max_chars_var, "section_max_chars_entry"),
+            (6, "min_interval_label", self.min_interval_var, "min_interval_entry"),
+            (6, "rate_retries_label", self.rate_retries_var, "rate_retries_entry"),
+            (8, "rpm_limit_label", self.rpm_limit_var, "rpm_limit_entry"),
+            (8, "tpm_limit_label", self.tpm_limit_var, "tpm_limit_entry"),
+        ]
+        extra_entries = []
+        for idx, (row_base, label_key, str_var, entry_attr) in enumerate(extra_adv_pairs):
+            col = idx % 2
+            padx = (0, 8) if col == 0 else (8, 0)
+            lbl = ctk.CTkLabel(
+                adv_grid,
+                text=self.t(label_key),
+                font=ctk.CTkFont(size=12, weight="bold")
+            )
+            lbl.grid(row=row_base, column=col, sticky="w", padx=padx, pady=(0, 4))
+            setattr(self, label_key, lbl)
+
+            ent = ctk.CTkEntry(
+                adv_grid,
+                textvariable=str_var,
+                height=32,
+                fg_color=("#FFFFFF", "#09090B"),
+                border_color=("#D4D4D8", "#3F3F46"),
+            )
+            ent.grid(row=row_base + 1, column=col, sticky="ew", padx=padx, pady=(0, 8))
+            setattr(self, entry_attr, ent)
+            extra_entries.append(ent)
 
         for entry_widget in (
             self.base_url_entry,
@@ -514,6 +588,7 @@ class SettingsView(ctk.CTkFrame):
             self.request_timeout_entry,
             self.batch_size_entry,
             self.max_concurrent_entry,
+            *extra_entries,
         ):
             entry_widget.bind("<FocusOut>", lambda _e: self._commit_advanced_settings())
             entry_widget.bind("<Return>", lambda _e: self._commit_advanced_settings())
@@ -683,6 +758,37 @@ class SettingsView(ctk.CTkFrame):
         finally:
             self._suppress_key_trace = False
 
+    def _get_rate_profile_pairs(self) -> list[tuple[str, str]]:
+        return [
+            ("safe_free", self.t("rate_profile_safe_free")),
+            ("balanced", self.t("rate_profile_balanced")),
+            ("fast_paid", self.t("rate_profile_fast_paid")),
+            ("custom", self.t("rate_profile_custom")),
+        ]
+
+    def _get_rate_profile_display_names(self) -> list[str]:
+        return [label for _, label in self._get_rate_profile_pairs()]
+
+    def _get_rate_profile_display(self) -> str:
+        code = getattr(self.config, "rate_limit_preset", "") or self.config.detect_rate_limit_preset()
+        mapping = dict(self._get_rate_profile_pairs())
+        return mapping.get(code, mapping["custom"])
+
+    def _on_rate_profile_changed(self, chosen_label: str) -> None:
+        code = "custom"
+        for preset_code, label in self._get_rate_profile_pairs():
+            if label == chosen_label:
+                code = preset_code
+                break
+        if code in RATE_LIMIT_PRESETS:
+            self.config.apply_rate_limit_preset(code)
+            self._sync_advanced_vars()
+            self.config.save()
+            self.on_save(self.config)
+        else:
+            self.config.rate_limit_preset = "custom"
+            self.config.save()
+
     def _toggle_advanced_section(self) -> None:
         self._advanced_expanded = not self._advanced_expanded
         if self._advanced_expanded:
@@ -707,6 +813,20 @@ class SettingsView(ctk.CTkFrame):
                 self.batch_size_var.set(str(self.config.batch_size))
             if getattr(self, "max_concurrent_var", None) is not None:
                 self.max_concurrent_var.set(str(self.config.max_concurrent_requests))
+            if getattr(self, "batch_max_chars_var", None) is not None:
+                self.batch_max_chars_var.set(str(self.config.batch_max_chars))
+            if getattr(self, "section_max_chars_var", None) is not None:
+                self.section_max_chars_var.set(str(self.config.section_max_chars))
+            if getattr(self, "min_interval_var", None) is not None:
+                self.min_interval_var.set(f"{self.config.min_request_interval:g}")
+            if getattr(self, "rate_retries_var", None) is not None:
+                self.rate_retries_var.set(str(self.config.max_retries_rate_limit))
+            if getattr(self, "rpm_limit_var", None) is not None:
+                self.rpm_limit_var.set(str(self.config.rpm_limit))
+            if getattr(self, "tpm_limit_var", None) is not None:
+                self.tpm_limit_var.set(str(self.config.tpm_limit))
+            if getattr(self, "rate_profile_var", None) is not None:
+                self.rate_profile_var.set(self._get_rate_profile_display())
             if getattr(self, "strict_json_var", None) is not None:
                 self.strict_json_var.set(bool(self.config.strict_json_mode))
         finally:
@@ -756,8 +876,33 @@ class SettingsView(ctk.CTkFrame):
             self.config.max_concurrent_requests = _coerce_int(
                 self.max_concurrent_var.get(), 2, 1, 20
             )
+        if getattr(self, "batch_max_chars_var", None) is not None:
+            self.config.batch_max_chars = _coerce_int(
+                self.batch_max_chars_var.get(), 6000, 200, 100000
+            )
+        if getattr(self, "section_max_chars_var", None) is not None:
+            self.config.section_max_chars = _coerce_int(
+                self.section_max_chars_var.get(), 6000, 200, 100000
+            )
+        if getattr(self, "min_interval_var", None) is not None:
+            self.config.min_request_interval = _coerce_float(
+                self.min_interval_var.get(), 0.5, 0.0, 60.0
+            )
+        if getattr(self, "rate_retries_var", None) is not None:
+            self.config.max_retries_rate_limit = _coerce_int(
+                self.rate_retries_var.get(), 5, 1, 15
+            )
+        if getattr(self, "rpm_limit_var", None) is not None:
+            self.config.rpm_limit = _coerce_int(
+                self.rpm_limit_var.get(), 45, 0, 10000
+            )
+        if getattr(self, "tpm_limit_var", None) is not None:
+            self.config.tpm_limit = _coerce_int(
+                self.tpm_limit_var.get(), 0, 0, 10000000
+            )
         if getattr(self, "strict_json_var", None) is not None:
             self.config.strict_json_mode = bool(self.strict_json_var.get())
+        self.config.rate_limit_preset = self.config.detect_rate_limit_preset()
         if normalize_display:
             self._sync_advanced_vars()
         self._adv_save_pending = False
@@ -843,6 +988,21 @@ class SettingsView(ctk.CTkFrame):
         self.request_timeout_label.configure(text=self.t("request_timeout_label"))
         self.batch_size_label.configure(text=self.t("batch_size_label"))
         self.max_concurrent_label.configure(text=self.t("max_concurrent_label"))
+        self.rate_profile_label.configure(text=self.t("rate_profile_label"))
+        self.rate_profile_dropdown.configure(values=self._get_rate_profile_display_names())
+        self.rate_profile_var.set(self._get_rate_profile_display())
+        self.rate_profile_hint_label.configure(text=self.t("rate_profile_hint"))
+        for lbl_key in (
+            "batch_max_chars_label",
+            "section_max_chars_label",
+            "min_interval_label",
+            "rate_retries_label",
+            "rpm_limit_label",
+            "tpm_limit_label",
+        ):
+            lbl_widget = getattr(self, lbl_key, None)
+            if lbl_widget is not None:
+                lbl_widget.configure(text=self.t(lbl_key))
         self.strict_json_cb.configure(text=self.t("strict_json_mode_label"))
         self.updates_title_label.configure(text=self.t("updates_section_title"))
         self.version_label.configure(text=self.t("current_version_label", version=APP_VERSION))

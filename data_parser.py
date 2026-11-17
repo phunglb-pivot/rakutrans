@@ -620,9 +620,9 @@ class TextTranslator(BaseTranslator):
             return str(saved_path)
 
         try:
-            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 3500) or 3500))
+            section_max_chars = max(200, int(getattr(self.config, "section_max_chars", 6000) or 6000))
         except (TypeError, ValueError):
-            section_max_chars = 3500
+            section_max_chars = 6000
         chunk_specs = self._split_text_chunks(content, max_chars=section_max_chars)
         section_inputs = [chunk_text for chunk_text, _ in chunk_specs if chunk_text.strip()]
         section_map = self.translate_unique_sections(

@@ -453,6 +453,45 @@ class TestConfigAndI18n(unittest.TestCase):
                 tc = TranslationCache()
                 self.assertEqual(tc.db_path, home_dir.resolve() / "cache.db")
 
+    def test_rate_limit_presets_rpm_tpm_and_cache_resume_i18n(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        import config as config_mod
+        from config import RATE_LIMIT_PRESETS
+
+        cfg = AppConfig()
+        self.assertEqual(cfg.rate_limit_preset, "balanced")
+        self.assertEqual(cfg.rpm_limit, 45)
+        self.assertEqual(cfg.batch_max_chars, 6000)
+
+        cfg.apply_rate_limit_preset("safe_free")
+        self.assertEqual(cfg.rate_limit_preset, "safe_free")
+        self.assertEqual(cfg.max_concurrent_requests, RATE_LIMIT_PRESETS["safe_free"]["max_concurrent_requests"])
+        self.assertEqual(cfg.rpm_limit, 12)
+        self.assertEqual(cfg.tpm_limit, 100000)
+        self.assertEqual(cfg.detect_rate_limit_preset(), "safe_free")
+
+        cfg.rpm_limit = 33
+        self.assertEqual(cfg.detect_rate_limit_preset(), "custom")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_dir = Path(tmpdir)
+            cfg_file = cfg_dir / "config.json"
+            with patch.object(config_mod, "CONFIG_DIR", cfg_dir), patch.object(config_mod, "CONFIG_FILE", cfg_file):
+                cfg.save()
+                reloaded = AppConfig.load()
+                self.assertEqual(reloaded.rpm_limit, 33)
+                self.assertEqual(reloaded.tpm_limit, 100000)
+                self.assertEqual(reloaded.rate_limit_preset, "custom")
+
+        for lang in ("en", "ja", "vi"):
+            advice = I18nManager(lang).t("err_diag_quota_advice").lower()
+            self.assertTrue(
+                ("cache" in advice) or ("キャッシュ" in advice),
+                f"Expected cache resume hint in {lang} err_diag_quota_advice: {advice}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -156,6 +156,8 @@ def _is_scanned_image_pdf(src: Path) -> bool:
                 for page in doc:
                     txt = page.get_text() or ""
                     alnum_cnt = sum(1 for ch in txt if ch.isalnum())
+                    if alnum_cnt > 10:
+                        return False
                     total_alnum += alnum_cnt
                     if alnum_cnt > max_page_alnum:
                         max_page_alnum = alnum_cnt
@@ -183,6 +185,8 @@ def _is_scanned_image_pdf(src: Path) -> bool:
             for page in reader.pages:
                 txt = page.extract_text() or ""
                 alnum_cnt = sum(1 for ch in txt if ch.isalnum())
+                if alnum_cnt > 10:
+                    return False
                 total_alnum += alnum_cnt
                 if alnum_cnt > max_page_alnum:
                     max_page_alnum = alnum_cnt
@@ -327,7 +331,11 @@ class PdfTranslator(BaseTranslator):
         translated_docx_path = Path(temp_dir) / f"{src.stem}_trans.docx"
 
         try:
-            pdf_to_docx(str(src), str(raw_docx_path))
+            pdf_to_docx(
+                str(src),
+                str(raw_docx_path),
+                cancel_check=lambda: self.is_cancelled,
+            )
             _clean_pdf2docx_soft_breaks(raw_docx_path)
 
             if self.is_cancelled:

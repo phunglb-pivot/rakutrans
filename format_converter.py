@@ -411,7 +411,61 @@ def _extract_pdf_page_elements(page, body_size: float) -> List[Tuple[str, Any]]:
     return [(kind, payload) for _, _, _, kind, payload in merged]
 
 
-def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
+def _convert_pdf2docx_cancellable(
+    converter: Any,
+    out_file: Path,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Runs pdf2docx page parsing with per-page cancellation support when available."""
+    if cancel_check and cancel_check():
+        raise InterruptedError("Conversion cancelled by user.")
+
+    can_step = (
+        cancel_check is not None
+        and hasattr(converter, "default_settings")
+        and hasattr(converter, "load_pages")
+        and hasattr(converter, "parse_document")
+        and hasattr(converter, "make_docx")
+    )
+    if not can_step:
+        converter.convert(str(out_file))
+        return
+
+    settings = dict(converter.default_settings)
+    if settings.get("multi_processing"):
+        converter.convert(str(out_file))
+        return
+
+    converter.load_pages(0, None, None).parse_document(**settings)
+    pages = getattr(converter, "_pages", None)
+    if pages is None:
+        converter.parse_pages(**settings)
+        converter.make_docx(str(out_file), **settings)
+        return
+
+    for page in pages:
+        if getattr(page, "skip_parsing", False):
+            continue
+        if cancel_check():
+            raise InterruptedError("Conversion cancelled by user.")
+        try:
+            page.parse(**settings)
+        except Exception:
+            if settings.get("raw_exceptions") or not (
+                not settings.get("debug") and settings.get("ignore_page_error")
+            ):
+                raise
+
+    if cancel_check():
+        raise InterruptedError("Conversion cancelled by user.")
+    converter.make_docx(str(out_file), **settings)
+
+
+def pdf_to_docx(
+    pdf_path: str,
+    docx_output_path: Optional[str] = None,
+    cancel_check: Optional[Callable[[], bool]] = None,
+) -> str:
     """
     Converts a PDF (.pdf) document into an editable Microsoft Word (.docx) document.
     Uses pdf2docx to reconstruct flow-based paragraphs, styles, images, and tables,
@@ -421,6 +475,9 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
     if not src.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
+    if cancel_check and cancel_check():
+        raise InterruptedError("Conversion cancelled by user.")
+
     out_file = Path(docx_output_path) if docx_output_path else get_unique_output_path(src.with_suffix(".docx"))
     out_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -428,9 +485,11 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
         from pdf2docx import Converter
         cv = Converter(str(src))
         try:
-            cv.convert(str(out_file))
+            _convert_pdf2docx_cancellable(cv, out_file, cancel_check=cancel_check)
         finally:
             cv.close()
+    except InterruptedError:
+        raise
     except Exception:
         import docx
         doc = docx.Document()
@@ -440,6 +499,8 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
             try:
                 body_size = _compute_pdf_body_font_size(pdoc)
                 for page_idx, page in enumerate(pdoc):
+                    if cancel_check and cancel_check():
+                        raise InterruptedError("Conversion cancelled by user.")
                     if page_idx > 0:
                         doc.add_page_break()
                     for kind, payload in _extract_pdf_page_elements(page, body_size):
@@ -462,10 +523,14 @@ def pdf_to_docx(pdf_path: str, docx_output_path: Optional[str] = None) -> str:
                                     tbl.cell(r_i, c_i).text = val
             finally:
                 pdoc.close()
+        except InterruptedError:
+            raise
         except Exception:
             import pypdf
             reader = pypdf.PdfReader(str(src))
             for page_idx, page in enumerate(reader.pages):
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Conversion cancelled by user.")
                 if page_idx > 0:
                     doc.add_page_break()
                 text = page.extract_text() or ""
@@ -1222,6 +1287,15 @@ def _dedup_docx_table_rows(table) -> List[List[Tuple[Any, bool]]]:
     return rows_out
 
 
+def _compute_soffice_timeout(src_path: Path) -> float:
+    """Scales LibreOffice PDF export timeout with input DOCX size for large (>10MB) files."""
+    try:
+        size_mb = src_path.stat().st_size / (1024.0 * 1024.0)
+    except OSError:
+        size_mb = 0.0
+    return max(SOFFICE_TIMEOUT_SECONDS, min(600.0, SOFFICE_TIMEOUT_SECONDS + size_mb * 15.0))
+
+
 def docx_to_pdf(
     docx_path: str,
     pdf_output_path: Optional[str] = None,
@@ -1249,6 +1323,7 @@ def docx_to_pdf(
     if soffice_bin:
         try:
             import tempfile
+            soffice_timeout = _compute_soffice_timeout(src)
             with tempfile.TemporaryDirectory() as tmp_dir:
                 cmd = [
                     soffice_bin,
@@ -1260,7 +1335,7 @@ def docx_to_pdf(
                     str(src),
                 ]
                 with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
-                    deadline = time.monotonic() + SOFFICE_TIMEOUT_SECONDS
+                    deadline = time.monotonic() + soffice_timeout
                     while True:
                         if cancel_check and cancel_check():
                             proc.terminate()
@@ -1283,7 +1358,7 @@ def docx_to_pdf(
                             except subprocess.TimeoutExpired:
                                 proc.kill()
                             proc.communicate()
-                            raise subprocess.TimeoutExpired(cmd, 90)
+                            raise subprocess.TimeoutExpired(cmd, soffice_timeout)
                         time.sleep(0.2)
 
                 gen_pdf = Path(tmp_dir) / f"{src.stem}.pdf"

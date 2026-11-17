@@ -401,6 +401,56 @@ class TestFormatConverter(unittest.TestCase):
         # 5. Extensionless path in dotted directory returns []
         self.assertEqual(get_convert_options("/tmp/v1.0/README"), [])
 
+    def test_soffice_timeout_scales_with_size_and_pdf_to_docx_cancellable(self):
+        from unittest.mock import patch
+        import format_converter
+
+        small_docx = self.tmp_path / "small.docx"
+        small_docx.write_bytes(b"0" * 1024)
+        self.assertGreaterEqual(format_converter._compute_soffice_timeout(small_docx), 90.0)
+
+        big_docx = self.tmp_path / "big.docx"
+        big_docx.write_bytes(b"0" * (20 * 1024 * 1024))
+        self.assertGreater(format_converter._compute_soffice_timeout(big_docx), 300.0)
+        self.assertLessEqual(format_converter._compute_soffice_timeout(big_docx), 600.0)
+
+        # Page-level cancellation inside pdf2docx converter stops before make_docx
+        fake_pdf = self.tmp_path / "cancellable.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
+        state = {"parsed": 0, "made_docx": False, "cancelled": False}
+
+        class _FakePage:
+            skip_parsing = False
+
+            def parse(self, **_kw):
+                state["parsed"] += 1
+                state["cancelled"] = True
+
+        class _FakeConverter:
+            default_settings = {"multi_processing": False, "raw_exceptions": True}
+
+            def __init__(self, _path):
+                self._pages = [_FakePage(), _FakePage()]
+
+            def load_pages(self, *_a):
+                return self
+
+            def parse_document(self, **_kw):
+                return self
+
+            def make_docx(self, *_a, **_kw):
+                state["made_docx"] = True
+
+            def close(self):
+                pass
+
+        with patch("pdf2docx.Converter", _FakeConverter):
+            with self.assertRaises(InterruptedError):
+                pdf_to_docx(str(fake_pdf), str(self.tmp_path / "out.docx"), cancel_check=lambda: state["cancelled"])
+
+        self.assertEqual(state["parsed"], 1)
+        self.assertFalse(state["made_docx"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,6 +12,8 @@ import re
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
@@ -274,7 +276,24 @@ def _parse_duration_seconds(raw_val: Any) -> Optional[float]:
 
 
 def _clamp_retry_delay(val: float) -> float:
-    return min(max(float(val), 1.0), 90.0)
+    return min(max(float(val), 1.0), 180.0)
+
+
+def estimate_text_tokens(text: str) -> int:
+    """Fast heuristic token estimator distinguishing ASCII vs non-ASCII/CJK characters."""
+    if not text:
+        return 0
+    non_ascii = sum(1 for ch in text if ord(ch) > 127)
+    ascii_chars = len(text) - non_ascii
+    return max(1, int(ascii_chars / 3.5 + non_ascii * 1.2))
+
+
+def estimate_request_tokens(system_prompt: str, user_prompt: str) -> int:
+    """Estimates combined input + translated output tokens for proactive TPM throttling."""
+    sys_tokens = estimate_text_tokens(system_prompt)
+    usr_tokens = estimate_text_tokens(user_prompt)
+    # Translation outputs roughly ~1.1-1.3x user payload tokens plus JSON framing
+    return max(1, sys_tokens + int(usr_tokens * 2.2))
 
 
 def extract_retry_delay(err: Exception) -> Optional[float]:
@@ -1017,17 +1036,63 @@ class LLMManager:
     def __init__(self, config: AppConfig):
         self.config = config
         self._rate_lock = threading.Lock()
+        self._concurrency_cond = threading.Condition(self._rate_lock)
         self._client_lock = threading.Lock()
         self._cached_client_key: Optional[Tuple[Any, ...]] = None
         self._cached_client: Optional[BaseLLMClient] = None
         self._cooldown_until: float = 0.0
         self._next_dispatch_at: float = 0.0
-        raw_interval = getattr(config, "min_request_interval", 0.35)
-        try:
-            self._base_min_interval: float = max(0.0, float(0.35 if raw_interval is None else raw_interval))
-        except (TypeError, ValueError):
-            self._base_min_interval = 0.35
+        self._request_history: deque[Tuple[float, int]] = deque()
+        self._active_requests: int = 0
+        self._consecutive_successes: int = 0
+        self._rate_limit_hits: int = 0
+        self._last_request_at: float = 0.0
+        self._base_min_interval: float = self._read_base_min_interval(config)
         self._min_interval: float = self._base_min_interval
+        self._session_min_interval_floor: float = self._base_min_interval
+        self._effective_concurrency: int = self._get_configured_max_workers()
+
+    @staticmethod
+    def _read_base_min_interval(config: AppConfig) -> float:
+        raw_interval = getattr(config, "min_request_interval", 0.5)
+        try:
+            return max(0.0, float(0.5 if raw_interval is None else raw_interval))
+        except (TypeError, ValueError):
+            return 0.5
+
+    def _get_configured_max_workers(self) -> int:
+        raw = getattr(self.config, "max_concurrent_requests", 2)
+        try:
+            return max(1, min(int(2 if raw is None else raw), 20))
+        except (TypeError, ValueError):
+            return 2
+
+    def _get_rate_limits(self) -> Tuple[int, int]:
+        try:
+            rpm = max(0, int(getattr(self.config, "rpm_limit", 0) or 0))
+        except (TypeError, ValueError):
+            rpm = 0
+        try:
+            tpm = max(0, int(getattr(self.config, "tpm_limit", 0) or 0))
+        except (TypeError, ValueError):
+            tpm = 0
+        return rpm, tpm
+
+    def sync_config(self, config: Optional[AppConfig] = None) -> None:
+        """Refreshes pacing, concurrency, and sliding-window bounds after Settings changes."""
+        if config is not None:
+            self.config = config
+        with self._rate_lock:
+            self._base_min_interval = self._read_base_min_interval(self.config)
+            self._min_interval = self._base_min_interval
+            self._session_min_interval_floor = self._base_min_interval
+            self._effective_concurrency = self._get_configured_max_workers()
+            self._consecutive_successes = 0
+            self._rate_limit_hits = 0
+            self._cooldown_until = 0.0
+            self._next_dispatch_at = 0.0
+            self._request_history.clear()
+            self._concurrency_cond.notify_all()
 
     def _sleep_with_cancel(
         self,
@@ -1057,22 +1122,89 @@ class LLMManager:
             if time.monotonic() - t0 < step * 0.25:
                 break
 
+    @contextmanager
+    def _concurrency_gate(
+        self,
+        cancel_check: Optional[Callable[[], bool]] = None,
+    ):
+        """Bounds active in-flight HTTP calls to adaptive _effective_concurrency."""
+        with self._concurrency_cond:
+            while True:
+                if cancel_check and cancel_check():
+                    raise InterruptedError("Translation cancelled by user.")
+                allowed = max(1, min(self._effective_concurrency, self._get_configured_max_workers()))
+                if self._active_requests < allowed:
+                    self._active_requests += 1
+                    break
+                self._concurrency_cond.wait(timeout=0.25)
+        try:
+            yield
+        finally:
+            with self._concurrency_cond:
+                if self._active_requests > 0:
+                    self._active_requests -= 1
+                self._concurrency_cond.notify_all()
+
+    def _prune_window_locked(self, now: float) -> None:
+        cutoff = now - 60.0
+        while self._request_history and self._request_history[0][0] <= cutoff:
+            self._request_history.popleft()
+
+    def _compute_window_wait_locked(
+        self,
+        now: float,
+        rpm_limit: int,
+        tpm_limit: int,
+        estimated_tokens: int,
+    ) -> float:
+        wait_for = 0.0
+        if rpm_limit > 0 and len(self._request_history) >= rpm_limit:
+            idx = len(self._request_history) - rpm_limit
+            oldest_blocking_ts = self._request_history[idx][0]
+            wait_for = max(wait_for, (oldest_blocking_ts + 60.05) - now)
+        if tpm_limit > 0 and estimated_tokens > 0:
+            used_tokens = sum(tok for _, tok in self._request_history)
+            if used_tokens > 0 and used_tokens + estimated_tokens > tpm_limit:
+                excess = (used_tokens + estimated_tokens) - tpm_limit
+                reclaimed = 0
+                for ts, tok in self._request_history:
+                    reclaimed += tok
+                    if reclaimed >= excess:
+                        wait_for = max(wait_for, (ts + 60.05) - now)
+                        break
+        return max(0.0, wait_for)
+
     def _acquire_request_slot(
         self,
         cancel_check: Optional[Callable[[], bool]] = None,
+        estimated_tokens: int = 0,
     ) -> None:
-        """Respect shared 429 cooldowns and stagger request dispatches across threads."""
+        """Respect shared 429 cooldowns, dispatch pacing, and proactive RPM/TPM windows."""
         while True:
             if cancel_check and cancel_check():
                 raise InterruptedError("Translation cancelled by user.")
+            rpm_limit, tpm_limit = self._get_rate_limits()
             with self._rate_lock:
                 now = time.monotonic()
+                if self._last_request_at > 0 and (now - self._last_request_at) > 180.0 and self._rate_limit_hits > 0:
+                    self._rate_limit_hits = 0
+                    self._session_min_interval_floor = self._base_min_interval
+                    self._min_interval = max(self._base_min_interval, min(self._min_interval, self._base_min_interval))
+                    self._effective_concurrency = self._get_configured_max_workers()
+
+                self._prune_window_locked(now)
+                window_wait = self._compute_window_wait_locked(now, rpm_limit, tpm_limit, estimated_tokens)
                 if now < self._cooldown_until:
-                    wait_for = self._cooldown_until - now
+                    wait_for = max(self._cooldown_until - now, window_wait)
                 elif now < self._next_dispatch_at:
-                    wait_for = self._next_dispatch_at - now
+                    wait_for = max(self._next_dispatch_at - now, window_wait)
+                elif window_wait > 0:
+                    wait_for = window_wait
                 else:
                     self._next_dispatch_at = now + self._min_interval
+                    self._last_request_at = now
+                    if rpm_limit > 0 or tpm_limit > 0:
+                        self._request_history.append((now, max(0, estimated_tokens)))
                     return
             t0 = time.monotonic()
             self._sleep_with_cancel(wait_for, cancel_check=cancel_check)
@@ -1080,24 +1212,54 @@ class LLMManager:
             if time.monotonic() - t0 < wait_for * 0.25:
                 with self._rate_lock:
                     now = time.monotonic()
-                    slot_time = max(now, self._cooldown_until, self._next_dispatch_at)
-                    self._next_dispatch_at = slot_time + self._min_interval
+                    self._next_dispatch_at = now + self._min_interval
+                    self._last_request_at = now
+                    if rpm_limit > 0:
+                        while len(self._request_history) >= rpm_limit:
+                            self._request_history.popleft()
+                    if tpm_limit > 0 and estimated_tokens > 0:
+                        used_tokens = sum(tok for _, tok in self._request_history)
+                        while self._request_history and used_tokens + estimated_tokens > tpm_limit:
+                            _, popped = self._request_history.popleft()
+                            used_tokens -= popped
+                    if rpm_limit > 0 or tpm_limit > 0:
+                        self._request_history.append((now, max(0, estimated_tokens)))
                 return
 
     def _record_rate_limit(self, delay_seconds: float) -> None:
-        """Set a shared cooldown across worker threads and slow dispatch pacing."""
+        """Set a shared cooldown, slow dispatch pacing, and throttle concurrency to 1."""
         with self._rate_lock:
             now = time.monotonic()
             self._cooldown_until = max(self._cooldown_until, now + delay_seconds)
+            self._rate_limit_hits += 1
+            self._consecutive_successes = 0
+            self._effective_concurrency = 1
+            if self._rate_limit_hits == 1:
+                self._session_min_interval_floor = min(10.0, max(self._base_min_interval, 1.0))
+            else:
+                self._session_min_interval_floor = min(
+                    10.0,
+                    max(self._base_min_interval, self._session_min_interval_floor * 1.5),
+                )
             self._min_interval = min(
-                max(4.0, self._base_min_interval),
-                max(max(1.0, self._base_min_interval), self._min_interval * 2.0),
+                30.0,
+                max(self._session_min_interval_floor, self._min_interval * 2.0),
             )
 
     def _record_success(self) -> None:
-        """Gradually restore dispatch pacing after successful API responses."""
+        """Gradually restore dispatch pacing and concurrency after sustained healthy responses."""
         with self._rate_lock:
-            self._min_interval = max(self._base_min_interval, self._min_interval * 0.85)
+            self._consecutive_successes += 1
+            if self._consecutive_successes >= 5:
+                self._min_interval = max(
+                    self._session_min_interval_floor,
+                    self._min_interval * 0.90,
+                )
+            configured = self._get_configured_max_workers()
+            if self._effective_concurrency < configured and self._consecutive_successes >= 8:
+                self._effective_concurrency += 1
+                self._consecutive_successes = 0
+                self._concurrency_cond.notify_all()
 
     @staticmethod
     def _compute_backoff(attempt: int, err: Exception) -> Tuple[float, bool]:
@@ -1118,6 +1280,7 @@ class LLMManager:
         max_retries: Optional[int] = None,
         cancel_check: Optional[Callable[[], bool]] = None,
         error_context: str = "translate batch",
+        estimated_tokens: int = 0,
     ) -> T:
         """Execute an LLM operation with 429-aware shared cooldown and separate retry budgets."""
         try:
@@ -1144,9 +1307,13 @@ class LLMManager:
         last_error: Optional[Exception] = None
 
         while True:
-            self._acquire_request_slot(cancel_check=cancel_check)
             try:
-                result = operation()
+                with self._concurrency_gate(cancel_check=cancel_check):
+                    self._acquire_request_slot(
+                        cancel_check=cancel_check,
+                        estimated_tokens=estimated_tokens,
+                    )
+                    result = operation()
                 self._record_success()
                 return result
             except InterruptedError:
@@ -1187,6 +1354,7 @@ class LLMManager:
                     if rate_attempts >= rate_limit_max or total_attempts >= total_limit:
                         with self._rate_lock:
                             self._cooldown_until = 0.0
+                            self._next_dispatch_at = 0.0
                         break
                     self._record_rate_limit(wait_seconds)
                 else:
@@ -1194,6 +1362,10 @@ class LLMManager:
                     general_attempts += 1
                     total_attempts = rate_attempts + general_attempts + format_attempts
                     if general_attempts >= general_limit or total_attempts >= total_limit:
+                        if rate_attempts > 0:
+                            with self._rate_lock:
+                                self._cooldown_until = 0.0
+                                self._next_dispatch_at = 0.0
                         break
                     self._sleep_with_cancel(wait_seconds, cancel_check=cancel_check)
 
@@ -1263,8 +1435,15 @@ class LLMManager:
             self._cached_client = client
             self._cached_client_key = cache_key
             with self._rate_lock:
+                self._base_min_interval = self._read_base_min_interval(self.config)
                 self._cooldown_until = 0.0
                 self._min_interval = self._base_min_interval
+                self._session_min_interval_floor = self._base_min_interval
+                self._effective_concurrency = self._get_configured_max_workers()
+                self._consecutive_successes = 0
+                self._rate_limit_hits = 0
+                self._request_history.clear()
+                self._concurrency_cond.notify_all()
             return client
 
     @staticmethod
@@ -1400,9 +1579,9 @@ class LLMManager:
         except (TypeError, ValueError):
             max_batch_items = 25
         try:
-            max_batch_chars = max(200, int(getattr(self.config, "batch_max_chars", 3500) or 3500))
+            max_batch_chars = max(200, int(getattr(self.config, "batch_max_chars", 6000) or 6000))
         except (TypeError, ValueError):
-            max_batch_chars = 3500
+            max_batch_chars = 6000
 
         total_chars = sum(len(t) for t in texts)
         if len(texts) > max_batch_items or total_chars > max_batch_chars:
@@ -1447,6 +1626,7 @@ class LLMManager:
 
         model_name = self._get_selected_model()
         client = self._get_client()
+        est_tokens = estimate_request_tokens(system_prompt, user_prompt)
 
         def _run_batch() -> List[str]:
             raw_response = client.generate_completion(system_prompt, user_prompt, model_name, is_json=True)
@@ -1458,6 +1638,7 @@ class LLMManager:
                 max_retries=max_retries,
                 cancel_check=cancel_check,
                 error_context="translate batch",
+                estimated_tokens=est_tokens,
             )
         except LLMError as err:
             if err.is_format_error and len(texts) > 1:
@@ -1563,12 +1744,14 @@ class LLMManager:
 
         model_name = self._get_selected_model()
         client = self._get_client()
+        est_tokens = estimate_request_tokens(system_prompt, markdown_text)
         try:
             return self._execute_with_retry(
                 lambda: client.generate_completion(system_prompt, markdown_text, model_name, is_json=False),
                 max_retries=max_retries,
                 cancel_check=cancel_check,
                 error_context="translate text section" if plain_text else "translate markdown section",
+                estimated_tokens=est_tokens,
             )
         except LLMError as err:
             if err.is_format_error:

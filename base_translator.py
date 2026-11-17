@@ -4,9 +4,10 @@ Provides a unified contract for all document and data format parsers.
 """
 
 from abc import ABC, abstractmethod
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import replace
 import errno
+import math
 from pathlib import Path
 import re
 import threading
@@ -16,7 +17,54 @@ T = TypeVar("T")
 
 from config import AppConfig, TranslationOptions
 from llm_manager import LLMManager
+from model_fetcher import get_model_metadata
 from translation_cache import TranslationCache
+
+LARGE_FILE_SIZE_BYTES = 10 * 1024 * 1024
+HIGH_REQUEST_WARNING_THRESHOLD = 250
+
+
+def estimate_translation_requests(
+    inspect_info: Optional[Dict[str, Any]],
+    config: Optional[AppConfig],
+) -> int:
+    """Estimates approximate API request count from inspect_file metadata and config."""
+    if not inspect_info or "error" in inspect_info:
+        return 0
+
+    try:
+        batch_size = max(1, int(getattr(config, "batch_size", 25) or 25))
+    except (TypeError, ValueError):
+        batch_size = 25
+    try:
+        batch_max_chars = max(200, int(getattr(config, "batch_max_chars", 6000) or 6000))
+    except (TypeError, ValueError):
+        batch_max_chars = 6000
+    try:
+        section_max_chars = max(200, int(getattr(config, "section_max_chars", 6000) or 6000))
+    except (TypeError, ValueError):
+        section_max_chars = 6000
+
+    doc_type = str(inspect_info.get("type", "") or "").lower()
+    if doc_type in ("markdown", "txt"):
+        chars = max(0, int(inspect_info.get("char_count", 0) or 0))
+        if chars == 0:
+            return 0
+        return max(1, math.ceil(chars / section_max_chars))
+
+    items = int(
+        inspect_info.get("unique_texts")
+        or inspect_info.get("translatable_segments")
+        or 0
+    )
+    if items <= 0:
+        return 0
+    by_items = math.ceil(items / batch_size)
+    chars = int(inspect_info.get("char_count", 0) or 0)
+    if chars > 0:
+        by_chars = math.ceil((chars * 0.7) / batch_max_chars)
+        return max(1, by_items, by_chars)
+    return max(1, by_items)
 
 _NUMERIC_PATTERN = re.compile(
     r"^[+-]?\s*(?:[$€£¥₫₩₹]\s*)?(?:\d{1,3}(?:,\d{3})+|\d{1,3}(?:\.\d{3})+|\d+)(?:[.,]\d+)?\s*(?:[$€£¥₫₩₹]|%)?$"
@@ -332,12 +380,22 @@ class BaseTranslator(ABC):
             configured_items = 25
         item_limit = max(1, min(configured_items, max_items)) if max_items is not None else configured_items
 
-        raw_max_chars = getattr(self.config, "batch_max_chars", 3500)
+        raw_max_chars = getattr(self.config, "batch_max_chars", 6000)
         try:
             configured_chars = max(200, int(raw_max_chars))
         except (TypeError, ValueError):
-            configured_chars = 3500
+            configured_chars = 6000
         char_limit = max(200, min(configured_chars, max_chars)) if max_chars is not None else configured_chars
+
+        # Respect small provider-reported model output limits to avoid predictable MAX_TOKENS splits
+        if max_chars is None:
+            provider = getattr(self.config, "active_provider", "") or ""
+            model = self.config.get_active_model() if hasattr(self.config, "get_active_model") else ""
+            if provider and model:
+                meta = get_model_metadata(provider, model)
+                out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
+                if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= 2048:
+                    char_limit = min(char_limit, max(200, int(out_lim * 1.5)))
 
         batches: List[List[T]] = []
         curr_batch: List[T] = []
@@ -378,8 +436,8 @@ class BaseTranslator(ABC):
         on_result: Callable[[T, Any], None],
     ) -> None:
         """
-        Executes tasks in a bounded ThreadPoolExecutor with per-run cancellation
-        and non-blocking shutdown when cancelled or aborted by an error.
+        Executes tasks in a bounded ThreadPoolExecutor using a sliding window of
+        in-flight futures, per-run cancellation, and non-blocking abort shutdown.
         """
         if not tasks:
             return
@@ -391,25 +449,44 @@ class BaseTranslator(ABC):
             raise InterruptedError("Translation cancelled by user.")
 
         max_workers = self.get_max_workers(len(tasks))
+        in_flight_limit = max(max_workers, max_workers * 2)
         executor = ThreadPoolExecutor(max_workers=max_workers)
         wait_on_exit = True
         try:
-            futures = {
-                executor.submit(worker_fn, task, is_run_cancelled): task
-                for task in tasks
-            }
-            for future in as_completed(futures):
+            task_iter = iter(tasks)
+            pending: Dict[Future, T] = {}
+
+            def _refill_window() -> None:
+                while len(pending) < in_flight_limit and not is_run_cancelled():
+                    try:
+                        next_task = next(task_iter)
+                    except StopIteration:
+                        break
+                    fut = executor.submit(worker_fn, next_task, is_run_cancelled)
+                    pending[fut] = next_task
+
+            _refill_window()
+            while pending:
                 if is_run_cancelled():
                     raise InterruptedError("Translation cancelled by user.")
 
-                try:
-                    res = future.result()
-                except Exception:
-                    if is_run_cancelled():
-                        raise InterruptedError("Translation cancelled by user.")
-                    raise
+                done, _ = wait(pending.keys(), timeout=0.25, return_when=FIRST_COMPLETED)
+                if is_run_cancelled():
+                    raise InterruptedError("Translation cancelled by user.")
+                if not done:
+                    continue
 
-                on_result(futures[future], res)
+                for future in done:
+                    task_item = pending.pop(future)
+                    try:
+                        res = future.result()
+                    except Exception:
+                        if is_run_cancelled():
+                            raise InterruptedError("Translation cancelled by user.")
+                        raise
+                    on_result(task_item, res)
+
+                _refill_window()
         except BaseException:
             wait_on_exit = False
             abort_event.set()

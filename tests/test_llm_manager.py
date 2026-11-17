@@ -896,6 +896,158 @@ class TestLLMManager(unittest.TestCase):
         self.assertTrue(c2.strict_json_mode)
         self.assertAlmostEqual(c2.timeout, 90.0)
 
+    def test_proactive_rpm_and_tpm_sliding_window_pacing(self):
+        cfg = _configured_config()
+        cfg.min_request_interval = 0.0
+        cfg.rpm_limit = 2
+        cfg.tpm_limit = 0
+        mgr = LLMManager(cfg)
+
+        clock = {"now": 100.0}
+        sleeps = []
+
+        def fake_monotonic():
+            return clock["now"]
+
+        def fake_sleep(sec):
+            sleeps.append(sec)
+            clock["now"] += sec
+
+        with patch("llm_manager.time.monotonic", side_effect=fake_monotonic), \
+             patch("llm_manager.time.sleep", side_effect=fake_sleep):
+            mgr._acquire_request_slot(estimated_tokens=50)
+            clock["now"] += 1.0
+            mgr._acquire_request_slot(estimated_tokens=50)
+            self.assertEqual(sleeps, [])
+
+            # 3rd request within 60s window must wait until 1st slot expires (100.0 + 60.05 - 101.0 = 59.05s)
+            mgr._acquire_request_slot(estimated_tokens=50)
+            self.assertTrue(len(sleeps) >= 1)
+            self.assertGreaterEqual(clock["now"], 160.0)
+
+        # TPM window check
+        cfg_tpm = _configured_config()
+        cfg_tpm.min_request_interval = 0.0
+        cfg_tpm.rpm_limit = 0
+        cfg_tpm.tpm_limit = 1000
+        mgr_tpm = LLMManager(cfg_tpm)
+        clock["now"] = 200.0
+        sleeps.clear()
+
+        with patch("llm_manager.time.monotonic", side_effect=fake_monotonic), \
+             patch("llm_manager.time.sleep", side_effect=fake_sleep):
+            mgr_tpm._acquire_request_slot(estimated_tokens=700)
+            clock["now"] += 1.0
+            # Next request of 500 tokens exceeds 1000 TPM -> waits until first entry expires
+            mgr_tpm._acquire_request_slot(estimated_tokens=500)
+            self.assertTrue(len(sleeps) >= 1)
+            self.assertGreaterEqual(clock["now"], 260.0)
+
+    def test_adaptive_concurrency_and_anti_sawtooth_recovery(self):
+        cfg = _configured_config()
+        cfg.max_concurrent_requests = 4
+        cfg.min_request_interval = 0.25
+        cfg.rpm_limit = 0
+        mgr = LLMManager(cfg)
+        self.assertEqual(mgr._effective_concurrency, 4)
+
+        mgr._record_rate_limit(10.0)
+        self.assertEqual(mgr._effective_concurrency, 1)
+        self.assertGreaterEqual(mgr._session_min_interval_floor, 1.0)
+        self.assertGreaterEqual(mgr._min_interval, 1.0)
+
+        # Few successes (< 5) must NOT prematurely collapse pacing back down
+        for _ in range(4):
+            mgr._record_success()
+        self.assertEqual(mgr._effective_concurrency, 1)
+        self.assertGreaterEqual(mgr._min_interval, 1.0)
+
+        # 8 consecutive successes step concurrency up +1 without dropping below session floor
+        for _ in range(4):
+            mgr._record_success()
+        self.assertEqual(mgr._effective_concurrency, 2)
+        self.assertGreaterEqual(mgr._min_interval, mgr._session_min_interval_floor)
+
+        # Changing settings via sync_config restores configured ceiling
+        cfg.max_concurrent_requests = 3
+        cfg.min_request_interval = 0.4
+        mgr.sync_config(cfg)
+        self.assertEqual(mgr._effective_concurrency, 3)
+        self.assertAlmostEqual(mgr._min_interval, 0.4)
+
+    def test_sliding_window_task_submission_and_large_workload_cache_resume(self):
+        import json
+        import tempfile
+        import threading
+        from pathlib import Path
+        from translation_cache import TranslationCache
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = _configured_config()
+            cfg.batch_size = 20
+            cfg.batch_max_chars = 6000
+            cfg.max_concurrent_requests = 2
+            cfg.min_request_interval = 0.0
+            cfg.rpm_limit = 0
+
+            mgr = LLMManager(cfg)
+            cache = TranslationCache(db_path=Path(tmpdir) / "large_cache.db")
+            translator = _DummyTranslator(cfg, mgr, cache=cache)
+
+            # 2400 unique items -> 120 batches (> max_workers * 2 = 4 in-flight window)
+            items = [f"Segment number {i} for large file simulation" for i in range(2400)]
+
+            lock = threading.Lock()
+            state = {"in_flight": 0, "max_in_flight": 0, "calls": 0, "fail_on_call": 50}
+
+            def fake_complete(sys_p, usr_p, model_name, is_json=True):
+                with lock:
+                    state["calls"] += 1
+                    call_num = state["calls"]
+                    state["in_flight"] += 1
+                    state["max_in_flight"] = max(state["max_in_flight"], state["in_flight"])
+                try:
+                    if state["fail_on_call"] and call_num >= state["fail_on_call"]:
+                        err = Exception("429 Too Many Requests")
+                        err.status_code = 429
+                        raise err
+                    payload = json.loads(usr_p.split(":\n", 1)[1])
+                    return json.dumps({"translations": [{"i": it["i"], "t": f"VI:{it['t']}"} for it in payload]})
+                finally:
+                    with lock:
+                        state["in_flight"] -= 1
+
+            mgr._get_client = lambda: SimpleNamespace(generate_completion=fake_complete)
+
+            with patch("llm_manager.time.sleep"):
+                with self.assertRaises(LLMError):
+                    translator.translate_unique_texts(
+                        items,
+                        target_lang="Vietnamese",
+                        source_lang="English",
+                        options=TranslationOptions(),
+                    )
+
+            # Window bounded active concurrency and many completed batches persisted to SQLite cache
+            self.assertLessEqual(state["max_in_flight"], 2)
+            cached_after_abort = cache.count()
+            self.assertGreater(cached_after_abort, 40)
+
+            # Resume without failures (keep sleep patched since elevated post-429 pacing floor applies)
+            state["fail_on_call"] = 0
+            calls_before_resume = state["calls"]
+            with patch("llm_manager.time.sleep"):
+                resumed = translator.translate_unique_texts(
+                    items,
+                    target_lang="Vietnamese",
+                    source_lang="English",
+                    options=TranslationOptions(),
+                )
+            calls_during_resume = state["calls"] - calls_before_resume
+            self.assertEqual(len(resumed), 2400)
+            self.assertEqual(resumed[items[0]], f"VI:{items[0]}")
+            self.assertEqual(calls_during_resume, 120 - (cached_after_abort // 20))
+
 
 if __name__ == "__main__":
     unittest.main()

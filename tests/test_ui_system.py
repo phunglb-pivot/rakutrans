@@ -288,6 +288,67 @@ class TestUISystem(unittest.TestCase):
         dz.destroy()
         root.destroy()
 
+    def test_dropzone_workload_warning_and_settings_rate_profile(self):
+        import tempfile
+        from pathlib import Path
+        import customtkinter as ctk
+        from config import AppConfig
+        from components.dnd_zone import DropZone
+        from components.settings_modal import SettingsView
+
+        root = ctk.CTk()
+        cfg = AppConfig()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f_txt = Path(tmpdir) / "huge.txt"
+            f_txt.write_text("line\n" * 100, encoding="utf-8")
+
+            dz = DropZone(
+                root,
+                on_file_selected=lambda _p: None,
+                get_translation=lambda k, **kw: f"{k}:{kw}" if kw else k,
+                config_provider=lambda: cfg,
+            )
+            dz.pack()
+            dz.set_file(str(f_txt))
+            tok = dz._inspect_token
+            # Simulate high char count yielding > HIGH_REQUEST_WARNING_THRESHOLD requests
+            dz._on_inspection_ready(
+                tok,
+                str(f_txt.resolve()),
+                ".txt",
+                {"type": "txt", "line_count": 50000, "word_count": 200000, "char_count": 2400000},
+            )
+            self.assertIn("large_file_badge_warning", dz.workload_warning_label.cget("text"))
+
+            dz.clear()
+            self.assertEqual(dz.workload_warning_label.cget("text"), "")
+            dz.destroy()
+
+        saved_cfgs = []
+        sv = SettingsView(
+            root,
+            config=cfg,
+            get_translation=lambda k, **kw: k,
+            on_save_callback=lambda c: saved_cfgs.append(c),
+            on_close_callback=lambda: None,
+        )
+        sv._on_rate_profile_changed("rate_profile_safe_free")
+        self.assertEqual(cfg.rate_limit_preset, "safe_free")
+        self.assertEqual(cfg.rpm_limit, 12)
+        self.assertEqual(cfg.max_concurrent_requests, 1)
+        self.assertEqual(sv.rpm_limit_var.get(), "12")
+
+        sv.rpm_limit_var.set("25")
+        sv.batch_max_chars_var.set("7500")
+        sv._commit_advanced_settings()
+        self.assertEqual(cfg.rpm_limit, 25)
+        self.assertEqual(cfg.batch_max_chars, 7500)
+        self.assertEqual(cfg.rate_limit_preset, "custom")
+
+        sv.destroy()
+        root.destroy()
+
     def test_settings_key_debounce_and_provider_race(self):
         import tempfile
         from pathlib import Path

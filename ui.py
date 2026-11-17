@@ -22,7 +22,12 @@ from i18n import I18nManager
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from llm_manager import LLMManager
 from translator_registry import TranslatorRegistry
-from base_translator import BaseTranslator
+from base_translator import (
+    BaseTranslator,
+    HIGH_REQUEST_WARNING_THRESHOLD,
+    LARGE_FILE_SIZE_BYTES,
+    estimate_translation_requests,
+)
 from translation_cache import TranslationCache
 from format_converter import (
     convert_file_direct,
@@ -30,7 +35,7 @@ from format_converter import (
     get_convertible_extensions,
     is_convert_supported,
 )
-from components.dnd_zone import DropZone
+from components.dnd_zone import DropZone, format_file_size
 from components.settings_modal import SettingsView
 from components.error_modal import ErrorModal
 from components.update_modal import UpdateModal
@@ -499,7 +504,8 @@ class RakuTransApp(ctk.CTk):
             target_parent,
             on_file_selected=self._on_file_selected,
             get_translation=self.i18n.t,
-            on_invalid_file=lambda msg, _p: self._set_status(msg, is_error=True)
+            on_invalid_file=lambda msg, _p: self._set_status(msg, is_error=True),
+            config_provider=lambda: self.config,
         )
         self.drop_zone.pack(fill="x", pady=(0, 15))
 
@@ -1396,6 +1402,8 @@ class RakuTransApp(ctk.CTk):
 
     def _on_settings_changed(self, updated_config: AppConfig):
         self.config = updated_config
+        if hasattr(self, "llm_manager") and self.llm_manager is not None:
+            self.llm_manager.sync_config(updated_config)
         self.i18n.set_language(self.config.ui_language)
         self.provider_badge.configure(
             text=self._format_provider_badge(),
@@ -1407,6 +1415,8 @@ class RakuTransApp(ctk.CTk):
         ):
             self._dismiss_update_banner()
         self.refresh_ui_texts()
+        if hasattr(self, "drop_zone"):
+            self.drop_zone._update_workload_warning()
 
     def refresh_ui_texts(self):
         """Update all on-screen text when language changes."""
@@ -1596,6 +1606,51 @@ class RakuTransApp(ctk.CTk):
             return
 
         self._save_options()
+
+        # Pre-flight confirmation for large (>10MB) or high-request-count workloads
+        try:
+            file_size = Path(self.selected_file).stat().st_size
+        except OSError:
+            file_size = 0
+        inspect_info = (
+            self.drop_zone._last_inspect_info
+            if hasattr(self, "drop_zone") and self.drop_zone.selected_file == self.selected_file
+            else None
+        )
+        est_reqs = estimate_translation_requests(inspect_info, self.config)
+        needs_confirm = (
+            est_reqs >= HIGH_REQUEST_WARNING_THRESHOLD
+            or (file_size >= LARGE_FILE_SIZE_BYTES and (inspect_info is None or est_reqs >= 100))
+        )
+        if needs_confirm:
+            size_str = format_file_size(file_size)
+            msg = self.i18n.t(
+                "large_file_confirm_msg",
+                size=size_str,
+                reqs=est_reqs if est_reqs > 0 else "?",
+            )
+            if (
+                Path(self.selected_file).suffix.lower() == ".xlsx"
+                and self.config.translation_options.bilingual_mode
+                and file_size >= LARGE_FILE_SIZE_BYTES
+            ):
+                msg += "\n\n" + self.i18n.t("large_file_bilingual_note")
+            ConfirmModal(
+                self,
+                title=self.i18n.t("large_file_confirm_title"),
+                message=msg,
+                confirm_text=self.i18n.t("confirm"),
+                cancel_text=self.i18n.t("cancel"),
+                on_confirm=lambda lang=tgt_lang: self._begin_translation_run(lang),
+                get_translation=self.i18n.t,
+            )
+            return
+
+        self._begin_translation_run(tgt_lang)
+
+    def _begin_translation_run(self, tgt_lang: str):
+        if self.is_translating or self.is_converting or not self.selected_file:
+            return
         self.last_exception = None
         self.last_diagnostic = None
         cancel_event = threading.Event()

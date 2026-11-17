@@ -276,6 +276,40 @@ def _coerce_optional_float(raw_val: object, min_val: float, max_val: float) -> O
     return max(min_val, min(parsed, max_val))
 
 
+RATE_LIMIT_PRESETS: Dict[str, Dict[str, Union[int, float]]] = {
+    "safe_free": {
+        "max_concurrent_requests": 1,
+        "min_request_interval": 4.0,
+        "rpm_limit": 12,
+        "tpm_limit": 100000,
+        "batch_size": 25,
+        "batch_max_chars": 8000,
+        "section_max_chars": 8000,
+        "max_retries_rate_limit": 8,
+    },
+    "balanced": {
+        "max_concurrent_requests": 2,
+        "min_request_interval": 0.5,
+        "rpm_limit": 45,
+        "tpm_limit": 0,
+        "batch_size": 25,
+        "batch_max_chars": 6000,
+        "section_max_chars": 6000,
+        "max_retries_rate_limit": 5,
+    },
+    "fast_paid": {
+        "max_concurrent_requests": 4,
+        "min_request_interval": 0.2,
+        "rpm_limit": 0,
+        "tpm_limit": 0,
+        "batch_size": 30,
+        "batch_max_chars": 10000,
+        "section_max_chars": 10000,
+        "max_retries_rate_limit": 5,
+    },
+}
+
+
 @dataclass
 class AppConfig:
     """Application configuration and state persistence."""
@@ -295,11 +329,14 @@ class AppConfig:
     strict_json_mode: bool = True
     request_timeout: float = 120.0
     model_fetch_timeout: float = 30.0
+    rate_limit_preset: str = "balanced"
     batch_size: int = 25
-    batch_max_chars: int = 3500
-    section_max_chars: int = 3500
+    batch_max_chars: int = 6000
+    section_max_chars: int = 6000
     max_concurrent_requests: int = 2
-    min_request_interval: float = 0.35
+    min_request_interval: float = 0.5
+    rpm_limit: int = 45
+    tpm_limit: int = 0
     max_retries_general: int = 3
     max_retries_rate_limit: int = 5
     max_retries_format: int = 2
@@ -309,6 +346,37 @@ class AppConfig:
     translation_options: TranslationOptions = field(default_factory=TranslationOptions)
     auto_check_updates: bool = True
     skipped_update_version: str = ""
+
+    def apply_rate_limit_preset(self, preset_name: str) -> None:
+        """Applies a named rate-limit & batching preset to this config."""
+        preset = RATE_LIMIT_PRESETS.get(preset_name)
+        if not preset:
+            return
+        self.rate_limit_preset = preset_name
+        self.max_concurrent_requests = int(preset["max_concurrent_requests"])
+        self.min_request_interval = float(preset["min_request_interval"])
+        self.rpm_limit = int(preset["rpm_limit"])
+        self.tpm_limit = int(preset["tpm_limit"])
+        self.batch_size = int(preset["batch_size"])
+        self.batch_max_chars = int(preset["batch_max_chars"])
+        self.section_max_chars = int(preset["section_max_chars"])
+        self.max_retries_rate_limit = int(preset["max_retries_rate_limit"])
+
+    def detect_rate_limit_preset(self) -> str:
+        """Returns matching preset name if settings align with a preset, else 'custom'."""
+        for name, preset in RATE_LIMIT_PRESETS.items():
+            if (
+                int(self.max_concurrent_requests) == int(preset["max_concurrent_requests"])
+                and abs(float(self.min_request_interval) - float(preset["min_request_interval"])) < 1e-6
+                and int(self.rpm_limit) == int(preset["rpm_limit"])
+                and int(self.tpm_limit) == int(preset["tpm_limit"])
+                and int(self.batch_size) == int(preset["batch_size"])
+                and int(self.batch_max_chars) == int(preset["batch_max_chars"])
+                and int(self.section_max_chars) == int(preset["section_max_chars"])
+                and int(self.max_retries_rate_limit) == int(preset["max_retries_rate_limit"])
+            ):
+                return name
+        return "custom"
 
     def record_recent_target_language(self, lang_name: str) -> None:
         """Adds a language to the top of recent_target_languages (MRU, max 3)."""
@@ -366,6 +434,7 @@ class AppConfig:
             with _CONFIG_IO_LOCK:
                 cfg_file = _resolve_config_file()
                 cfg_file.parent.mkdir(parents=True, exist_ok=True)
+                self.rate_limit_preset = self.detect_rate_limit_preset()
                 data = {
                     "ui_language": self.ui_language,
                     "theme_mode": self.theme_mode,
@@ -386,11 +455,14 @@ class AppConfig:
                     "strict_json_mode": bool(self.strict_json_mode),
                     "request_timeout": float(self.request_timeout),
                     "model_fetch_timeout": float(self.model_fetch_timeout),
+                    "rate_limit_preset": str(self.rate_limit_preset or "custom"),
                     "batch_size": self.batch_size,
                     "batch_max_chars": self.batch_max_chars,
                     "section_max_chars": self.section_max_chars,
                     "max_concurrent_requests": self.max_concurrent_requests,
                     "min_request_interval": float(self.min_request_interval),
+                    "rpm_limit": int(self.rpm_limit),
+                    "tpm_limit": int(self.tpm_limit),
                     "max_retries_general": self.max_retries_general,
                     "max_retries_rate_limit": self.max_retries_rate_limit,
                     "max_retries_format": self.max_retries_format,
@@ -493,10 +565,12 @@ class AppConfig:
                 model_fetch_timeout = _coerce_float(data.get("model_fetch_timeout"), 30.0, 3.0, 120.0)
 
                 batch_size = _coerce_int(data.get("batch_size"), 25, 1, 500)
-                batch_max_chars = _coerce_int(data.get("batch_max_chars"), 3500, 200, 100000)
-                section_max_chars = _coerce_int(data.get("section_max_chars"), 3500, 200, 100000)
+                batch_max_chars = _coerce_int(data.get("batch_max_chars"), 6000, 200, 100000)
+                section_max_chars = _coerce_int(data.get("section_max_chars"), 6000, 200, 100000)
                 max_concurrent_requests = _coerce_int(data.get("max_concurrent_requests"), 2, 1, 20)
-                min_request_interval = _coerce_float(data.get("min_request_interval"), 0.35, 0.0, 10.0)
+                min_request_interval = _coerce_float(data.get("min_request_interval"), 0.5, 0.0, 60.0)
+                rpm_limit = _coerce_int(data.get("rpm_limit"), 45, 0, 10000)
+                tpm_limit = _coerce_int(data.get("tpm_limit"), 0, 0, 10000000)
                 max_retries_general = _coerce_int(data.get("max_retries_general"), 3, 1, 10)
                 max_retries_rate_limit = _coerce_int(data.get("max_retries_rate_limit"), 5, 1, 15)
                 max_retries_format = _coerce_int(data.get("max_retries_format"), 2, 1, 10)
@@ -531,6 +605,9 @@ class AppConfig:
                 raw_skipped = data.get("skipped_update_version", "")
                 skipped_update_version = raw_skipped.strip() if isinstance(raw_skipped, str) else ""
 
+                raw_preset = str(data.get("rate_limit_preset", "") or "").strip()
+                valid_presets = set(RATE_LIMIT_PRESETS.keys()) | {"custom"}
+
                 config = cls(
                     ui_language=ui_language,
                     theme_mode=theme_mode,
@@ -542,11 +619,14 @@ class AppConfig:
                     strict_json_mode=strict_json_mode,
                     request_timeout=request_timeout,
                     model_fetch_timeout=model_fetch_timeout,
+                    rate_limit_preset=raw_preset if raw_preset in valid_presets else "balanced",
                     batch_size=batch_size,
                     batch_max_chars=batch_max_chars,
                     section_max_chars=section_max_chars,
                     max_concurrent_requests=max_concurrent_requests,
                     min_request_interval=min_request_interval,
+                    rpm_limit=rpm_limit,
+                    tpm_limit=tpm_limit,
                     max_retries_general=max_retries_general,
                     max_retries_rate_limit=max_retries_rate_limit,
                     max_retries_format=max_retries_format,
@@ -557,6 +637,7 @@ class AppConfig:
                     auto_check_updates=auto_check_updates,
                     skipped_update_version=skipped_update_version,
                 )
+                config.rate_limit_preset = config.detect_rate_limit_preset()
                 return config
             except Exception as e:
                 print(f"[Warning] Failed to load config, using defaults: {e}")

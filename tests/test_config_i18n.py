@@ -77,8 +77,7 @@ class TestConfigAndI18n(unittest.TestCase):
             "filetype_pdf", "filetype_office", "filetype_spreadsheets", "filetype_text",
             "filetype_json", "filetype_all", "file_info_path", "file_info_size",
             "badge_plain_text", "dialog_save_copy", "status_saved_copy", "filetype_doc_ext",
-            "status_cancelling", "status_cancelled", "notification_completed",
-            "notification_convert_completed", "confirm_action_title", "confirm_action_msg",
+            "status_cancelling", "status_cancelled", "confirm_action_title", "confirm_action_msg",
             "confirm", "done"
         ]
         for rk in required_keys:

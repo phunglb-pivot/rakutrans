@@ -1756,42 +1756,6 @@ class RakuTransApp(ctk.CTk):
         self._refresh_cache_display()
         self._update_button_states("completed")
 
-        # Audio completion cue & native OS notification
-        self._notify_completion(out_name, "notification_completed")
-
-    def _notify_completion(self, out_name: str, subtitle_key: str):
-        try:
-            import sys
-            sys.stdout.write("\a")
-            sys.stdout.flush()
-        except Exception:
-            pass
-
-        subtitle = self.i18n.t(subtitle_key)
-        sys_name = platform.system()
-        try:
-            if sys_name == "Darwin":
-                subprocess.Popen([
-                    "osascript",
-                    "-e",
-                    (
-                        "on run argv\n"
-                        "display notification (item 1 of argv) "
-                        "with title (item 3 of argv) subtitle (item 2 of argv)\n"
-                        "end run"
-                    ),
-                    out_name,
-                    subtitle,
-                    APP_NAME,
-                ])
-            elif sys_name == "Windows":
-                import ctypes
-                ctypes.windll.user32.FlashWindow(self.winfo_id(), True)
-            elif shutil.which("notify-send"):
-                subprocess.Popen(["notify-send", APP_NAME, f"{subtitle}: {out_name}"])
-        except Exception:
-            pass
-
     def _on_translation_cancelled(self):
         self.is_translating = False
         self.progress_bar.set(0)
@@ -1855,9 +1819,6 @@ class RakuTransApp(ctk.CTk):
         msg = self.i18n.t("convert_success", filename=out_name)
         self._set_status(msg, text_color=COLORS["success"])
         self._update_button_states("completed")
-
-        # Audio completion cue & notification
-        self._notify_completion(out_name, "notification_convert_completed")
 
     def _on_conversion_failed(self, error_msg: str, exc: Optional[Exception] = None):
         self.is_converting = False

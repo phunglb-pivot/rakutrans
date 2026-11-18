@@ -249,11 +249,13 @@ For more info, visit [Documentation](https://api.example.com).
         out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
         out_text = Path(out_path).read_text(encoding="utf-8")
 
-        # Large code fence must NOT be sent to LLM at all, yet preserved verbatim in output
+        # Large code fence must NOT be sent to LLM at all, prose around it is coalesced into 1 call, and code is preserved verbatim
+        self.assertEqual(len(seen_chunks), 1)
         self.assertTrue(all("def helper_0" not in c for c in seen_chunks))
+        self.assertIn("<<<RAKUTRANS_CODE_0>>>", seen_chunks[0])
         self.assertIn(large_code, out_text)
         self.assertIn("[VI] # Intro", out_text)
-        self.assertIn("[VI] Conclusion text.", out_text)
+        self.assertIn("Conclusion text.", out_text)
 
         # Single unwrapped prose line > max_chars splits cleanly along whitespace
         long_line_md = "word " * 300
@@ -261,6 +263,125 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertGreater(len(line_specs), 1)
         self.assertTrue(all(len(c) <= 400 for c, _ in line_specs))
         self.assertEqual("".join(c + s for c, s in line_specs), long_line_md)
+
+    def test_interleaved_code_blocks_coalesced_and_cached(self):
+        from translation_cache import TranslationCache
+
+        blocks = []
+        code_blocks = []
+        for i in range(10):
+            code = "```python\n" + "\n".join(f"def fn_{i}_{j}(v):\n    return v + {j}" for j in range(10)) + "\n```"
+            code_blocks.append(code)
+            blocks.append(f"## Section {i}\n\nExplanation for step {i}.\n\n{code}")
+        blocks.append("Final summary line.")
+        doc_text = "\n\n".join(blocks) + "\n"
+
+        md_path = Path(self.temp_dir.name) / "many_code_blocks.md"
+        md_path.write_text(doc_text, encoding="utf-8")
+
+        seen_chunks = []
+
+        class _LinePrefixSpy:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                seen_chunks.append(markdown_text)
+                out_lines = []
+                for ln in markdown_text.splitlines(keepends=True):
+                    stripped = ln.strip()
+                    if stripped.startswith("<<<") and stripped.endswith(">>>"):
+                        # Simulate occasional accidental inline backtick wrapping by LLM
+                        out_lines.append(f"`{stripped}`" + ln[len(ln.rstrip("\r\n")):])
+                    elif stripped:
+                        out_lines.append(f"[VI] {ln}")
+                    else:
+                        out_lines.append(ln)
+                return "".join(out_lines)
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "md_interleaved.db")
+        tr = MarkdownTranslator(AppConfig(section_max_chars=8000), _LinePrefixSpy(), cache=cache)
+
+        out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+
+        # 10 interleaved code blocks + 11 prose sections fit into 1 single API call
+        self.assertEqual(len(seen_chunks), 1)
+        for i, code in enumerate(code_blocks):
+            self.assertNotIn(f"fn_{i}_0", seen_chunks[0])
+            self.assertIn(code, out_text)
+            self.assertIn(f"[VI] ## Section {i}", out_text)
+        self.assertIn("[VI] Final summary line.", out_text)
+
+        # Second run hits cache 100% with 0 additional calls
+        calls_before = len(seen_chunks)
+        tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        self.assertEqual(len(seen_chunks), calls_before)
+
+    def test_placeholder_corruption_falls_back_cleanly_without_poisoning_cache(self):
+        from translation_cache import TranslationCache
+
+        code1 = "```python\n" + "\n".join(f"val_{i} = {i} * 2" for i in range(15)) + "\n```"
+        doc_text = f"# First\n\nAlpha paragraph.\n\n{code1}\n\nBeta paragraph.\n"
+        md_path = Path(self.temp_dir.name) / "fallback_code.md"
+        md_path.write_text(doc_text, encoding="utf-8")
+
+        seen_chunks = []
+
+        class _BadPlaceholderLLM:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                seen_chunks.append(markdown_text)
+                if "<<<RAKUTRANS_CODE_" in markdown_text:
+                    # Simulate model accidentally dropping the placeholder token
+                    return markdown_text.replace("<<<RAKUTRANS_CODE_0>>>", "")
+                return "\n".join(f"[VI] {ln}" if ln.strip() else ln for ln in markdown_text.splitlines())
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "md_fallback.db")
+        tr = MarkdownTranslator(AppConfig(section_max_chars=8000), _BadPlaceholderLLM(), cache=cache)
+
+        out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+
+        # 1 failed masked attempt + 2 clean unmasked sub-chunk fallback calls
+        self.assertEqual(len(seen_chunks), 3)
+        self.assertIn(code1, out_text)
+        self.assertIn("[VI] # First", out_text)
+        self.assertIn("[VI] Beta paragraph.", out_text)
+
+        # Corrupted masked entry was NOT saved to cache; valid fallback sub-chunks WERE cached
+        calls_before = len(seen_chunks)
+        out_path_2 = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text_2 = Path(out_path_2).read_text(encoding="utf-8")
+        self.assertIn(code1, out_text_2)
+        self.assertEqual(len(seen_chunks), calls_before + 1)
+
+    def test_placeholder_prefix_avoids_collision_with_source_text(self):
+        from translation_cache import TranslationCache
+
+        code1 = "```python\n" + "\n".join(f"row_{i} = {i}" for i in range(15)) + "\n```"
+        doc_text = (
+            "Literal token <<<RAKUTRANS_CODE_0>>> in prose.\n\n"
+            f"{code1}\n\n"
+            "Trailing line.\n"
+        )
+        md_path = Path(self.temp_dir.name) / "collision_code.md"
+        md_path.write_text(doc_text, encoding="utf-8")
+
+        seen_chunks = []
+
+        class _PassthroughSpy:
+            def translate_markdown_text(self, markdown_text, *args, **kwargs):
+                seen_chunks.append(markdown_text)
+                return markdown_text.replace("Trailing line.", "[VI] Trailing line.")
+
+        cache = TranslationCache(db_path=Path(self.temp_dir.name) / "md_collision.db")
+        tr = MarkdownTranslator(AppConfig(section_max_chars=8000), _PassthroughSpy(), cache=cache)
+
+        out_path = tr.process_file(file_path=str(md_path), target_lang="Vietnamese")
+        out_text = Path(out_path).read_text(encoding="utf-8")
+
+        self.assertEqual(len(seen_chunks), 1)
+        self.assertIn("<<<XRAKUTRANS_CODE_0>>>", seen_chunks[0])
+        self.assertIn("Literal token <<<RAKUTRANS_CODE_0>>> in prose.", out_text)
+        self.assertIn(code1, out_text)
+        self.assertIn("[VI] Trailing line.", out_text)
 
 
 if __name__ == "__main__":

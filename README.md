@@ -19,6 +19,10 @@ AI-powered Desktop translation application supporting multiple formats: **PDF (`
 - **Storage & Cache**: SQLite3 (Translation memory), JSON (Configuration & model cache)
 - **Application Packaging**: PyInstaller, Inno Setup 6 (Windows)
 
+## Documentation
+
+- [Speed & Advanced Settings Guide (with Diagrams)](docs/ADVANCED_SETTINGS.md) — explains rate-limit presets, document batching, Custom API Server URLs (Ollama / LM Studio / proxies), and troubleshooting.
+
 ---
 
 ## Quick Start & Installation

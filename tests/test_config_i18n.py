@@ -241,7 +241,7 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertEqual(recovered.active_provider, "OpenAI")
                 self.assertEqual(recovered.ui_language, "en")
                 self.assertEqual(recovered.theme_mode, "dark")
-                self.assertEqual(recovered.batch_size, 25)
+                self.assertEqual(recovered.batch_size, 100)
                 self.assertEqual(recovered.max_concurrent_requests, 2)
                 self.assertTrue(recovered.auto_check_updates)
                 self.assertEqual(recovered.skipped_update_version, "")
@@ -463,13 +463,18 @@ class TestConfigAndI18n(unittest.TestCase):
         cfg = AppConfig()
         self.assertEqual(cfg.rate_limit_preset, "balanced")
         self.assertEqual(cfg.rpm_limit, 45)
-        self.assertEqual(cfg.batch_max_chars, 6000)
+        self.assertEqual(cfg.batch_size, 100)
+        self.assertEqual(cfg.batch_max_chars, 12000)
+        self.assertEqual(cfg.section_max_chars, 12000)
 
         cfg.apply_rate_limit_preset("safe_free")
         self.assertEqual(cfg.rate_limit_preset, "safe_free")
         self.assertEqual(cfg.max_concurrent_requests, RATE_LIMIT_PRESETS["safe_free"]["max_concurrent_requests"])
         self.assertEqual(cfg.rpm_limit, 12)
         self.assertEqual(cfg.tpm_limit, 100000)
+        self.assertEqual(cfg.batch_size, 100)
+        self.assertEqual(cfg.batch_max_chars, 12000)
+        self.assertEqual(cfg.section_max_chars, 12000)
         self.assertEqual(cfg.detect_rate_limit_preset(), "safe_free")
 
         cfg.rpm_limit = 33
@@ -484,6 +489,37 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertEqual(reloaded.rpm_limit, 33)
                 self.assertEqual(reloaded.tpm_limit, 100000)
                 self.assertEqual(reloaded.rate_limit_preset, "custom")
+
+                # Unmodified legacy preset config auto-upgrades on load
+                import json
+                from config import _LEGACY_RATE_LIMIT_PRESETS, _PREVIOUS_RATE_LIMIT_PRESETS
+                legacy_balanced = dict(_LEGACY_RATE_LIMIT_PRESETS["balanced"])
+                legacy_balanced["rate_limit_preset"] = "balanced"
+                cfg_file.write_text(json.dumps(legacy_balanced), encoding="utf-8")
+                upgraded = AppConfig.load()
+                self.assertEqual(upgraded.rate_limit_preset, "balanced")
+                self.assertEqual(upgraded.batch_size, RATE_LIMIT_PRESETS["balanced"]["batch_size"])
+                self.assertEqual(upgraded.batch_max_chars, RATE_LIMIT_PRESETS["balanced"]["batch_max_chars"])
+                self.assertEqual(upgraded.section_max_chars, RATE_LIMIT_PRESETS["balanced"]["section_max_chars"])
+
+                prev_safe_free = dict(_PREVIOUS_RATE_LIMIT_PRESETS["safe_free"])
+                prev_safe_free["rate_limit_preset"] = "safe_free"
+                cfg_file.write_text(json.dumps(prev_safe_free), encoding="utf-8")
+                upgraded_free = AppConfig.load()
+                self.assertEqual(upgraded_free.rate_limit_preset, "safe_free")
+                self.assertEqual(upgraded_free.batch_size, RATE_LIMIT_PRESETS["safe_free"]["batch_size"])
+                self.assertEqual(upgraded_free.batch_max_chars, RATE_LIMIT_PRESETS["safe_free"]["batch_max_chars"])
+                self.assertEqual(upgraded_free.section_max_chars, RATE_LIMIT_PRESETS["safe_free"]["section_max_chars"])
+
+                # User-customized config with old batch_size=25 must NOT be overwritten
+                custom_legacy = dict(_LEGACY_RATE_LIMIT_PRESETS["balanced"])
+                custom_legacy["batch_max_chars"] = 4500
+                custom_legacy["rate_limit_preset"] = "custom"
+                cfg_file.write_text(json.dumps(custom_legacy), encoding="utf-8")
+                preserved = AppConfig.load()
+                self.assertEqual(preserved.batch_size, 25)
+                self.assertEqual(preserved.batch_max_chars, 4500)
+                self.assertEqual(preserved.rate_limit_preset, "custom")
 
         for lang in ("en", "ja", "vi"):
             advice = I18nManager(lang).t("err_diag_quota_advice").lower()

@@ -7,7 +7,7 @@ and preserves exact inter-block separators.
 
 from pathlib import Path
 import re
-from typing import List, Tuple, Callable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from base_translator import (
     BaseTranslator,
@@ -21,6 +21,7 @@ from translation_cache import TranslationCache
 
 _DEFAULT_MD_CHUNK_CHARS = 3500
 _STANDALONE_CODE_FENCE_MIN_CHARS = 150
+_CODE_PLACEHOLDER_BASE = "RAKUTRANS_CODE_"
 
 # Backtick fence info strings cannot contain backticks (CommonMark spec),
 # preventing lines starting with inline ```code``` spans from hijacking tokenization.
@@ -45,6 +46,143 @@ def is_md_table_line(line: str) -> bool:
     """Returns True when a line looks like a pipe-delimited Markdown table row."""
     stripped = line.strip()
     return len(stripped) >= 2 and stripped.startswith("|") and stripped.endswith("|")
+
+
+def _choose_placeholder_prefix(content: str) -> str:
+    """Chooses a placeholder prefix guaranteed not to collide with source Markdown text."""
+    prefix = _CODE_PLACEHOLDER_BASE
+    while f"<<<{prefix}" in content:
+        prefix = f"X{prefix}"
+    return prefix
+
+
+def _normalize_and_validate_placeholders(
+    translated: str, tokens: Iterable[str]
+) -> Optional[str]:
+    """
+    Validates that every placeholder token appears exactly once in translated text
+    (tolerating accidental single-backtick wrapping by the model) and returns normalized text.
+    """
+    out = translated
+    for token in tokens:
+        if f"`{token}`" in out:
+            out = out.replace(f"`{token}`", token)
+        if out.count(token) != 1:
+            return None
+    return out
+
+
+def _restore_masked_placeholders(
+    translated: str, placeholders: Dict[str, str]
+) -> Optional[str]:
+    """Restores verbatim code blocks for each placeholder, or returns None if validation fails."""
+    if not placeholders:
+        return translated
+    normalized = _normalize_and_validate_placeholders(translated, placeholders.keys())
+    if normalized is None:
+        return None
+    for token, orig_gap in placeholders.items():
+        normalized = normalized.replace(token, orig_gap, 1)
+    return normalized
+
+
+def _build_masked_chunk_plan(
+    chunk_specs: List[Tuple[str, str]],
+    max_chars: int,
+    placeholder_prefix: str,
+) -> List[Dict[str, Any]]:
+    """
+    Coalesces consecutive translatable Markdown chunks separated by isolated code fences
+    into masked chunks up to max_chars, avoiding extra API calls for interleaved code blocks.
+    """
+    plan: List[Dict[str, Any]] = []
+    active: Optional[Dict[str, Any]] = None
+
+    def _flush_active() -> None:
+        nonlocal active
+        if active is None:
+            return
+        trailing_gap = active["pending_gap"]
+        plan.append({
+            "kind": "masked",
+            "masked_text": "".join(active["parts"]),
+            "placeholders": active["placeholders"],
+            "sep": active["pending_sep"],
+            "sub_specs": active["sub_specs"],
+        })
+        active = None
+        for gap_text, gap_sep in trailing_gap:
+            plan.append({"kind": "literal", "text": gap_text, "sep": gap_sep})
+
+    def _start_active(chunk_text: str, sep_after: str) -> None:
+        nonlocal active
+        active = {
+            "parts": [chunk_text],
+            "cur_len": len(chunk_text),
+            "pending_sep": sep_after,
+            "pending_gap": [],
+            "placeholders": {},
+            "sub_specs": [(chunk_text, sep_after)],
+        }
+
+    for chunk_text, sep_after in chunk_specs:
+        if not _has_translatable_markdown(chunk_text):
+            if active is None:
+                plan.append({"kind": "literal", "text": chunk_text, "sep": sep_after})
+            else:
+                active["pending_gap"].append((chunk_text, sep_after))
+            continue
+
+        if active is None:
+            _start_active(chunk_text, sep_after)
+            continue
+
+        pending_gap = active["pending_gap"]
+        if not pending_gap or not any(g_text for g_text, _ in pending_gap):
+            extra_sep = active["pending_sep"] + "".join(g_text + g_sep for g_text, g_sep in pending_gap)
+            candidate_len = active["cur_len"] + len(extra_sep) + len(chunk_text)
+            if candidate_len <= max_chars:
+                active["parts"].extend((extra_sep, chunk_text))
+                active["cur_len"] = candidate_len
+                active["pending_sep"] = sep_after
+                active["pending_gap"] = []
+                active["sub_specs"].extend(pending_gap)
+                active["sub_specs"].append((chunk_text, sep_after))
+            else:
+                _flush_active()
+                _start_active(chunk_text, sep_after)
+            continue
+
+        sep_before = active["pending_sep"]
+        sep_after_tok = pending_gap[-1][1]
+        token = f"<<<{placeholder_prefix}{len(active['placeholders'])}>>>"
+        candidate_len = (
+            active["cur_len"]
+            + len(sep_before)
+            + len(token)
+            + len(sep_after_tok)
+            + len(chunk_text)
+        )
+        can_mask_safely = (
+            candidate_len <= max_chars
+            and sep_before.endswith("\n")
+            and sep_after_tok.startswith("\n")
+        )
+        if can_mask_safely:
+            gap_body = "".join(g_text + g_sep for g_text, g_sep in pending_gap[:-1]) + pending_gap[-1][0]
+            active["placeholders"][token] = gap_body
+            active["parts"].extend((sep_before, token, sep_after_tok, chunk_text))
+            active["cur_len"] = candidate_len
+            active["pending_sep"] = sep_after
+            active["pending_gap"] = []
+            active["sub_specs"].extend(pending_gap)
+            active["sub_specs"].append((chunk_text, sep_after))
+        else:
+            _flush_active()
+            _start_active(chunk_text, sep_after)
+
+    _flush_active()
+    return plan
 
 
 def _has_translatable_markdown(chunk_text: str) -> bool:
@@ -344,10 +482,24 @@ class MarkdownTranslator(BaseTranslator):
 
         section_max_chars = resolve_config_int(self.config, "section_max_chars")
         chunk_specs = self._split_into_chunk_specs(content, max_chars=section_max_chars)
-        total_chunks = len(chunk_specs)
-        section_inputs = [
-            chunk_text for chunk_text, _ in chunk_specs if _has_translatable_markdown(chunk_text)
-        ]
+        placeholder_prefix = _choose_placeholder_prefix(content)
+        plan = _build_masked_chunk_plan(chunk_specs, section_max_chars, placeholder_prefix)
+        total_chunks = len(plan)
+
+        section_inputs: List[str] = []
+        expected_tokens_by_text: Dict[str, Tuple[str, ...]] = {}
+        for seg in plan:
+            if seg["kind"] == "masked":
+                masked_text = seg["masked_text"]
+                section_inputs.append(masked_text)
+                if seg["placeholders"] and masked_text not in expected_tokens_by_text:
+                    expected_tokens_by_text[masked_text] = tuple(seg["placeholders"].keys())
+
+        def _validate_masked_cache(src_chunk: str, translated_chunk: str) -> bool:
+            tokens = expected_tokens_by_text.get(src_chunk)
+            if not tokens:
+                return True
+            return _normalize_and_validate_placeholders(translated_chunk, tokens) is not None
 
         def _on_cache_checked(cache_hits: int, _total_unique: int) -> None:
             if progress_callback:
@@ -368,6 +520,7 @@ class MarkdownTranslator(BaseTranslator):
             progress_start=10,
             progress_span=80,
             on_cache_checked=_on_cache_checked,
+            cache_validator=_validate_masked_cache,
         )
 
         if self._is_cancelled:
@@ -376,15 +529,50 @@ class MarkdownTranslator(BaseTranslator):
         if progress_callback:
             progress_callback(95, 100, self._t("progress_saving_md"))
 
-        parts: List[str] = []
-        for orig_chunk, sep_after in chunk_specs:
-            if not orig_chunk.strip():
-                parts.append(orig_chunk)
+        resolved_segments: List[Optional[str]] = []
+        fallback_indices: List[int] = []
+        fallback_inputs: List[str] = []
+
+        for idx, seg in enumerate(plan):
+            if seg["kind"] == "literal":
+                resolved_segments.append(f"{seg['text']}{seg['sep']}")
+                continue
+            raw_translated = section_map.get(seg["masked_text"], seg["masked_text"])
+            restored = _restore_masked_placeholders(raw_translated, seg["placeholders"])
+            if restored is None:
+                resolved_segments.append(None)
+                fallback_indices.append(idx)
+                for sub_text, _ in seg["sub_specs"]:
+                    if _has_translatable_markdown(sub_text):
+                        fallback_inputs.append(sub_text)
             else:
-                parts.append(section_map.get(orig_chunk, orig_chunk))
-            if sep_after:
-                parts.append(sep_after)
-        final_markdown = "".join(parts)
+                resolved_segments.append(f"{restored}{seg['sep']}")
+
+        if fallback_indices:
+            fb_map = self.translate_unique_sections(
+                sections=fallback_inputs,
+                target_lang=target_lang,
+                source_lang=source_lang,
+                options=options,
+                mode="markdown",
+                plain_text=False,
+                progress_callback=progress_callback,
+                progress_start=90,
+                progress_span=5,
+            )
+            for idx in fallback_indices:
+                seg = plan[idx]
+                sub_parts: List[str] = []
+                for orig_sub, sub_sep in seg["sub_specs"]:
+                    if not _has_translatable_markdown(orig_sub):
+                        sub_parts.append(orig_sub)
+                    else:
+                        sub_parts.append(fb_map.get(orig_sub, orig_sub))
+                    if sub_sep:
+                        sub_parts.append(sub_sep)
+                resolved_segments[idx] = "".join(sub_parts)
+
+        final_markdown = "".join(part or "" for part in resolved_segments)
 
         target_path = (
             Path(custom_output_path)

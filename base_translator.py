@@ -21,65 +21,24 @@ from config import (
     TranslationOptions,
     resolve_config_int,
 )
-from llm_manager import LLMManager
-from model_fetcher import get_model_metadata
+from llm_manager import (
+    LLMManager,
+    compute_effective_batch_char_limit,
+    estimate_batch_item_chars,
+)
 from translation_cache import TranslationCache
 
 _ESTIMATE_CHAR_RATIO = 0.7
 _APPEND_ORIGINAL_CHAR_RATIO = 0.75
-_INLINE_TAG_CHAR_WEIGHT = 24
 _ENCODING_SNIFF_BYTES = 65536
 _LEGACY_FALLBACK_ENCODINGS = ("cp932", "shift_jis", "euc_jp", "gbk", "cp1252", "latin-1")
 _WIN_LOCK_ERRNOS = frozenset({32, 33})
 _SAFE_SAVE_MAX_ATTEMPTS = 50
-_SMALL_MODEL_OUTPUT_TOKEN_CAP = 2048
-_SMALL_MODEL_CHAR_MULTIPLIER = 1.5
 _MIN_CHAR_BUDGET = int(NUMERIC_SETTING_SPECS["batch_max_chars"].min_val)
 _WORKER_POLL_TIMEOUT_S = 0.25
 _DEFAULT_PROGRESS_START = 10
 _DEFAULT_PROGRESS_BATCH_SPAN = 75
 _DEFAULT_PROGRESS_SECTION_SPAN = 80
-
-
-def compute_effective_batch_char_limit(
-    config: Optional[AppConfig],
-    options: Optional[TranslationOptions] = None,
-    max_chars: Optional[int] = None,
-) -> int:
-    """
-    Computes the effective per-batch character budget honoring configured batch_max_chars,
-    small model output token limits, and output expansion when append_original_words is enabled.
-    """
-    configured_chars = resolve_config_int(config, "batch_max_chars")
-    if max_chars is not None:
-        return max(_MIN_CHAR_BUDGET, min(configured_chars, max_chars))
-
-    char_limit = configured_chars
-    if config is not None:
-        provider = getattr(config, "active_provider", "") or ""
-        model = config.get_active_model() if hasattr(config, "get_active_model") else ""
-        if provider and model:
-            meta = get_model_metadata(provider, model)
-            out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
-            if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
-                char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
-
-    effective_options = options if options is not None else getattr(config, "translation_options", None)
-    if effective_options is not None and getattr(effective_options, "append_original_words", False):
-        char_limit = max(_MIN_CHAR_BUDGET, int(char_limit * _APPEND_ORIGINAL_CHAR_RATIO))
-
-    return max(_MIN_CHAR_BUDGET, char_limit)
-
-
-def estimate_batch_item_chars(text: str) -> int:
-    """
-    Estimates effective character budget consumed by a batch item, accounting for
-    synthetic inline style tags (<s0>...</s0>) that require strict structural preservation.
-    """
-    if not text:
-        return 0
-    tag_count = len(_INLINE_TAG_TOKEN_RE.findall(text))
-    return len(text) + (tag_count * _INLINE_TAG_CHAR_WEIGHT)
 
 
 def estimate_translation_requests(
@@ -641,6 +600,7 @@ class BaseTranslator(ABC):
         progress_span: int = _DEFAULT_PROGRESS_SECTION_SPAN,
         on_cache_checked: Optional[Callable[[int, int], None]] = None,
         progress_formatter: Optional[Callable[[int, int, int], str]] = None,
+        cache_validator: Optional[Callable[[str, str], bool]] = None,
     ) -> Dict[str, str]:
         """
         Shared cache lookup, deduplicated concurrent section translation, and single-thread
@@ -694,15 +654,16 @@ class BaseTranslator(ABC):
             nonlocal completed_count
             section_text, translated = result
             effective_model_id = self._get_cache_model_id() or model_id
-            self.cache.save_batch(
-                source_texts=[section_text],
-                translated_texts=[translated],
-                target_lang=target_lang,
-                options=options,
-                source_lang=source_lang,
-                mode=mode,
-                model_id=effective_model_id,
-            )
+            if cache_validator is None or cache_validator(section_text, translated):
+                self.cache.save_batch(
+                    source_texts=[section_text],
+                    translated_texts=[translated],
+                    target_lang=target_lang,
+                    options=options,
+                    source_lang=source_lang,
+                    mode=mode,
+                    model_id=effective_model_id,
+                )
             translation_map[section_text] = translated
             completed_count += 1
             pct = progress_start + int((completed_count / max(1, total_unique)) * progress_span)

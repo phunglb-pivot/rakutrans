@@ -19,6 +19,10 @@
 - **Lưu trữ & Cache**: SQLite3 (Bộ nhớ dịch thuật), JSON (Cấu hình & Cache model)
 - **Đóng gói ứng dụng**: PyInstaller, Inno Setup 6 (Windows)
 
+## Tài liệu hướng dẫn
+
+- [Hướng dẫn Cài đặt Nâng cao & Tốc độ (kèm sơ đồ)](docs/ADVANCED_SETTINGS.vi.md) — giải thích chi tiết các chế độ tốc độ, cách chia nhỏ tài liệu, Custom API Server URL (Ollama / LM Studio / Proxy công ty) và cách xử lý lỗi 429.
+
 ---
 
 ## Cài đặt & Khởi chạy nhanh

@@ -1381,6 +1381,9 @@ class RakuTransApp(ctk.CTk):
         if self.current_screen != "settings":
             return
 
+        if hasattr(self, "settings_view") and self.settings_view is not None:
+            self.settings_view.commit_pending_changes()
+
         self.current_screen = "main"
 
         # Hide settings view and restore main workspace

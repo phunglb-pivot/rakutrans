@@ -6,6 +6,7 @@ Supports both seamless in-page transition (no popup) and standalone modal.
 All settings changes take effect immediately and persist automatically.
 """
 
+import math
 import threading
 import time
 import webbrowser
@@ -16,7 +17,9 @@ from config import (
     AI_PROVIDERS,
     APP_VERSION,
     AppConfig,
+    DEFAULT_RATE_LIMIT_PRESET,
     DEFAULT_UI_LANGUAGE,
+    NUMERIC_SETTING_SPECS,
     RATE_LIMIT_PRESETS,
     THEME_MODES,
     UI_LANGUAGES,
@@ -26,6 +29,7 @@ from model_fetcher import fetch_models_async
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from components.ui_system import COLORS, CustomButton, CustomSegmentedButton, UI_TIMING
 from components.icons import get_icon, get_provider_icon_name
+from components.advanced_guide_modal import AdvancedGuideModal
 from components.update_modal import UpdateModal
 
 _ADV_NUMERIC_BINDINGS = (
@@ -40,6 +44,19 @@ _ADV_NUMERIC_BINDINGS = (
     ("rpm_limit_var", "rpm_limit"),
     ("tpm_limit_var", "tpm_limit"),
 )
+
+_ADV_FIELD_LABEL_KEYS = {
+    "temperature": "temperature_label",
+    "request_timeout": "request_timeout_label",
+    "batch_size": "batch_size_label",
+    "max_concurrent_requests": "max_concurrent_label",
+    "batch_max_chars": "batch_max_chars_label",
+    "section_max_chars": "section_max_chars_label",
+    "min_request_interval": "min_interval_label",
+    "max_retries_rate_limit": "rate_retries_label",
+    "rpm_limit": "rpm_limit_label",
+    "tpm_limit": "tpm_limit_label",
+}
 
 
 class SettingsView(ctk.CTkFrame):
@@ -82,7 +99,11 @@ class SettingsView(ctk.CTkFrame):
         self._advanced_expanded = False
         self._suppress_adv_trace = False
         self._adv_save_pending = False
+        self._adv_numeric_dirty = False
         self._adv_save_after_id = None
+        self._manual_custom_mode = False
+        self._adv_status_state: Optional[str] = None
+        self._adv_status_details: str = ""
 
         self._setup_ui()
 
@@ -377,43 +398,52 @@ class SettingsView(ctk.CTkFrame):
         self.theme_dropdown.grid(row=1, column=1, sticky="ew", padx=(8, 0))
 
         # --------------------------------------------------------------------
-        # 4. Advanced & Performance Settings (Collapsible)
+        # 5. Translation Speed & Rate-Limit Mode (Always visible)
         # --------------------------------------------------------------------
-        self.advanced_group = ctk.CTkFrame(self.container, fg_color="transparent")
-        self.advanced_group.pack(fill="x", pady=(0, 12), padx=2)
+        self.speed_group = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.speed_group.pack(fill="x", pady=(0, 8), padx=2)
 
-        self.advanced_toggle_btn = ctk.CTkButton(
-            self.advanced_group,
-            text=self.t("advanced_toggle_show"),
-            command=self._toggle_advanced_section,
-            fg_color="transparent",
-            hover_color=("#F4F4F5", "#27272A"),
-            text_color=("#3F3F46", "#D4D4D8"),
+        speed_header_row = ctk.CTkFrame(self.speed_group, fg_color="transparent")
+        speed_header_row.pack(fill="x", padx=4, pady=(8, 6))
+
+        self.speed_section_label = ctk.CTkLabel(
+            speed_header_row,
+            text=self.t("speed_section_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            height=30,
         )
-        self.advanced_toggle_btn.pack(fill="x", padx=2, pady=(4, 4))
+        self.speed_section_label.pack(side="left", fill="x", expand=True)
 
-        self.advanced_card = ctk.CTkFrame(
-            self.advanced_group,
+        self.advanced_guide_btn = CustomButton(
+            speed_header_row,
+            text=self.t("adv_guide_btn"),
+            variant="ghost",
+            size="sm",
+            icon_name="info",
+            icon_size=14,
+            command=self._open_advanced_guide,
+        )
+        self.advanced_guide_btn.pack(side="right", padx=(8, 0))
+
+        self.speed_card = ctk.CTkFrame(
+            self.speed_group,
             fg_color=("#F4F4F5", "#18181B"),
             border_width=1,
             border_color=("#E4E4E7", "#27272A"),
-            corner_radius=8
+            corner_radius=8,
         )
-        # Collapsed by default; shown on demand via _toggle_advanced_section()
+        self.speed_card.pack(fill="x", padx=4, pady=(0, 4))
 
         self.rate_profile_label = ctk.CTkLabel(
-            self.advanced_card,
+            self.speed_card,
             text=self.t("rate_profile_label"),
             font=ctk.CTkFont(size=12, weight="bold")
         )
-        self.rate_profile_label.pack(anchor="w", padx=12, pady=(10, 4))
+        self.rate_profile_label.pack(anchor="w", padx=14, pady=(10, 4))
 
         self.rate_profile_var = ctk.StringVar(value=self._get_rate_profile_display())
         self.rate_profile_dropdown = ctk.CTkOptionMenu(
-            self.advanced_card,
+            self.speed_card,
             values=self._get_rate_profile_display_names(),
             variable=self.rate_profile_var,
             command=self._on_rate_profile_changed,
@@ -426,25 +456,139 @@ class SettingsView(ctk.CTkFrame):
             dropdown_hover_color=("#F4F4F5", "#27272A"),
             dropdown_text_color=("#18181B", "#FAFAFA")
         )
-        self.rate_profile_dropdown.pack(fill="x", padx=12, pady=(0, 4))
+        self.rate_profile_dropdown.pack(fill="x", padx=14, pady=(0, 6))
 
-        self.rate_profile_hint_label = ctk.CTkLabel(
-            self.advanced_card,
-            text=self.t("rate_profile_hint"),
-            font=ctk.CTkFont(size=11),
-            text_color=("#71717A", "#A1A1AA"),
-            wraplength=500,
+        self.rate_profile_summary_label = ctk.CTkLabel(
+            self.speed_card,
+            text=self._get_rate_profile_summary_text(),
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COLORS["text_body"],
+            wraplength=600,
             justify="left",
             anchor="w",
         )
-        self.rate_profile_hint_label.pack(fill="x", padx=12, pady=(0, 8))
+        self.rate_profile_summary_label.pack(fill="x", padx=14, pady=(0, 2))
+
+        self.rate_profile_hint_label = ctk.CTkLabel(
+            self.speed_card,
+            text=self.t("rate_profile_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=600,
+            justify="left",
+            anchor="w",
+        )
+        self.rate_profile_hint_label.pack(fill="x", padx=14, pady=(0, 10))
+
+        # --------------------------------------------------------------------
+        # 6. Fine-Tuning & Custom Server (Collapsible)
+        # --------------------------------------------------------------------
+        self.advanced_group = ctk.CTkFrame(self.container, fg_color="transparent")
+        self.advanced_group.pack(fill="x", pady=(0, 12), padx=2)
+
+        adv_header_row = ctk.CTkFrame(self.advanced_group, fg_color="transparent")
+        adv_header_row.pack(fill="x", padx=2, pady=(2, 4))
+
+        self.advanced_toggle_btn = ctk.CTkButton(
+            adv_header_row,
+            text=self.t("advanced_toggle_show"),
+            command=self._toggle_advanced_section,
+            fg_color="transparent",
+            hover_color=("#F4F4F5", "#27272A"),
+            text_color=("#3F3F46", "#D4D4D8"),
+            anchor="w",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            height=30,
+        )
+        self.advanced_toggle_btn.pack(side="left", fill="x", expand=True)
+
+        self.advanced_card = ctk.CTkFrame(
+            self.advanced_group,
+            fg_color=("#F4F4F5", "#18181B"),
+            border_width=1,
+            border_color=("#E4E4E7", "#27272A"),
+            corner_radius=8
+        )
+        # Collapsed by default; shown on demand via _toggle_advanced_section()
+
+        adv_top_row = ctk.CTkFrame(self.advanced_card, fg_color="transparent")
+        adv_top_row.pack(fill="x", padx=14, pady=(12, 6))
+
+        self.advanced_intro_label = ctk.CTkLabel(
+            adv_top_row,
+            text=self.t("advanced_intro_note"),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        )
+        self.advanced_intro_label.pack(side="left", fill="x", expand=True, padx=(0, 10))
+
+        self.reset_adv_btn = CustomButton(
+            adv_top_row,
+            text=self.t("adv_reset_defaults_btn"),
+            variant="outline",
+            size="sm",
+            icon_name="rotate_ccw",
+            icon_size=13,
+            command=self._reset_advanced_defaults,
+        )
+        self.reset_adv_btn.pack(side="right")
+
+        self.adv_status_slot = ctk.CTkFrame(self.advanced_card, fg_color="transparent", height=0)
+        self.adv_status_slot.pack(fill="x", padx=14, pady=(0, 4))
+        self.adv_status_label = ctk.CTkLabel(
+            self.adv_status_slot,
+            text="",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["success"],
+            wraplength=580,
+            justify="left",
+            anchor="w",
+        )
+
+        self.temperature_var = ctk.StringVar(
+            value="" if self.config.temperature is None else f"{self.config.temperature:g}"
+        )
+        self.request_timeout_var = ctk.StringVar(
+            value=f"{self.config.request_timeout:g}"
+        )
+        self.batch_size_var = ctk.StringVar(value=str(self.config.batch_size))
+        self.max_concurrent_var = ctk.StringVar(
+            value=str(self.config.max_concurrent_requests)
+        )
+        self.batch_max_chars_var = ctk.StringVar(value=str(self.config.batch_max_chars))
+        self.section_max_chars_var = ctk.StringVar(value=str(self.config.section_max_chars))
+        self.min_interval_var = ctk.StringVar(value=f"{self.config.min_request_interval:g}")
+        self.rate_retries_var = ctk.StringVar(value=str(self.config.max_retries_rate_limit))
+        self.rpm_limit_var = ctk.StringVar(value=str(self.config.rpm_limit))
+        self.tpm_limit_var = ctk.StringVar(value=str(self.config.tpm_limit))
+        for var_attr, _cfg_field in _ADV_NUMERIC_BINDINGS:
+            tk_var = getattr(self, var_attr)
+            tk_var.trace_add("write", self._on_adv_numeric_var_changed)
+
+        # --- Sub-group 1: AI Connection & Output ---
+        self._add_adv_section_header(self.advanced_card, "adv_group_connection")
 
         self.base_url_label = ctk.CTkLabel(
             self.advanced_card,
-            text=self.t("base_url_label"),
-            font=ctk.CTkFont(size=12, weight="bold")
+            text=self._get_base_url_label_text(current_prov),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
         )
-        self.base_url_label.pack(anchor="w", padx=12, pady=(2, 4))
+        self.base_url_label.pack(anchor="w", padx=14, pady=(4, 2))
+
+        self.base_url_hint = ctk.CTkLabel(
+            self.advanced_card,
+            text=self.t("base_url_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=600,
+            justify="left",
+            anchor="w",
+        )
+        self.base_url_hint.pack(fill="x", padx=14, pady=(0, 4))
 
         self.base_url_var = ctk.StringVar(
             value=self.config.base_urls.get(current_prov, "")
@@ -458,136 +602,25 @@ class SettingsView(ctk.CTkFrame):
             fg_color=("#FFFFFF", "#09090B"),
             border_color=("#D4D4D8", "#3F3F46"),
         )
-        self.base_url_entry.pack(fill="x", padx=12, pady=(0, 10))
+        self.base_url_entry.pack(fill="x", padx=14, pady=(0, 10))
+        self.base_url_entry.bind("<FocusOut>", lambda _e: self._commit_advanced_settings())
+        self.base_url_entry.bind("<Return>", lambda _e: self._commit_advanced_settings())
 
-        adv_grid = ctk.CTkFrame(self.advanced_card, fg_color="transparent")
-        adv_grid.pack(fill="x", padx=12, pady=(0, 8))
-        adv_grid.grid_columnconfigure(0, weight=1, uniform="adv_cols")
-        adv_grid.grid_columnconfigure(1, weight=1, uniform="adv_cols")
-
-        self.temperature_label = ctk.CTkLabel(
-            adv_grid,
-            text=self.t("temperature_label"),
-            font=ctk.CTkFont(size=12, weight="bold")
+        self._add_adv_setting_row(
+            self.advanced_card,
+            "temperature_label",
+            "temperature_hint",
+            self.temperature_var,
+            "temperature_entry",
+            placeholder_key="temperature_placeholder",
         )
-        self.temperature_label.grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
-
-        self.request_timeout_label = ctk.CTkLabel(
-            adv_grid,
-            text=self.t("request_timeout_label"),
-            font=ctk.CTkFont(size=12, weight="bold")
+        self._add_adv_setting_row(
+            self.advanced_card,
+            "request_timeout_label",
+            "request_timeout_hint",
+            self.request_timeout_var,
+            "request_timeout_entry",
         )
-        self.request_timeout_label.grid(row=0, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
-
-        self.temperature_var = ctk.StringVar(
-            value="" if self.config.temperature is None else f"{self.config.temperature:g}"
-        )
-        self.temperature_entry = ctk.CTkEntry(
-            adv_grid,
-            textvariable=self.temperature_var,
-            placeholder_text=self.t("temperature_placeholder"),
-            height=32,
-            fg_color=("#FFFFFF", "#09090B"),
-            border_color=("#D4D4D8", "#3F3F46"),
-        )
-        self.temperature_entry.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(0, 8))
-
-        self.request_timeout_var = ctk.StringVar(
-            value=f"{self.config.request_timeout:g}"
-        )
-        self.request_timeout_entry = ctk.CTkEntry(
-            adv_grid,
-            textvariable=self.request_timeout_var,
-            height=32,
-            fg_color=("#FFFFFF", "#09090B"),
-            border_color=("#D4D4D8", "#3F3F46"),
-        )
-        self.request_timeout_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
-
-        self.batch_size_label = ctk.CTkLabel(
-            adv_grid,
-            text=self.t("batch_size_label"),
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        self.batch_size_label.grid(row=2, column=0, sticky="w", padx=(0, 8), pady=(0, 4))
-
-        self.max_concurrent_label = ctk.CTkLabel(
-            adv_grid,
-            text=self.t("max_concurrent_label"),
-            font=ctk.CTkFont(size=12, weight="bold")
-        )
-        self.max_concurrent_label.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(0, 4))
-
-        self.batch_size_var = ctk.StringVar(value=str(self.config.batch_size))
-        self.batch_size_entry = ctk.CTkEntry(
-            adv_grid,
-            textvariable=self.batch_size_var,
-            height=32,
-            fg_color=("#FFFFFF", "#09090B"),
-            border_color=("#D4D4D8", "#3F3F46"),
-        )
-        self.batch_size_entry.grid(row=3, column=0, sticky="ew", padx=(0, 8), pady=(0, 4))
-
-        self.max_concurrent_var = ctk.StringVar(
-            value=str(self.config.max_concurrent_requests)
-        )
-        self.max_concurrent_entry = ctk.CTkEntry(
-            adv_grid,
-            textvariable=self.max_concurrent_var,
-            height=32,
-            fg_color=("#FFFFFF", "#09090B"),
-            border_color=("#D4D4D8", "#3F3F46"),
-        )
-        self.max_concurrent_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(0, 8))
-
-        self.batch_max_chars_var = ctk.StringVar(value=str(self.config.batch_max_chars))
-        self.section_max_chars_var = ctk.StringVar(value=str(self.config.section_max_chars))
-        self.min_interval_var = ctk.StringVar(value=f"{self.config.min_request_interval:g}")
-        self.rate_retries_var = ctk.StringVar(value=str(self.config.max_retries_rate_limit))
-        self.rpm_limit_var = ctk.StringVar(value=str(self.config.rpm_limit))
-        self.tpm_limit_var = ctk.StringVar(value=str(self.config.tpm_limit))
-
-        extra_adv_pairs = [
-            (4, "batch_max_chars_label", self.batch_max_chars_var, "batch_max_chars_entry"),
-            (4, "section_max_chars_label", self.section_max_chars_var, "section_max_chars_entry"),
-            (6, "min_interval_label", self.min_interval_var, "min_interval_entry"),
-            (6, "rate_retries_label", self.rate_retries_var, "rate_retries_entry"),
-            (8, "rpm_limit_label", self.rpm_limit_var, "rpm_limit_entry"),
-            (8, "tpm_limit_label", self.tpm_limit_var, "tpm_limit_entry"),
-        ]
-        extra_entries = []
-        for idx, (row_base, label_key, str_var, entry_attr) in enumerate(extra_adv_pairs):
-            col = idx % 2
-            padx = (0, 8) if col == 0 else (8, 0)
-            lbl = ctk.CTkLabel(
-                adv_grid,
-                text=self.t(label_key),
-                font=ctk.CTkFont(size=12, weight="bold")
-            )
-            lbl.grid(row=row_base, column=col, sticky="w", padx=padx, pady=(0, 4))
-            setattr(self, label_key, lbl)
-
-            ent = ctk.CTkEntry(
-                adv_grid,
-                textvariable=str_var,
-                height=32,
-                fg_color=("#FFFFFF", "#09090B"),
-                border_color=("#D4D4D8", "#3F3F46"),
-            )
-            ent.grid(row=row_base + 1, column=col, sticky="ew", padx=padx, pady=(0, 8))
-            setattr(self, entry_attr, ent)
-            extra_entries.append(ent)
-
-        for entry_widget in (
-            self.base_url_entry,
-            self.temperature_entry,
-            self.request_timeout_entry,
-            self.batch_size_entry,
-            self.max_concurrent_entry,
-            *extra_entries,
-        ):
-            entry_widget.bind("<FocusOut>", lambda _e: self._commit_advanced_settings())
-            entry_widget.bind("<Return>", lambda _e: self._commit_advanced_settings())
 
         self.strict_json_var = ctk.BooleanVar(value=bool(self.config.strict_json_mode))
         self.strict_json_cb = ctk.CTkCheckBox(
@@ -595,7 +628,7 @@ class SettingsView(ctk.CTkFrame):
             text=self.t("strict_json_mode_label"),
             variable=self.strict_json_var,
             command=self._on_strict_json_toggled,
-            font=ctk.CTkFont(size=12),
+            font=ctk.CTkFont(size=12, weight="bold"),
             checkbox_width=18,
             checkbox_height=18,
             corner_radius=4,
@@ -605,7 +638,47 @@ class SettingsView(ctk.CTkFrame):
             checkmark_color=("#FFFFFF", "#18181B"),
             border_color=("#D4D4D8", "#52525B")
         )
-        self.strict_json_cb.pack(anchor="w", padx=12, pady=(2, 10))
+        self.strict_json_cb.pack(anchor="w", padx=14, pady=(4, 2))
+
+        self.strict_json_mode_hint = ctk.CTkLabel(
+            self.advanced_card,
+            text=self.t("strict_json_mode_hint"),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=580,
+            justify="left",
+            anchor="w",
+        )
+        self.strict_json_mode_hint.pack(fill="x", padx=(40, 14), pady=(0, 10))
+
+        # --- Sub-group 2: How Documents Are Split ---
+        self._add_adv_section_header(self.advanced_card, "adv_group_batching")
+
+        for label_key, hint_key, str_var, entry_attr in (
+            ("batch_size_label", "batch_size_hint", self.batch_size_var, "batch_size_entry"),
+            ("batch_max_chars_label", "batch_max_chars_hint", self.batch_max_chars_var, "batch_max_chars_entry"),
+            ("section_max_chars_label", "section_max_chars_hint", self.section_max_chars_var, "section_max_chars_entry"),
+        ):
+            self._add_adv_setting_row(
+                self.advanced_card, label_key, hint_key, str_var, entry_attr
+            )
+
+        # --- Sub-group 3: Speed & Rate-Limit Protection ---
+        self._add_adv_section_header(self.advanced_card, "adv_group_ratelimit")
+
+        for label_key, hint_key, str_var, entry_attr in (
+            ("max_concurrent_label", "max_concurrent_hint", self.max_concurrent_var, "max_concurrent_entry"),
+            ("min_interval_label", "min_interval_hint", self.min_interval_var, "min_interval_entry"),
+            ("rate_retries_label", "rate_retries_hint", self.rate_retries_var, "rate_retries_entry"),
+            ("rpm_limit_label", "rpm_limit_hint", self.rpm_limit_var, "rpm_limit_entry"),
+            ("tpm_limit_label", "tpm_limit_hint", self.tpm_limit_var, "tpm_limit_entry"),
+        ):
+            self._add_adv_setting_row(
+                self.advanced_card, label_key, hint_key, str_var, entry_attr
+            )
+
+        # Bottom breathing space inside advanced card
+        ctk.CTkFrame(self.advanced_card, height=4, fg_color="transparent").pack(fill="x")
 
         # --------------------------------------------------------------------
         # 5. Application Version & Updates
@@ -756,6 +829,14 @@ class SettingsView(ctk.CTkFrame):
         finally:
             self._suppress_key_trace = False
 
+    def _get_base_url_label_text(self, provider: Optional[str] = None) -> str:
+        prov = provider or (
+            self.provider_var.get()
+            if getattr(self, "provider_var", None) is not None
+            else self.config.active_provider
+        )
+        return self.t("base_url_label_provider", provider=prov)
+
     def _get_rate_profile_pairs(self) -> list[tuple[str, str]]:
         return [
             (code, self.t(f"rate_profile_{code}"))
@@ -766,9 +847,61 @@ class SettingsView(ctk.CTkFrame):
         return [label for _, label in self._get_rate_profile_pairs()]
 
     def _get_rate_profile_display(self) -> str:
-        code = getattr(self.config, "rate_limit_preset", "") or self.config.detect_rate_limit_preset()
         mapping = dict(self._get_rate_profile_pairs())
+        if getattr(self, "_manual_custom_mode", False):
+            return mapping["custom"]
+        code = getattr(self.config, "rate_limit_preset", "") or self.config.detect_rate_limit_preset()
         return mapping.get(code, mapping["custom"])
+
+    def _get_rate_profile_summary_text(self) -> str:
+        rpm_val = int(self.config.rpm_limit)
+        rpm_part = (
+            self.t("rate_summary_unlimited")
+            if rpm_val <= 0
+            else self.t("rate_summary_rpm", rpm=rpm_val)
+        )
+        return self.t(
+            "rate_summary_format",
+            parallel=int(self.config.max_concurrent_requests),
+            interval=f"{float(self.config.min_request_interval):g}",
+            rpm_part=rpm_part,
+            chars=f"{int(self.config.batch_max_chars):,}",
+        )
+
+    def _update_rate_profile_summary(self) -> None:
+        if getattr(self, "rate_profile_summary_label", None) is not None:
+            self.rate_profile_summary_label.configure(
+                text=self._get_rate_profile_summary_text()
+            )
+        if getattr(self, "rate_profile_var", None) is not None:
+            self.rate_profile_var.set(self._get_rate_profile_display())
+
+    def _render_adv_status(self) -> None:
+        if getattr(self, "adv_status_label", None) is None:
+            return
+        if self._adv_status_state == "reset":
+            self.adv_status_label.configure(
+                text=self.t("adv_reset_defaults_done"),
+                text_color=COLORS["success"],
+            )
+            if not self.adv_status_label.winfo_manager():
+                self.adv_status_label.pack(fill="x", pady=(0, 4))
+        elif self._adv_status_state == "adjusted" and self._adv_status_details:
+            self.adv_status_label.configure(
+                text=self.t("adv_adjusted_notice", details=self._adv_status_details),
+                text_color=COLORS["warning_text"],
+            )
+            if not self.adv_status_label.winfo_manager():
+                self.adv_status_label.pack(fill="x", pady=(0, 4))
+        else:
+            if self.adv_status_label.winfo_manager():
+                self.adv_status_label.pack_forget()
+            self.adv_status_label.configure(text="")
+
+    def _set_adv_status(self, state: Optional[str], details: str = "") -> None:
+        self._adv_status_state = state
+        self._adv_status_details = details
+        self._render_adv_status()
 
     def _on_rate_profile_changed(self, chosen_label: str) -> None:
         code = "custom"
@@ -777,16 +910,24 @@ class SettingsView(ctk.CTkFrame):
                 code = preset_code
                 break
         if code in RATE_LIMIT_PRESETS:
+            self._manual_custom_mode = False
+            self._adv_numeric_dirty = False
+            self._set_adv_status(None)
             self.config.apply_rate_limit_preset(code)
             self._sync_advanced_vars()
             self.config.save()
             self.on_save(self.config)
         else:
+            self._manual_custom_mode = True
             self.config.rate_limit_preset = "custom"
+            self._set_advanced_expanded(True)
+            self._update_rate_profile_summary()
             self.config.save()
 
-    def _toggle_advanced_section(self) -> None:
-        self._advanced_expanded = not self._advanced_expanded
+    def _set_advanced_expanded(self, expanded: bool) -> None:
+        if self._advanced_expanded == expanded:
+            return
+        self._advanced_expanded = expanded
         if self._advanced_expanded:
             self.advanced_card.pack(fill="x", padx=4, pady=(0, 8))
         else:
@@ -794,10 +935,85 @@ class SettingsView(ctk.CTkFrame):
         key = "advanced_toggle_hide" if self._advanced_expanded else "advanced_toggle_show"
         self.advanced_toggle_btn.configure(text=self.t(key))
 
+    def _add_adv_section_header(self, parent, title_key: str) -> None:
+        """Adds a subtle divider and group title inside the advanced settings card."""
+        divider = ctk.CTkFrame(parent, height=1, fg_color=("#E4E4E7", "#27272A"))
+        divider.pack(fill="x", padx=14, pady=(4, 10))
+        lbl = ctk.CTkLabel(
+            parent,
+            text=self.t(title_key),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=("#18181B", "#FAFAFA"),
+            anchor="w",
+        )
+        lbl.pack(anchor="w", padx=14, pady=(0, 6))
+        setattr(self, title_key, lbl)
+
+    def _add_adv_setting_row(
+        self,
+        parent,
+        label_key: str,
+        hint_key: str,
+        str_var: ctk.StringVar,
+        entry_attr: str,
+        placeholder_key: Optional[str] = None,
+    ) -> ctk.CTkEntry:
+        """Adds a horizontal setting row with title + plain-language hint on the left and numeric input on the right."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(0, 10))
+        row.grid_columnconfigure(0, weight=1)
+        row.grid_columnconfigure(1, weight=0)
+
+        text_col = ctk.CTkFrame(row, fg_color="transparent")
+        text_col.grid(row=0, column=0, sticky="ew", padx=(0, 14))
+
+        lbl = ctk.CTkLabel(
+            text_col,
+            text=self.t(label_key),
+            font=ctk.CTkFont(size=12, weight="bold"),
+            anchor="w",
+        )
+        lbl.pack(anchor="w")
+        setattr(self, label_key, lbl)
+
+        hint = ctk.CTkLabel(
+            text_col,
+            text=self.t(hint_key),
+            font=ctk.CTkFont(size=11),
+            text_color=("#71717A", "#A1A1AA"),
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        )
+        hint.pack(fill="x", anchor="w", pady=(1, 0))
+        setattr(self, hint_key, hint)
+
+        entry_kwargs = {
+            "textvariable": str_var,
+            "width": 130,
+            "height": 32,
+            "justify": "right",
+            "fg_color": ("#FFFFFF", "#09090B"),
+            "border_color": ("#D4D4D8", "#3F3F46"),
+        }
+        if placeholder_key:
+            entry_kwargs["placeholder_text"] = self.t(placeholder_key)
+        ent = ctk.CTkEntry(row, **entry_kwargs)
+        ent.grid(row=0, column=1, sticky="e")
+        ent.bind("<FocusOut>", lambda _e: self._commit_advanced_settings())
+        ent.bind("<Return>", lambda _e: self._commit_advanced_settings())
+        setattr(self, entry_attr, ent)
+        return ent
+
+    def _toggle_advanced_section(self) -> None:
+        self._set_advanced_expanded(not self._advanced_expanded)
+
     def _sync_advanced_vars(self) -> None:
         self._suppress_adv_trace = True
         try:
             provider = self.provider_var.get()
+            if getattr(self, "base_url_label", None) is not None:
+                self.base_url_label.configure(text=self._get_base_url_label_text(provider))
             if getattr(self, "base_url_var", None) is not None:
                 self.base_url_var.set(self.config.base_urls.get(provider, ""))
             if getattr(self, "temperature_var", None) is not None:
@@ -821,19 +1037,70 @@ class SettingsView(ctk.CTkFrame):
                 self.rpm_limit_var.set(str(self.config.rpm_limit))
             if getattr(self, "tpm_limit_var", None) is not None:
                 self.tpm_limit_var.set(str(self.config.tpm_limit))
-            if getattr(self, "rate_profile_var", None) is not None:
-                self.rate_profile_var.set(self._get_rate_profile_display())
             if getattr(self, "strict_json_var", None) is not None:
                 self.strict_json_var.set(bool(self.config.strict_json_mode))
+            self._update_rate_profile_summary()
         finally:
             self._suppress_adv_trace = False
 
-    def _on_base_url_changed(self, *_args) -> None:
-        if self._suppress_adv_trace or getattr(self, "base_url_var", None) is None:
-            return
-        provider = self.provider_var.get()
-        self.config.base_urls[provider] = self.base_url_var.get().strip()
-        self._adv_save_pending = True
+    def _parse_adv_numeric_value(self, cfg_field: str, raw_val: object) -> tuple[object, bool]:
+        """Parses an advanced numeric field and reports whether clamping or fallback was needed."""
+        spec = NUMERIC_SETTING_SPECS[cfg_field]
+        trimmed = str(raw_val or "").strip() if raw_val is not None else ""
+        if spec.kind == "optional_float":
+            if not trimmed:
+                return None, False
+            try:
+                parsed = float(trimmed)
+            except (TypeError, ValueError):
+                return None, True
+            if math.isnan(parsed) or math.isinf(parsed):
+                return None, True
+            clamped = max(float(spec.min_val), min(parsed, float(spec.max_val)))
+            return clamped, abs(clamped - parsed) > 1e-9
+
+        if spec.kind == "int":
+            if not trimmed:
+                return int(spec.default), True
+            try:
+                parsed = int(trimmed)
+            except (TypeError, ValueError):
+                return int(spec.default), True
+            clamped = max(int(spec.min_val), min(parsed, int(spec.max_val)))
+            return clamped, clamped != parsed
+
+        if not trimmed:
+            return float(spec.default), True
+        try:
+            parsed = float(trimmed)
+        except (TypeError, ValueError):
+            return float(spec.default), True
+        if math.isnan(parsed) or math.isinf(parsed):
+            return float(spec.default), True
+        clamped = max(float(spec.min_val), min(parsed, float(spec.max_val)))
+        return clamped, abs(clamped - parsed) > 1e-9
+
+    def _apply_numeric_vars_to_config(self) -> list[str]:
+        """Applies numeric StringVars to self.config and returns descriptions of adjusted fields."""
+        adjusted: list[str] = []
+        for var_attr, cfg_field in _ADV_NUMERIC_BINDINGS:
+            tk_var = getattr(self, var_attr, None)
+            if tk_var is None:
+                continue
+            parsed_val, was_adjusted = self._parse_adv_numeric_value(cfg_field, tk_var.get())
+            setattr(self.config, cfg_field, parsed_val)
+            if was_adjusted:
+                spec = NUMERIC_SETTING_SPECS[cfg_field]
+                label_key = _ADV_FIELD_LABEL_KEYS.get(cfg_field, cfg_field)
+                display_val = (
+                    self.t("temperature_placeholder")
+                    if parsed_val is None
+                    else (f"{parsed_val:g}" if isinstance(parsed_val, float) else str(parsed_val))
+                )
+                adjusted.append(f"{self.t(label_key)} → {display_val} ({spec.min_val:g}–{spec.max_val:g})")
+        return adjusted
+
+    def _schedule_adv_save(self) -> None:
         if getattr(self, "_adv_save_after_id", None):
             try:
                 self.after_cancel(self._adv_save_after_id)
@@ -845,6 +1112,20 @@ class SettingsView(ctk.CTkFrame):
             )
         except Exception:
             self._adv_save_after_id = None
+
+    def _on_adv_numeric_var_changed(self, *_args) -> None:
+        if self._suppress_adv_trace:
+            return
+        self._adv_numeric_dirty = True
+        self._schedule_adv_save()
+
+    def _on_base_url_changed(self, *_args) -> None:
+        if self._suppress_adv_trace or getattr(self, "base_url_var", None) is None:
+            return
+        provider = self.provider_var.get()
+        self.config.base_urls[provider] = self.base_url_var.get().strip()
+        self._adv_save_pending = True
+        self._schedule_adv_save()
 
     def _commit_advanced_settings(
         self, normalize_display: bool = True, notify: bool = True
@@ -858,19 +1139,45 @@ class SettingsView(ctk.CTkFrame):
         provider = self.provider_var.get()
         if getattr(self, "base_url_var", None) is not None:
             self.config.base_urls[provider] = self.base_url_var.get().strip()
-        for var_attr, cfg_field in _ADV_NUMERIC_BINDINGS:
-            tk_var = getattr(self, var_attr, None)
-            if tk_var is not None:
-                setattr(self.config, cfg_field, coerce_setting_value(cfg_field, tk_var.get()))
+        adjusted = self._apply_numeric_vars_to_config()
         if getattr(self, "strict_json_var", None) is not None:
             self.config.strict_json_mode = bool(self.strict_json_var.get())
-        self.config.rate_limit_preset = self.config.detect_rate_limit_preset()
+        detected = self.config.detect_rate_limit_preset()
+        self.config.rate_limit_preset = detected
+        if detected == "custom":
+            self._manual_custom_mode = False
+        self._adv_save_pending = False
+        self._adv_numeric_dirty = False
         if normalize_display:
             self._sync_advanced_vars()
-        self._adv_save_pending = False
+            if adjusted:
+                self._set_adv_status("adjusted", "; ".join(adjusted))
+            else:
+                self._set_adv_status(None)
+        else:
+            self._update_rate_profile_summary()
         self.config.save()
         if notify:
             self.on_save(self.config)
+
+    def _reset_advanced_defaults(self) -> None:
+        if getattr(self, "_adv_save_after_id", None):
+            try:
+                self.after_cancel(self._adv_save_after_id)
+            except Exception:
+                pass
+            self._adv_save_after_id = None
+        self._manual_custom_mode = False
+        self._adv_numeric_dirty = False
+        self._adv_save_pending = False
+        self.config.apply_rate_limit_preset(DEFAULT_RATE_LIMIT_PRESET)
+        self.config.temperature = coerce_setting_value("temperature", None)
+        self.config.request_timeout = float(NUMERIC_SETTING_SPECS["request_timeout"].default)
+        self.config.strict_json_mode = True
+        self._sync_advanced_vars()
+        self._set_adv_status("reset")
+        self.config.save()
+        self.on_save(self.config)
 
     def _on_strict_json_toggled(self) -> None:
         self._commit_advanced_settings(normalize_display=False, notify=True)
@@ -882,9 +1189,48 @@ class SettingsView(ctk.CTkFrame):
             except Exception:
                 pass
             self._adv_save_after_id = None
+        if self._adv_numeric_dirty:
+            parsed_updates: dict[str, object] = {}
+            all_clean = True
+            for var_attr, cfg_field in _ADV_NUMERIC_BINDINGS:
+                tk_var = getattr(self, var_attr, None)
+                if tk_var is None:
+                    continue
+                raw_text = tk_var.get().strip()
+                if raw_text.endswith(".") or raw_text in ("-", "+"):
+                    all_clean = False
+                    break
+                val, was_adjusted = self._parse_adv_numeric_value(cfg_field, raw_text)
+                if was_adjusted:
+                    all_clean = False
+                    break
+                parsed_updates[cfg_field] = val
+            if all_clean:
+                for cfg_field, val in parsed_updates.items():
+                    setattr(self.config, cfg_field, val)
+                self._adv_numeric_dirty = False
+                self._adv_save_pending = False
+                detected = self.config.detect_rate_limit_preset()
+                self.config.rate_limit_preset = detected
+                if detected == "custom":
+                    self._manual_custom_mode = False
+                self._update_rate_profile_summary()
+                self.config.save()
+                self.on_save(self.config)
+                return
         if self._adv_save_pending:
             self._adv_save_pending = False
             self.config.save()
+            self.on_save(self.config)
+
+    def commit_pending_changes(self) -> None:
+        """Commits any in-progress API key or advanced numeric/URL edits before leaving Settings."""
+        had_key_pending = self._key_save_pending
+        if had_key_pending:
+            self._flush_key_save()
+            self.on_save(self.config)
+        if self._adv_save_pending or self._adv_numeric_dirty:
+            self._commit_advanced_settings(normalize_display=True, notify=True)
 
     def _flush_key_save(self) -> None:
         if getattr(self, "_key_save_after_id", None):
@@ -911,6 +1257,9 @@ class SettingsView(ctk.CTkFrame):
         self.lang_var.set(UI_LANGUAGES.get(self.config.ui_language, UI_LANGUAGES[DEFAULT_UI_LANGUAGE]))
         self.theme_var.set(self._get_current_theme_display())
         self.auto_update_var.set(bool(self.config.auto_check_updates))
+        self._manual_custom_mode = False
+        self._adv_numeric_dirty = False
+        self._set_adv_status(None)
         self._sync_advanced_vars()
         if not self._has_auto_fetched_on_open:
             self._has_auto_fetched_on_open = True
@@ -940,31 +1289,52 @@ class SettingsView(ctk.CTkFrame):
         self.theme_label_elem.configure(text=self.t("theme_mode"))
         self.theme_dropdown.configure(values=self._get_theme_display_names())
         self.theme_var.set(self._get_current_theme_display())
+        self.speed_section_label.configure(text=self.t("speed_section_title"))
         adv_toggle_key = "advanced_toggle_hide" if self._advanced_expanded else "advanced_toggle_show"
         self.advanced_toggle_btn.configure(text=self.t(adv_toggle_key))
-        self.base_url_label.configure(text=self.t("base_url_label"))
+        self.advanced_guide_btn.set_text(self.t("adv_guide_btn"))
+        self.advanced_intro_label.configure(text=self.t("advanced_intro_note"))
+        self.reset_adv_btn.set_text(self.t("adv_reset_defaults_btn"))
         self.base_url_entry.configure(placeholder_text=self.t("base_url_placeholder"))
-        self.temperature_label.configure(text=self.t("temperature_label"))
         self.temperature_entry.configure(placeholder_text=self.t("temperature_placeholder"))
-        self.request_timeout_label.configure(text=self.t("request_timeout_label"))
-        self.batch_size_label.configure(text=self.t("batch_size_label"))
-        self.max_concurrent_label.configure(text=self.t("max_concurrent_label"))
         self.rate_profile_label.configure(text=self.t("rate_profile_label"))
         self.rate_profile_dropdown.configure(values=self._get_rate_profile_display_names())
         self.rate_profile_var.set(self._get_rate_profile_display())
+        self.rate_profile_summary_label.configure(text=self._get_rate_profile_summary_text())
         self.rate_profile_hint_label.configure(text=self.t("rate_profile_hint"))
-        for lbl_key in (
+        self.base_url_label.configure(text=self._get_base_url_label_text(current_prov))
+        for text_key in (
+            "adv_group_connection",
+            "adv_group_batching",
+            "adv_group_ratelimit",
+            "base_url_hint",
+            "temperature_label",
+            "temperature_hint",
+            "request_timeout_label",
+            "request_timeout_hint",
+            "strict_json_mode_hint",
+            "batch_size_label",
+            "batch_size_hint",
             "batch_max_chars_label",
+            "batch_max_chars_hint",
             "section_max_chars_label",
+            "section_max_chars_hint",
+            "max_concurrent_label",
+            "max_concurrent_hint",
             "min_interval_label",
+            "min_interval_hint",
             "rate_retries_label",
+            "rate_retries_hint",
             "rpm_limit_label",
+            "rpm_limit_hint",
             "tpm_limit_label",
+            "tpm_limit_hint",
         ):
-            lbl_widget = getattr(self, lbl_key, None)
-            if lbl_widget is not None:
-                lbl_widget.configure(text=self.t(lbl_key))
+            widget = getattr(self, text_key, None)
+            if widget is not None:
+                widget.configure(text=self.t(text_key))
         self.strict_json_cb.configure(text=self.t("strict_json_mode_label"))
+        self._render_adv_status()
         self.updates_title_label.configure(text=self.t("updates_section_title"))
         self.version_label.configure(text=self.t("current_version_label", version=APP_VERSION))
         self.check_updates_btn.set_text(self.t("check_updates_btn"))
@@ -1078,6 +1448,8 @@ class SettingsView(ctk.CTkFrame):
         if self.key_var is None or self.model_var is None:
             return
         self._flush_key_save()
+        if self._adv_save_pending or self._adv_numeric_dirty:
+            self._commit_advanced_settings(normalize_display=False, notify=False)
         self._fetch_request_id += 1
         self._test_conn_request_id += 1
         self.fetch_btn.stop_loading(self.t("fetch_models"))
@@ -1307,6 +1679,12 @@ class SettingsView(ctk.CTkFrame):
             ui_language=self.config.ui_language,
         )
 
+    def _open_advanced_guide(self):
+        AdvancedGuideModal(
+            self.winfo_toplevel(),
+            get_translation=self.t,
+        )
+
     def _open_update_modal(self):
         if not self._latest_update_info:
             return
@@ -1333,8 +1711,17 @@ class SettingsView(ctk.CTkFrame):
                     self.after_cancel(after_id)
                 except Exception:
                     pass
-                if attr not in ("_key_save_after_id", "_adv_save_after_id"):
+                if attr != "_key_save_after_id":
                     setattr(self, attr, None)
         self._flush_key_save()
-        self._flush_adv_save()
+        if self._adv_numeric_dirty or self._adv_save_pending:
+            provider = self.provider_var.get()
+            if getattr(self, "base_url_var", None) is not None:
+                self.config.base_urls[provider] = self.base_url_var.get().strip()
+            if self._adv_numeric_dirty:
+                self._apply_numeric_vars_to_config()
+            self.config.rate_limit_preset = self.config.detect_rate_limit_preset()
+            self._adv_numeric_dirty = False
+            self._adv_save_pending = False
+            self.config.save()
         super().destroy()

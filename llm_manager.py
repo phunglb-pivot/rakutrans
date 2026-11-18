@@ -59,10 +59,11 @@ _MIN_SPLIT_RETRY_CHARS = 40
 _SMALL_MODEL_OUTPUT_TOKEN_CAP = 2048
 _SMALL_MODEL_CHAR_MULTIPLIER = 1.5
 _APPEND_ORIGINAL_CHAR_RATIO = 0.75
-_INLINE_TAG_CHAR_WEIGHT = 24
+_INLINE_TAG_CHAR_WEIGHT = 10
 _MIN_CHAR_BUDGET = int(NUMERIC_SETTING_SPECS["batch_max_chars"].min_val)
 _INLINE_TAG_TOKEN_RE = re.compile(r"</?s(\d+)>")
 _INLINE_SPAN_RE = re.compile(r"<s(\d+)>(.*?)</s\1>", flags=re.DOTALL)
+_MARKDOWN_PLACEHOLDER_RE = re.compile(r"<<<[A-Z0-9_]+_\d+>>>")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?。！？；;])\s+|(?<=[。！？；])")
 _TOKEN_ASCII_BOUND = 127
 _TOKEN_ASCII_CHARS_PER_TOK = 3.5
@@ -192,6 +193,47 @@ def _parse_duration_seconds(raw_val: Any) -> Optional[float]:
 
 def _clamp_retry_delay(val: float) -> float:
     return min(max(float(val), _MIN_RETRY_DELAY_S), _MAX_RETRY_DELAY_S)
+
+
+def compute_effective_batch_char_limit(
+    config: Optional[AppConfig],
+    options: Optional[TranslationOptions] = None,
+    max_chars: Optional[int] = None,
+) -> int:
+    """
+    Computes the effective per-batch character budget honoring configured batch_max_chars,
+    small model output token limits, and output expansion when append_original_words is enabled.
+    """
+    configured_chars = resolve_config_int(config, "batch_max_chars")
+    if max_chars is not None:
+        return max(_MIN_CHAR_BUDGET, min(configured_chars, max_chars))
+
+    char_limit = configured_chars
+    if config is not None:
+        provider = getattr(config, "active_provider", "") or ""
+        model = config.get_active_model() if hasattr(config, "get_active_model") else ""
+        if provider and model:
+            meta = get_model_metadata(provider, model)
+            out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
+            if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
+                char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
+
+    effective_options = options if options is not None else getattr(config, "translation_options", None)
+    if effective_options is not None and getattr(effective_options, "append_original_words", False):
+        char_limit = max(_MIN_CHAR_BUDGET, int(char_limit * _APPEND_ORIGINAL_CHAR_RATIO))
+
+    return max(_MIN_CHAR_BUDGET, char_limit)
+
+
+def estimate_batch_item_chars(text: str) -> int:
+    """
+    Estimates effective character budget consumed by a batch item, accounting for
+    synthetic inline style tags (<s0>...</s0>) that require strict structural preservation.
+    """
+    if not text:
+        return 0
+    tag_count = len(_INLINE_TAG_TOKEN_RE.findall(text))
+    return len(text) + (tag_count * _INLINE_TAG_CHAR_WEIGHT)
 
 
 def estimate_text_tokens(text: str) -> int:
@@ -1425,26 +1467,11 @@ class LLMManager:
         options: Optional[TranslationOptions] = None,
     ) -> int:
         """Computes effective batch character limit factoring in small model caps and option expansion."""
-        char_limit = resolve_config_int(self.config, "batch_max_chars")
-        provider = getattr(self.config, "active_provider", "") or ""
-        model = self.config.get_active_model() if hasattr(self.config, "get_active_model") else ""
-        if provider and model:
-            meta = get_model_metadata(provider, model)
-            out_lim = meta.get("output_token_limit") or meta.get("max_tokens")
-            if isinstance(out_lim, int) and not isinstance(out_lim, bool) and 0 < out_lim <= _SMALL_MODEL_OUTPUT_TOKEN_CAP:
-                char_limit = min(char_limit, max(_MIN_CHAR_BUDGET, int(out_lim * _SMALL_MODEL_CHAR_MULTIPLIER)))
-
-        effective_options = options if options is not None else getattr(self.config, "translation_options", None)
-        if effective_options is not None and getattr(effective_options, "append_original_words", False):
-            char_limit = max(_MIN_CHAR_BUDGET, int(char_limit * _APPEND_ORIGINAL_CHAR_RATIO))
-
-        return max(_MIN_CHAR_BUDGET, char_limit)
+        return compute_effective_batch_char_limit(self.config, options=options)
 
     @staticmethod
     def _estimate_batch_item_chars(text: str) -> int:
-        if not text:
-            return 0
-        return len(text) + (len(_INLINE_TAG_TOKEN_RE.findall(text)) * _INLINE_TAG_CHAR_WEIGHT)
+        return estimate_batch_item_chars(text)
 
     @classmethod
     def _split_single_batch_item_for_retry(
@@ -1704,11 +1731,18 @@ class LLMManager:
             next_rule_idx = 7
 
         prompt_parts = [base_prompt]
+        if not plain_text and _MARKDOWN_PLACEHOLDER_RE.search(markdown_text):
+            prompt_parts.append(
+                f"{next_rule_idx}. PRESERVE PLACEHOLDER TOKENS: Keep every placeholder token matching <<<...>>> "
+                "(e.g. <<<RAKUTRANS_CODE_0>>>) verbatim, unchanged, and on its own line; do not translate, renumber, wrap in backticks, or remove it."
+            )
+            next_rule_idx += 1
         if options.keep_it_terms:
             prompt_parts.append(f"{next_rule_idx}. {_KEEP_TERMS_RULE}")
             next_rule_idx += 1
         if options.append_original_words:
             prompt_parts.append(f"{next_rule_idx}. {_APPEND_ORIGINAL_RULE}")
+            next_rule_idx += 1
         if options.custom_context and options.custom_context.strip():
             prompt_parts.append(f"\nCUSTOM GLOSSARY & CONTEXT:\n{options.custom_context.strip()}")
         system_prompt = "\n".join(prompt_parts)

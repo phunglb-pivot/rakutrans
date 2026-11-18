@@ -287,6 +287,62 @@ RATE_LIMIT_PRESETS: Dict[str, Dict[str, Union[int, float]]] = {
         "min_request_interval": 4.0,
         "rpm_limit": 12,
         "tpm_limit": 100000,
+        "batch_size": 100,
+        "batch_max_chars": 12000,
+        "section_max_chars": 12000,
+        "max_retries_rate_limit": 8,
+    },
+    "balanced": {
+        "max_concurrent_requests": 2,
+        "min_request_interval": 0.5,
+        "rpm_limit": 45,
+        "tpm_limit": 0,
+        "batch_size": 100,
+        "batch_max_chars": 12000,
+        "section_max_chars": 12000,
+        "max_retries_rate_limit": 5,
+    },
+    "fast_paid": {
+        "max_concurrent_requests": 4,
+        "min_request_interval": 0.2,
+        "rpm_limit": 0,
+        "tpm_limit": 0,
+        "batch_size": 100,
+        "batch_max_chars": 12000,
+        "section_max_chars": 12000,
+        "max_retries_rate_limit": 5,
+    },
+}
+
+_PREVIOUS_RATE_LIMIT_PRESETS: Dict[str, Dict[str, Union[int, float]]] = {
+    "safe_free": {
+        "max_concurrent_requests": 1,
+        "min_request_interval": 4.0,
+        "rpm_limit": 12,
+        "tpm_limit": 100000,
+        "batch_size": 50,
+        "batch_max_chars": 8000,
+        "section_max_chars": 8000,
+        "max_retries_rate_limit": 8,
+    },
+    "balanced": {
+        "max_concurrent_requests": 2,
+        "min_request_interval": 0.5,
+        "rpm_limit": 45,
+        "tpm_limit": 0,
+        "batch_size": 60,
+        "batch_max_chars": 8000,
+        "section_max_chars": 8000,
+        "max_retries_rate_limit": 5,
+    },
+}
+
+_LEGACY_RATE_LIMIT_PRESETS: Dict[str, Dict[str, Union[int, float]]] = {
+    "safe_free": {
+        "max_concurrent_requests": 1,
+        "min_request_interval": 4.0,
+        "rpm_limit": 12,
+        "tpm_limit": 100000,
         "batch_size": 25,
         "batch_max_chars": 8000,
         "section_max_chars": 8000,
@@ -419,19 +475,23 @@ class AppConfig:
         self.section_max_chars = int(preset["section_max_chars"])
         self.max_retries_rate_limit = int(preset["max_retries_rate_limit"])
 
+    def _matches_preset_values(self, preset: Dict[str, Union[int, float]]) -> bool:
+        """Checks whether current rate-limit and batching parameters match a preset map."""
+        return (
+            int(self.max_concurrent_requests) == int(preset["max_concurrent_requests"])
+            and abs(float(self.min_request_interval) - float(preset["min_request_interval"])) < 1e-6
+            and int(self.rpm_limit) == int(preset["rpm_limit"])
+            and int(self.tpm_limit) == int(preset["tpm_limit"])
+            and int(self.batch_size) == int(preset["batch_size"])
+            and int(self.batch_max_chars) == int(preset["batch_max_chars"])
+            and int(self.section_max_chars) == int(preset["section_max_chars"])
+            and int(self.max_retries_rate_limit) == int(preset["max_retries_rate_limit"])
+        )
+
     def detect_rate_limit_preset(self) -> str:
         """Returns matching preset name if settings align with a preset, else 'custom'."""
         for name, preset in RATE_LIMIT_PRESETS.items():
-            if (
-                int(self.max_concurrent_requests) == int(preset["max_concurrent_requests"])
-                and abs(float(self.min_request_interval) - float(preset["min_request_interval"])) < 1e-6
-                and int(self.rpm_limit) == int(preset["rpm_limit"])
-                and int(self.tpm_limit) == int(preset["tpm_limit"])
-                and int(self.batch_size) == int(preset["batch_size"])
-                and int(self.batch_max_chars) == int(preset["batch_max_chars"])
-                and int(self.section_max_chars) == int(preset["section_max_chars"])
-                and int(self.max_retries_rate_limit) == int(preset["max_retries_rate_limit"])
-            ):
+            if self._matches_preset_values(preset):
                 return name
         return "custom"
 
@@ -694,6 +754,17 @@ class AppConfig:
                     auto_check_updates=auto_check_updates,
                     skipped_update_version=skipped_update_version,
                 )
+                # Silently migrate unmodified legacy built-in presets to optimized defaults
+                upgrade_candidate = raw_preset if raw_preset in _LEGACY_RATE_LIMIT_PRESETS else (
+                    DEFAULT_RATE_LIMIT_PRESET if not raw_preset else ""
+                )
+                if upgrade_candidate and config.detect_rate_limit_preset() == "custom":
+                    legacy_snapshots = (
+                        _LEGACY_RATE_LIMIT_PRESETS.get(upgrade_candidate),
+                        _PREVIOUS_RATE_LIMIT_PRESETS.get(upgrade_candidate),
+                    )
+                    if any(snap and config._matches_preset_values(snap) for snap in legacy_snapshots):
+                        config.apply_rate_limit_preset(upgrade_candidate)
                 config.rate_limit_preset = config.detect_rate_limit_preset()
                 return config
             except Exception as e:

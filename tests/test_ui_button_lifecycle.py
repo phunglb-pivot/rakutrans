@@ -603,6 +603,35 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.app.config.translation_options.bilingual_mode = prev_bilingual
             self.app._on_file_selected("")
 
+    def test_close_settings_commits_pending_numeric_edits(self):
+        """Editing a numeric advanced setting and immediately clicking Done persists without requiring FocusOut."""
+        prev_batch = self.app.config.batch_size
+        prev_rpm = self.app.config.rpm_limit
+        prev_preset = self.app.config.rate_limit_preset
+        try:
+            self.app._open_settings()
+            self.assertEqual(self.app.current_screen, "settings")
+
+            self.app.settings_view.batch_size_var.set("37")
+            self.app.settings_view.rpm_limit_var.set("19")
+            self.assertTrue(self.app.settings_view._adv_numeric_dirty)
+
+            # Immediately close Settings via Done without FocusOut or Return
+            self.app._close_settings()
+
+            self.assertEqual(self.app.current_screen, "main")
+            self.assertEqual(self.app.config.batch_size, 37)
+            self.assertEqual(self.app.config.rpm_limit, 19)
+            self.assertEqual(self.app.config.rate_limit_preset, "custom")
+            self.assertEqual(self.app.llm_manager.config.batch_size, 37)
+            self.assertEqual(self.app.llm_manager.config.rpm_limit, 19)
+        finally:
+            self.app.config.batch_size = prev_batch
+            self.app.config.rpm_limit = prev_rpm
+            self.app.config.rate_limit_preset = prev_preset
+            self.app.config.save()
+            self.app._on_settings_changed(self.app.config)
+
 
 if __name__ == "__main__":
     unittest.main()

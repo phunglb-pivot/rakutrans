@@ -180,19 +180,28 @@ class TestLLMManager(unittest.TestCase):
             )
 
     def test_base_translator_batch_and_worker_bounds(self):
+        from base_translator import estimate_batch_item_chars
+
         default_cfg = AppConfig()
-        self.assertEqual(default_cfg.batch_size, 25)
+        self.assertEqual(default_cfg.batch_size, 100)
         default_tr = _DummyTranslator(default_cfg, LLMManager(default_cfg))
         self.assertEqual(
-            [len(b) for b in default_tr.pack_batches([f"item {i}" for i in range(60)])],
-            [25, 25, 10],
+            [len(b) for b in default_tr.pack_batches([f"item {i}" for i in range(230)])],
+            [100, 100, 30],
         )
+        # Short 25-char items pack cleanly into 5 batches for 500 items instead of 20
+        short_items = [f"Label item number {i:04d} ok" for i in range(500)]
+        self.assertEqual(len(default_tr.pack_batches(short_items)), 5)
 
-        # Explicit batch_size > 25 is honored directly without silent 25-item cap
-        cfg_large = AppConfig(batch_size=60, batch_max_chars=10000, max_concurrent_requests=12)
+        # Inline tags add realistic overhead (10 chars per tag token) without excessive splitting
+        tagged = "<s0>Alpha</s0><s1>Beta</s1>"
+        self.assertEqual(estimate_batch_item_chars(tagged), len(tagged) + 40)
+
+        # Explicit batch_size > 100 is honored directly without silent 100-item cap
+        cfg_large = AppConfig(batch_size=140, batch_max_chars=16000, max_concurrent_requests=12)
         translator = _DummyTranslator(cfg_large, LLMManager(cfg_large))
-        batches = translator.pack_batches([f"item {i}" for i in range(60)])
-        self.assertEqual([len(b) for b in batches], [60])
+        batches = translator.pack_batches([f"item {i}" for i in range(140)])
+        self.assertEqual([len(b) for b in batches], [140])
         self.assertEqual(translator.get_max_workers(20), 12)
         self.assertEqual(translator.get_max_workers(1), 1)
 
@@ -1102,14 +1111,28 @@ class TestLLMManager(unittest.TestCase):
             ["<s0>VI:Alpha</s0><s1>VI:Beta</s1><s2>VI:Gamma</s2><s3>VI:Delta</s3>"],
         )
 
-        # 3. Effective batch char budget adapts when append_original_words is enabled or inline tags are dense
-        cfg_budget = AppConfig(batch_size=25, batch_max_chars=1000)
+        # 3. Effective batch char budget adapts when append_original_words is enabled and stays aligned with LLMManager
+        cfg_budget = AppConfig(batch_size=60, batch_max_chars=1000)
         base_limit = compute_effective_batch_char_limit(cfg_budget, TranslationOptions(append_original_words=False))
         expanded_limit = compute_effective_batch_char_limit(cfg_budget, TranslationOptions(append_original_words=True))
         self.assertEqual(base_limit, 1000)
         self.assertEqual(expanded_limit, 750)
+        mgr_budget = LLMManager(cfg_budget)
+        self.assertEqual(mgr_budget._resolve_effective_batch_char_limit(TranslationOptions(append_original_words=True)), 750)
 
-        # 4. Request estimation uses unique_char_count and translatable_char_count accurately
+        # 4. Markdown system prompt includes placeholder preservation rule only when placeholders are present
+        seen_sys = []
+        mgr_md = LLMManager(_configured_config())
+        mgr_md._min_interval = 0.0
+        mgr_md._get_client = lambda: SimpleNamespace(
+            generate_completion=lambda s, u, m, is_json=False: (seen_sys.append(s) or u)
+        )
+        mgr_md.translate_markdown_text("Hello world", target_lang="Vietnamese", plain_text=False)
+        mgr_md.translate_markdown_text("Hello\n\n<<<RAKUTRANS_CODE_0>>>\n\nWorld", target_lang="Vietnamese", plain_text=False)
+        self.assertNotIn("PRESERVE PLACEHOLDER TOKENS", seen_sys[0])
+        self.assertIn("PRESERVE PLACEHOLDER TOKENS", seen_sys[1])
+
+        # 5. Request estimation uses unique_char_count and translatable_char_count accurately
         excel_info = {"type": "excel", "unique_texts": 10, "char_count": 50000, "unique_char_count": 3000}
         self.assertEqual(estimate_translation_requests(excel_info, cfg_budget), 3)
         md_info = {"type": "markdown", "char_count": 20000, "translatable_char_count": 1500}

@@ -137,10 +137,19 @@ class TestUISystem(unittest.TestCase):
                 self.assertEqual(cfg.selected_models["OpenAI"], "")
                 self.assertEqual(sv.model_combo.cget("values"), ["gpt-4o-mini", "gpt-4o"])
 
-                # Advanced section starts collapsed and persists base_url, temperature, batch/concurrency, strict JSON
+                # Speed preset card is visible upfront while fine-tuning card starts collapsed
                 self.assertFalse(sv._advanced_expanded)
-                sv._toggle_advanced_section()
+                self.assertEqual(sv.speed_card.winfo_manager(), "pack")
+                self.assertEqual(sv.rate_profile_dropdown.winfo_manager(), "pack")
+                self.assertEqual(sv.advanced_card.winfo_manager(), "")
+
+                # Choosing 'Custom' auto-expands fine-tuning and keeps Custom selected before numbers change
+                sv._on_rate_profile_changed("rate_profile_custom")
                 self.assertTrue(sv._advanced_expanded)
+                self.assertEqual(sv.rate_profile_var.get(), "rate_profile_custom")
+                self.assertEqual(sv.advanced_card.winfo_manager(), "pack")
+
+                # Typing numeric values and switching provider preserves uncommitted edits instead of dropping them
                 sv.base_url_var.set("https://custom.openai.local/v1")
                 sv.temperature_var.set("0.4")
                 sv.batch_size_var.set("40")
@@ -156,6 +165,39 @@ class TestUISystem(unittest.TestCase):
                 self.assertAlmostEqual(cfg.request_timeout, 90.0)
                 self.assertFalse(cfg.strict_json_mode)
 
+                # Uncommitted numeric edit survives provider switch and commit_pending_changes()
+                sv.batch_size_var.set("55")
+                self.assertTrue(sv._adv_numeric_dirty)
+                sv._on_provider_changed("Gemini")
+                self.assertEqual(cfg.batch_size, 55)
+                self.assertEqual(sv.batch_size_var.get(), "55")
+                self.assertEqual(sv.base_url_var.get(), "")
+
+                sv.rpm_limit_var.set("30")
+                sv.commit_pending_changes()
+                self.assertEqual(cfg.rpm_limit, 30)
+                self.assertFalse(sv._adv_numeric_dirty)
+
+                # Out-of-range numeric input clamps and surfaces status feedback
+                sv.max_concurrent_var.set("999")
+                sv._commit_advanced_settings()
+                self.assertEqual(cfg.max_concurrent_requests, 20)
+                self.assertEqual(sv._adv_status_state, "adjusted")
+                self.assertEqual(sv.adv_status_label.winfo_manager(), "pack")
+
+                sv._on_provider_changed("OpenAI")
+                self.assertEqual(sv.base_url_var.get(), "https://custom.openai.local/v1")
+
+                # Reset defaults restores Balanced, Auto temperature, 120s timeout, JSON mode, preserving base_url
+                sv._reset_advanced_defaults()
+                self.assertEqual(cfg.rate_limit_preset, "balanced")
+                self.assertEqual(cfg.max_concurrent_requests, 2)
+                self.assertIsNone(cfg.temperature)
+                self.assertAlmostEqual(cfg.request_timeout, 120.0)
+                self.assertTrue(cfg.strict_json_mode)
+                self.assertEqual(cfg.base_urls["OpenAI"], "https://custom.openai.local/v1")
+                self.assertEqual(sv._adv_status_state, "reset")
+
                 # Per-provider base_url switches cleanly and fetch_models_async receives base_url & timeout
                 with patch("components.settings_modal.fetch_models_async") as mock_fetch_adv:
                     sv._fetch_live_models(is_manual=True)
@@ -169,10 +211,23 @@ class TestUISystem(unittest.TestCase):
                         cfg.model_fetch_timeout,
                     )
 
-                sv._on_provider_changed("Gemini")
-                self.assertEqual(sv.base_url_var.get(), "")
-                sv._on_provider_changed("OpenAI")
-                self.assertEqual(sv.base_url_var.get(), "https://custom.openai.local/v1")
+                # Switching i18n updates grouped advanced headers, provider-scoped base_url label, guide button, and hints
+                from i18n import I18nManager
+                from components.advanced_guide_modal import AdvancedGuideModal
+                vi_i18n = I18nManager("vi")
+                sv.refresh_i18n(vi_i18n.t)
+                self.assertEqual(sv.adv_group_batching.cget("text"), vi_i18n.t("adv_group_batching"))
+                self.assertEqual(sv.rpm_limit_hint.cget("text"), vi_i18n.t("rpm_limit_hint"))
+                self.assertEqual(sv.strict_json_mode_hint.cget("text"), vi_i18n.t("strict_json_mode_hint"))
+                self.assertEqual(sv.base_url_label.cget("text"), vi_i18n.t("base_url_label_provider", provider="OpenAI"))
+                self.assertEqual(sv.speed_section_label.cget("text"), vi_i18n.t("speed_section_title"))
+                self.assertEqual(sv.advanced_guide_btn._raw_text, vi_i18n.t("adv_guide_btn"))
+                self.assertIn("2", sv.rate_profile_summary_label.cget("text"))
+
+                guide_modal = AdvancedGuideModal(root, get_translation=vi_i18n.t)
+                root.update()
+                self.assertEqual(guide_modal.title(), vi_i18n.t("adv_guide_modal_title"))
+                guide_modal.close_modal()
 
                 root.destroy()
 
@@ -305,7 +360,7 @@ class TestUISystem(unittest.TestCase):
                 tok,
                 str(f_txt.resolve()),
                 ".txt",
-                {"type": "txt", "line_count": 50000, "word_count": 200000, "char_count": 2400000},
+                {"type": "txt", "line_count": 50000, "word_count": 200000, "char_count": 3600000},
             )
             self.assertIn("large_file_badge_warning", dz.workload_warning_label.cget("text"))
 

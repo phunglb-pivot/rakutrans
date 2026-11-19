@@ -632,6 +632,79 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.app.config.save()
             self.app._on_settings_changed(self.app.config)
 
+    def test_quick_speed_mode_in_translation_options_and_settings_sync(self):
+        """Speed & Limit Mode inside Translation Options syncs bidirectionally with Settings, i18n, and processing state."""
+        from config import DEFAULT_RATE_LIMIT_PRESET, RATE_LIMIT_PRESETS
+
+        prev_preset = self.app.config.rate_limit_preset
+        prev_lang = self.app.config.ui_language
+        try:
+            self.app.current_screen = "main"
+            self.app.config.ui_language = "en"
+            self.app.config.apply_rate_limit_preset(DEFAULT_RATE_LIMIT_PRESET)
+            self.app._on_settings_changed(self.app.config)
+
+            # 1. Lives inside collapsible options_body
+            self.assertEqual(self.app.speed_mode_dropdown.master, self.app.options_body)
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_balanced"))
+
+            # 2. Switch to Slow & Safe from Translation Options -> applies preset, updates summary & llm_manager
+            self.app._on_quick_rate_profile_changed(self.app.i18n.t("rate_profile_safe_free"))
+            self.assertEqual(self.app.config.rate_limit_preset, "safe_free")
+            self.assertEqual(self.app.config.rpm_limit, RATE_LIMIT_PRESETS["safe_free"]["rpm_limit"])
+            self.assertEqual(self.app.config.max_concurrent_requests, RATE_LIMIT_PRESETS["safe_free"]["max_concurrent_requests"])
+            self.assertEqual(self.app.llm_manager.config.rpm_limit, RATE_LIMIT_PRESETS["safe_free"]["rpm_limit"])
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_safe_free"))
+            self.assertIn("12", self.app.speed_mode_summary_label.cget("text"))
+
+            # 3. Opening Settings shows the same preset; switching to Fast in Settings syncs back to Translate options
+            self.app._open_settings()
+            self.assertEqual(self.app.settings_view.rate_profile_var.get(), self.app.i18n.t("rate_profile_safe_free"))
+            self.app.settings_view._on_rate_profile_changed(self.app.i18n.t("rate_profile_fast_paid"))
+            self.app._close_settings()
+            self.assertEqual(self.app.config.rate_limit_preset, "fast_paid")
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_fast_paid"))
+
+            # 4. Selecting Custom from Translation Options opens Settings with Fine-Tuning expanded
+            self.app._on_quick_rate_profile_changed(self.app.i18n.t("rate_profile_custom_quick"))
+            self.assertEqual(self.app.current_screen, "settings")
+            self.assertTrue(self.app.settings_view._advanced_expanded)
+            self.assertEqual(self.app.settings_view.rate_profile_var.get(), self.app.i18n.t("rate_profile_custom"))
+
+            # Closing Settings without modifying numbers restores actual preset label on Translate screen
+            self.app._close_settings()
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_fast_paid"))
+
+            # Selecting Custom and actually editing a number reflects Custom on Translate screen
+            self.app._on_quick_rate_profile_changed(self.app.i18n.t("rate_profile_custom_quick"))
+            self.app.settings_view.rpm_limit_var.set("25")
+            self.app._close_settings()
+            self.assertEqual(self.app.config.rate_limit_preset, "custom")
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_custom_quick"))
+            self.assertIn("25", self.app.speed_mode_summary_label.cget("text"))
+
+            # 5. Language switching updates label, dropdown selection, and summary
+            self.app.config.apply_rate_limit_preset("balanced")
+            self.app.config.ui_language = "vi"
+            self.app._on_settings_changed(self.app.config)
+            self.assertEqual(self.app.speed_mode_label.cget("text"), self.app.i18n.t("rate_profile_label"))
+            self.assertEqual(self.app.speed_mode_var.get(), self.app.i18n.t("rate_profile_balanced"))
+
+            # 6. Disabled during processing, re-enabled when idle
+            self.app._update_button_states("processing")
+            self.assertEqual(self.app.speed_mode_dropdown.cget("state"), "disabled")
+            self.app._update_button_states("idle_no_file")
+            self.assertEqual(self.app.speed_mode_dropdown.cget("state"), "normal")
+        finally:
+            if self.app.current_screen == "settings":
+                self.app._close_settings()
+            self.app.config.ui_language = prev_lang
+            self.app.config.apply_rate_limit_preset(
+                prev_preset if prev_preset in RATE_LIMIT_PRESETS else DEFAULT_RATE_LIMIT_PRESET
+            )
+            self.app.config.save()
+            self.app._on_settings_changed(self.app.config)
+
 
 if __name__ == "__main__":
     unittest.main()

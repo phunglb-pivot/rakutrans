@@ -26,6 +26,7 @@ from config import (
     HIGH_REQUEST_WARNING_THRESHOLD,
     LARGE_FILE_REQUEST_FALLBACK_THRESHOLD,
     LARGE_FILE_SIZE_BYTES,
+    RATE_LIMIT_PRESETS,
 )
 from i18n import I18nManager
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
@@ -595,7 +596,43 @@ class RakuTransApp(ctk.CTk):
             checkmark_color=("#FAFAFA", "#18181B"),
             command=self._save_options
         )
-        self.bilingual_cb.pack(anchor="w", padx=2, pady=(0, 8))
+        self.bilingual_cb.pack(anchor="w", padx=2, pady=(0, 10))
+
+        # Speed & Limit Mode quick selector (synced with Settings)
+        self.speed_mode_label = ctk.CTkLabel(
+            self.options_body,
+            text=self.i18n.t("rate_profile_label"),
+            font=ctk.CTkFont(size=12, weight="bold")
+        )
+        self.speed_mode_label.pack(anchor="w", padx=2, pady=(4, 4))
+
+        self.speed_mode_var = ctk.StringVar(value=self._get_rate_profile_display())
+        self.speed_mode_dropdown = ctk.CTkOptionMenu(
+            self.options_body,
+            values=self._get_rate_profile_display_names(),
+            variable=self.speed_mode_var,
+            command=self._on_quick_rate_profile_changed,
+            height=32,
+            fg_color=("#FFFFFF", "#18181B"),
+            button_color=("#E4E4E7", "#27272A"),
+            button_hover_color=("#D4D4D8", "#3F3F46"),
+            text_color=("#18181B", "#FAFAFA"),
+            dropdown_fg_color=("#FFFFFF", "#18181B"),
+            dropdown_hover_color=("#F4F4F5", "#27272A"),
+            dropdown_text_color=("#18181B", "#FAFAFA")
+        )
+        self.speed_mode_dropdown.pack(fill="x", padx=2, pady=(0, 4))
+
+        self.speed_mode_summary_label = ctk.CTkLabel(
+            self.options_body,
+            text=self._get_rate_profile_summary_text(),
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_muted"],
+            wraplength=680,
+            justify="left",
+            anchor="w"
+        )
+        self.speed_mode_summary_label.pack(fill="x", padx=2, pady=(0, 10))
 
         # Custom Context Prompt Label
         self.custom_prompt_label = ctk.CTkLabel(
@@ -921,6 +958,8 @@ class RakuTransApp(ctk.CTk):
                 or TranslatorRegistry.supports_bilingual(self.selected_file)
             )
             self.bilingual_cb.configure(state="normal" if bilingual_ok else "disabled")
+        if hasattr(self, "speed_mode_dropdown"):
+            self.speed_mode_dropdown.configure(state=state_val)
         if hasattr(self, "custom_prompt_text"):
             self.custom_prompt_text.configure(state=state_val)
         if hasattr(self, "target_segmented"):
@@ -1348,6 +1387,69 @@ class RakuTransApp(ctk.CTk):
         self.config.translation_options.custom_context = self.custom_prompt_text.get("1.0", "end-1c").strip()
         self.config.save()
 
+    def _get_rate_profile_pairs(self) -> list[tuple[str, str]]:
+        pairs = [
+            (code, self.i18n.t(f"rate_profile_{code}"))
+            for code in RATE_LIMIT_PRESETS.keys()
+        ]
+        pairs.append(("custom", self.i18n.t("rate_profile_custom_quick")))
+        return pairs
+
+    def _get_rate_profile_display_names(self) -> list[str]:
+        return [label for _, label in self._get_rate_profile_pairs()]
+
+    def _get_rate_profile_display(self) -> str:
+        mapping = dict(self._get_rate_profile_pairs())
+        code = getattr(self.config, "rate_limit_preset", "") or self.config.detect_rate_limit_preset()
+        return mapping.get(code, mapping["custom"])
+
+    def _get_rate_profile_summary_text(self) -> str:
+        rpm_val = int(self.config.rpm_limit)
+        rpm_part = (
+            self.i18n.t("rate_summary_unlimited")
+            if rpm_val <= 0
+            else self.i18n.t("rate_summary_rpm", rpm=rpm_val)
+        )
+        return self.i18n.t(
+            "rate_summary_format",
+            parallel=int(self.config.max_concurrent_requests),
+            interval=f"{float(self.config.min_request_interval):g}",
+            rpm_part=rpm_part,
+            chars=f"{int(self.config.batch_max_chars):,}",
+        )
+
+    def _sync_rate_profile_ui(self) -> None:
+        if hasattr(self, "speed_mode_dropdown"):
+            self.speed_mode_dropdown.configure(values=self._get_rate_profile_display_names())
+        if hasattr(self, "speed_mode_var"):
+            self.speed_mode_var.set(self._get_rate_profile_display())
+        if hasattr(self, "speed_mode_summary_label"):
+            self.speed_mode_summary_label.configure(text=self._get_rate_profile_summary_text())
+
+    def _on_quick_rate_profile_changed(self, chosen_label: str) -> None:
+        if self.is_translating or self.is_converting:
+            self._sync_rate_profile_ui()
+            return
+        code = "custom"
+        for preset_code, label in self._get_rate_profile_pairs():
+            if label == chosen_label:
+                code = preset_code
+                break
+        if code in RATE_LIMIT_PRESETS:
+            self.config.apply_rate_limit_preset(code)
+            self.config.save()
+            if hasattr(self, "llm_manager") and self.llm_manager is not None:
+                self.llm_manager.sync_config(self.config)
+            self._sync_rate_profile_ui()
+            if hasattr(self, "drop_zone"):
+                self.drop_zone._update_workload_warning()
+        else:
+            self._open_settings()
+            if hasattr(self, "settings_view") and self.settings_view is not None:
+                self.settings_view._manual_custom_mode = True
+                self.settings_view._set_advanced_expanded(True)
+                self.settings_view._update_rate_profile_summary()
+
     # -------------------------------------------------------------------------
     # Settings (In-Page View Transition)
     # -------------------------------------------------------------------------
@@ -1396,6 +1498,9 @@ class RakuTransApp(ctk.CTk):
         self.settings_btn.set_text(self.i18n.t("settings_btn"))
         self.settings_btn.set_icon("settings", 15)
         self.settings_btn.set_variant("secondary")
+
+        # Keep quick speed selector synced with any Settings changes (including Custom mode)
+        self._sync_rate_profile_ui()
 
     def _get_shortcut_hint_text(self) -> str:
         """Returns OS-appropriate and mode-appropriate keyboard shortcut hint text."""
@@ -1480,6 +1585,9 @@ class RakuTransApp(ctk.CTk):
         self.keep_it_cb.configure(text=self.i18n.t("opt_keep_terms"))
         self.append_source_cb.configure(text=self.i18n.t("opt_append_source"))
         self.bilingual_cb.configure(text=self.i18n.t("opt_bilingual"))
+        if hasattr(self, "speed_mode_label"):
+            self.speed_mode_label.configure(text=self.i18n.t("rate_profile_label"))
+        self._sync_rate_profile_ui()
 
         self.custom_prompt_label.configure(text=self.i18n.t("custom_prompt_label"))
 

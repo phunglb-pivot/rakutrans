@@ -211,9 +211,8 @@ class TestUISystem(unittest.TestCase):
                         cfg.model_fetch_timeout,
                     )
 
-                # Switching i18n updates grouped advanced headers, provider-scoped base_url label, guide button, and hints
+                # Switching i18n updates grouped advanced headers, provider-scoped base_url label, and hints
                 from i18n import I18nManager
-                from components.advanced_guide_modal import AdvancedGuideModal
                 vi_i18n = I18nManager("vi")
                 sv.refresh_i18n(vi_i18n.t)
                 self.assertEqual(sv.adv_group_batching.cget("text"), vi_i18n.t("adv_group_batching"))
@@ -221,13 +220,7 @@ class TestUISystem(unittest.TestCase):
                 self.assertEqual(sv.strict_json_mode_hint.cget("text"), vi_i18n.t("strict_json_mode_hint"))
                 self.assertEqual(sv.base_url_label.cget("text"), vi_i18n.t("base_url_label_provider", provider="OpenAI"))
                 self.assertEqual(sv.speed_section_label.cget("text"), vi_i18n.t("speed_section_title"))
-                self.assertEqual(sv.advanced_guide_btn._raw_text, vi_i18n.t("adv_guide_btn"))
                 self.assertIn("2", sv.rate_profile_summary_label.cget("text"))
-
-                guide_modal = AdvancedGuideModal(root, get_translation=vi_i18n.t)
-                root.update()
-                self.assertEqual(guide_modal.title(), vi_i18n.t("adv_guide_modal_title"))
-                guide_modal.close_modal()
 
                 root.destroy()
 

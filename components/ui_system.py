@@ -57,7 +57,6 @@ UI_LAYOUT = {
     "confirm_modal_size": (460, 240),
     "error_modal_size": (580, 540),
     "update_modal_size": (560, 460),
-    "advanced_guide_modal_size": (680, 620),
     "lang_trigger_width": 360,
     "lang_trigger_height": 36,
     "lang_panel_height": 240,

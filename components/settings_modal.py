@@ -29,7 +29,6 @@ from model_fetcher import fetch_models_async
 from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
 from components.ui_system import COLORS, CustomButton, CustomSegmentedButton, UI_TIMING
 from components.icons import get_icon, get_provider_icon_name
-from components.advanced_guide_modal import AdvancedGuideModal
 from components.update_modal import UpdateModal
 
 _ADV_NUMERIC_BINDINGS = (
@@ -403,27 +402,13 @@ class SettingsView(ctk.CTkFrame):
         self.speed_group = ctk.CTkFrame(self.container, fg_color="transparent")
         self.speed_group.pack(fill="x", pady=(0, 8), padx=2)
 
-        speed_header_row = ctk.CTkFrame(self.speed_group, fg_color="transparent")
-        speed_header_row.pack(fill="x", padx=4, pady=(8, 6))
-
         self.speed_section_label = ctk.CTkLabel(
-            speed_header_row,
+            self.speed_group,
             text=self.t("speed_section_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
             anchor="w",
         )
-        self.speed_section_label.pack(side="left", fill="x", expand=True)
-
-        self.advanced_guide_btn = CustomButton(
-            speed_header_row,
-            text=self.t("adv_guide_btn"),
-            variant="ghost",
-            size="sm",
-            icon_name="info",
-            icon_size=14,
-            command=self._open_advanced_guide,
-        )
-        self.advanced_guide_btn.pack(side="right", padx=(8, 0))
+        self.speed_section_label.pack(anchor="w", padx=4, pady=(8, 6))
 
         self.speed_card = ctk.CTkFrame(
             self.speed_group,
@@ -1292,7 +1277,6 @@ class SettingsView(ctk.CTkFrame):
         self.speed_section_label.configure(text=self.t("speed_section_title"))
         adv_toggle_key = "advanced_toggle_hide" if self._advanced_expanded else "advanced_toggle_show"
         self.advanced_toggle_btn.configure(text=self.t(adv_toggle_key))
-        self.advanced_guide_btn.set_text(self.t("adv_guide_btn"))
         self.advanced_intro_label.configure(text=self.t("advanced_intro_note"))
         self.reset_adv_btn.set_text(self.t("adv_reset_defaults_btn"))
         self.base_url_entry.configure(placeholder_text=self.t("base_url_placeholder"))
@@ -1677,12 +1661,6 @@ class SettingsView(ctk.CTkFrame):
             on_done,
             current_version=APP_VERSION,
             ui_language=self.config.ui_language,
-        )
-
-    def _open_advanced_guide(self):
-        AdvancedGuideModal(
-            self.winfo_toplevel(),
-            get_translation=self.t,
         )
 
     def _open_update_modal(self):

@@ -52,19 +52,19 @@ if not exist "%PYINSTALLER%" (
     )
 )
 
-for /f "delims=" %%V in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_VERSION') do set "APP_VERSION=%%V"
+for /f "delims=" %%V in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_VERSION') do set "APP_VERSION=%%V"
 if not defined APP_VERSION (
     echo [Error] Failed to read APP_VERSION from config.py.
     call :maybe_pause
     exit /b 1
 )
-for /f "delims=" %%N in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_NAME') do set "APP_NAME=%%N"
+for /f "delims=" %%N in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_NAME') do set "APP_NAME=%%N"
 if not defined APP_NAME (
     echo [Error] Failed to read APP_NAME from config.py.
     call :maybe_pause
     exit /b 1
 )
-for /f "delims=" %%E in ('"%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_EXECUTABLE_NAME') do set "APP_EXEC_NAME=%%E"
+for /f "delims=" %%E in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_EXECUTABLE_NAME') do set "APP_EXEC_NAME=%%E"
 if not defined APP_EXEC_NAME (
     echo [Error] Failed to read APP_EXECUTABLE_NAME from config.py.
     call :maybe_pause

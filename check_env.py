@@ -73,6 +73,11 @@ def read_config_constant(name: str) -> str:
 
 def main() -> int:
     args = sys.argv[1:]
+    if args == ["--check-py"]:
+        return 0 if sys.version_info >= (3, 10) else 1
+    if args == ["--py-version"]:
+        print(".".join(str(part) for part in sys.version_info[:3]))
+        return 0
     if args == ["--write-stamp"]:
         return write_stamp()
     if len(args) == 2 and args[0] == "--meta":

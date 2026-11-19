@@ -39,7 +39,7 @@ set "OVERRIDE_PY=%RAKUTRANS_PYTHON%"
 if defined OVERRIDE_PY set "OVERRIDE_PY=%OVERRIDE_PY:"=%"
 
 if defined OVERRIDE_PY (
-    "%OVERRIDE_PY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+    "%OVERRIDE_PY%" "%SCRIPT_DIR%check_env.py" --check-py >nul 2>&1
     if errorlevel 1 (
         echo.
         echo [Error] Specified RAKUTRANS_PYTHON "%OVERRIDE_PY%" was not found or is ^< 3.10.
@@ -95,7 +95,7 @@ if not defined PY_EXE (
     exit /b 1
 )
 
-for /f "delims=" %%V in ('""!PY_EXE!" !PY_ARGS! -c "import sys; print(chr(46).join(map(str, sys.version_info[:3])))"" 2^>nul') do set "PY_VER=%%V"
+for /f "delims=" %%V in ('call "!PY_EXE!" !PY_ARGS! "%SCRIPT_DIR%check_env.py" --py-version 2^>nul') do set "PY_VER=%%V"
 echo Found Python: !PY_EXE! !PY_ARGS! (!PY_VER!)
 
 REM 2. Check virtual environment integrity
@@ -108,12 +108,12 @@ if exist "%VENV_DIR%" (
         echo [Notice] Existing .venv is incomplete or invalid.
         set "RECREATE_VENV=1"
     ) else (
-        "%VENV_PY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+        "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --check-py >nul 2>&1
         if errorlevel 1 (
             echo [Notice] Existing .venv is ^< 3.10, was moved from another path, or is corrupted.
             set "RECREATE_VENV=1"
         ) else if defined OVERRIDE_PY (
-            for /f "delims=" %%V in ('""%VENV_PY%" -c "import sys; print(chr(46).join(map(str, sys.version_info[:3])))"" 2^>nul') do set "VENV_VER=%%V"
+            for /f "delims=" %%V in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --py-version 2^>nul') do set "VENV_VER=%%V"
             if not "!VENV_VER!"=="!PY_VER!" (
                 echo [Notice] Rebuilding .venv to match requested Python !PY_VER! ^(was !VENV_VER!^)...
                 set "RECREATE_VENV=1"
@@ -192,7 +192,7 @@ goto :eof
 
 :check_cmd
 if "%~1"=="" goto :eof
-"%~1" %~2 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+"%~1" %~2 "%SCRIPT_DIR%check_env.py" --check-py >nul 2>&1
 if errorlevel 1 goto :eof
 if not defined FALLBACK_EXE (
     set "FALLBACK_EXE=%~1"

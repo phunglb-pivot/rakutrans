@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import AI_PROVIDERS, NUMERIC_SETTING_SPECS, get_config_dir
+from rakutrans.core.config import AI_PROVIDERS, NUMERIC_SETTING_SPECS, get_config_dir
 
 CACHE_DIR = get_config_dir()
 MODELS_CACHE_FILE = CACHE_DIR / "models_cache.json"

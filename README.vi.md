@@ -45,8 +45,8 @@ Dự án đã được tích hợp bộ script tự động hóa toàn bộ môi
 ### Cách 2: Thiết lập môi trường trước
 
 Nếu bạn muốn chuẩn bị trước môi trường hoặc kiểm tra tương thích:
-- **macOS / Linux**: `./setup_env.sh`
-- **Windows**: `setup_env.bat`
+- **macOS / Linux**: `./scripts/setup_env.sh`
+- **Windows**: `scripts\setup_env.bat`
 
 ---
 
@@ -54,8 +54,8 @@ Nếu bạn muốn chuẩn bị trước môi trường hoặc kiểm tra tươn
 
 Tạo bộ cài đặt chạy trực tiếp không cần người dùng cuối phải cài đặt Python:
 
-- **macOS (`.app` & `.dmg`)**: `./build_macos.sh` → tạo `dist/RakuTrans.app` và `dist/RakuTrans-Installer-macOS.dmg`
-- **Windows (`.exe` & Installer)**: `build_windows.bat` → tạo `dist\RakuTrans\RakuTrans.exe` và `dist\RakuTrans-Installer-Windows.exe` (khi đã cài Inno Setup 6, xem [WINDOWS_INSTALLER_GUIDE.md](WINDOWS_INSTALLER_GUIDE.md))
+- **macOS (`.app` & `.dmg`)**: `./packaging/build_macos.sh` → tạo `dist/RakuTrans.app` và `dist/RakuTrans-Installer-macOS.dmg`
+- **Windows (`.exe` & Installer)**: `packaging\build_windows.bat` → tạo `dist\RakuTrans\RakuTrans.exe` và `dist\RakuTrans-Installer-Windows.exe` (khi đã cài Inno Setup 6, xem [docs/WINDOWS_INSTALLER_GUIDE.md](docs/WINDOWS_INSTALLER_GUIDE.md))
 
 ### Tải về & Cập nhật phiên bản mới (Người dùng cuối)
 
@@ -67,7 +67,7 @@ Tải phiên bản mới nhất tại [GitHub Releases](https://github.com/phung
 
 ### Quy trình phát hành phiên bản mới (Dành cho maintainer)
 
-1. Tăng `APP_VERSION` trong `config.py` (ví dụ `"1.0.1"`) và commit lên `main`.
+1. Tăng `APP_VERSION` trong `rakutrans/core/config.py` (ví dụ `"1.0.1"`) và commit lên `main`.
 2. Tạo và đẩy tag trùng khớp với version:
    ```bash
    git tag v1.0.1 && git push origin main v1.0.1

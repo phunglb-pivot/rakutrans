@@ -15,18 +15,18 @@ from typing import Callable, Optional, Dict, Any, List, Tuple, TypeVar
 
 T = TypeVar("T")
 
-from config import (
+from rakutrans.core.config import (
     AppConfig,
     NUMERIC_SETTING_SPECS,
     TranslationOptions,
     resolve_config_int,
 )
-from llm_manager import (
+from rakutrans.llm.llm_manager import (
     LLMManager,
     compute_effective_batch_char_limit,
     estimate_batch_item_chars,
 )
-from translation_cache import TranslationCache
+from rakutrans.llm.translation_cache import TranslationCache
 
 _ESTIMATE_CHAR_RATIO = 0.7
 _APPEND_ORIGINAL_CHAR_RATIO = 0.75
@@ -318,7 +318,7 @@ class BaseTranslator(ABC):
         """Formats localized status/progress strings honoring config.ui_language."""
         lang = getattr(self.config, "ui_language", "en") or "en"
         if self._i18n is None:
-            from i18n import I18nManager
+            from rakutrans.core.i18n import I18nManager
             self._i18n = I18nManager(lang)
         elif hasattr(self._i18n, "set_language"):
             self._i18n.set_language(lang)

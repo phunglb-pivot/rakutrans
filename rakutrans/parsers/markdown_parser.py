@@ -9,15 +9,15 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
-from base_translator import (
+from rakutrans.parsers.base_translator import (
     BaseTranslator,
     count_words_multilingual,
     detect_text_encoding,
     safe_save_file,
 )
-from config import AppConfig, TranslationOptions, get_smart_output_path, resolve_config_int
-from llm_manager import LLMManager
-from translation_cache import TranslationCache
+from rakutrans.core.config import AppConfig, TranslationOptions, get_smart_output_path, resolve_config_int
+from rakutrans.llm.llm_manager import LLMManager
+from rakutrans.llm.translation_cache import TranslationCache
 
 _DEFAULT_MD_CHUNK_CHARS = 3500
 _STANDALONE_CODE_FENCE_MIN_CHARS = 150

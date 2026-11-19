@@ -8,7 +8,7 @@ import tkinter as tk
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from components.icons import get_icon, apply_windows_window_icon
+from rakutrans.ui.components.icons import get_icon, apply_windows_window_icon
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD  # noqa: F401

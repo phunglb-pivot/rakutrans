@@ -9,11 +9,11 @@ try:
     import tkinter
     import customtkinter as ctk
     HAS_TKINTER = True
-    from components.ui_system import (
+    from rakutrans.ui.components.ui_system import (
         BUTTON_SIZES,
         BUTTON_VARIANTS
     )
-    from ui import RakuTransApp
+    from rakutrans.ui.app import RakuTransApp
 except (ImportError, ModuleNotFoundError):
     HAS_TKINTER = False
 
@@ -26,10 +26,9 @@ class TestUIButtonLifecycle(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        import model_fetcher
-        import translation_cache
-
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm import translation_cache
         cls._tmp_dir = tempfile.TemporaryDirectory()
         tmp_path = Path(cls._tmp_dir.name)
         cls._patches = [
@@ -213,7 +212,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
         self.app.config.ui_language = "en"
         self.app._on_settings_changed(self.app.config)
 
-        with patch("ui.platform.system", return_value="Darwin"):
+        with patch("rakutrans.ui.app.platform.system", return_value="Darwin"):
             self.app._on_mode_switched(self.app.tab_translate_label)
             mac_tr = self.app.shortcut_hint_label.cget("text")
             self.assertIn("⌘+O", mac_tr)
@@ -228,7 +227,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.assertNotIn("Ctrl", mac_cv)
             self.assertNotIn("Translate", mac_cv)
 
-        with patch("ui.platform.system", return_value="Windows"):
+        with patch("rakutrans.ui.app.platform.system", return_value="Windows"):
             self.app._on_mode_switched(self.app.tab_translate_label)
             win_tr = self.app.shortcut_hint_label.cget("text")
             self.assertIn("Ctrl+O", win_tr)
@@ -407,7 +406,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.app._on_convert_file_selected(str(pdf_file))
             self.app._on_convert_file_selected(str(csv_file))
 
-            from format_converter import get_convert_options
+            from rakutrans.parsers.format_converter import get_convert_options
             csv_opts_count = len(get_convert_options(".csv"))
             col_cfg = self.app.target_segmented.grid_columnconfigure(csv_opts_count)
             self.assertEqual(col_cfg["weight"], 0)
@@ -449,7 +448,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
 
     def test_update_banner_lifecycle_and_skip_version(self):
         """Verify update banner shows for new unskipped versions, localizes, and hides when dismissed/skipped."""
-        from update_checker import UpdateCheckResult, UpdateInfo
+        from rakutrans.core.update_checker import UpdateCheckResult, UpdateInfo
 
         info = UpdateInfo(
             current_version="1.0.0",
@@ -490,7 +489,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
 
     def test_dark_mode_translate_convert_active_and_disabled_clarity(self):
         """In Dark mode, active mode tab and enabled/disabled translate & convert action buttons have unambiguous contrast."""
-        from components.ui_system import BUTTON_DISABLED_STYLES, SEGMENTED_BUTTON_TOKENS
+        from rakutrans.ui.components.ui_system import BUTTON_DISABLED_STYLES, SEGMENTED_BUTTON_TOKENS
 
         ctk.set_appearance_mode("Dark")
 
@@ -582,7 +581,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
         """bilingual_cb stays enabled only for .xlsx (or no file) and disabled for .docx/.pdf/.txt; worker clamps non-.xlsx."""
         from pathlib import Path
         from unittest.mock import patch
-        from translator_registry import TranslatorRegistry
+        from rakutrans.parsers.translator_registry import TranslatorRegistry
 
         prev_bilingual = self.app.config.translation_options.bilingual_mode
         try:
@@ -649,7 +648,7 @@ class TestUIButtonLifecycle(unittest.TestCase):
 
     def test_quick_speed_mode_in_translation_options_and_settings_sync(self):
         """Speed & Limit Mode inside Translation Options syncs bidirectionally with Settings, i18n, and processing state."""
-        from config import DEFAULT_RATE_LIMIT_PRESET, RATE_LIMIT_PRESETS
+        from rakutrans.core.config import DEFAULT_RATE_LIMIT_PRESET, RATE_LIMIT_PRESETS
 
         prev_preset = self.app.config.rate_limit_preset
         prev_lang = self.app.config.ui_language

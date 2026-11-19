@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
-from config import (
+from rakutrans.core.config import (
     AI_PROVIDERS,
     AppConfig,
     NUMERIC_SETTING_SPECS,
@@ -26,7 +26,7 @@ from config import (
     resolve_config_float,
     resolve_config_int,
 )
-from error_handler import (
+from rakutrans.core.error_handler import (
     AUTH_ERROR_CODES,
     AUTH_SDK_CLASSES,
     BILLING_ERROR_CODES,
@@ -39,7 +39,7 @@ from error_handler import (
     get_http_status_code as _get_http_status_code,
     iter_exception_chain as _iter_exception_chain,
 )
-from model_fetcher import get_model_metadata, update_model_metadata
+from rakutrans.llm.model_fetcher import get_model_metadata, update_model_metadata
 
 T = TypeVar("T")
 

@@ -6,7 +6,7 @@ import importlib
 import pathlib
 import sys
 
-ROOT_DIR = pathlib.Path(__file__).resolve().parent
+ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
 REQUIRED_MODULES = (
     "customtkinter",
     "tkinterdnd2",
@@ -57,8 +57,8 @@ def write_stamp() -> int:
 
 
 def read_config_constant(name: str) -> str:
-    """Read a top-level constant from config.py without importing third-party deps."""
-    tree = ast.parse((ROOT_DIR / "config.py").read_text(encoding="utf-8"))
+    """Read a top-level constant from rakutrans/core/config.py without importing third-party deps."""
+    tree = ast.parse((ROOT_DIR / "rakutrans" / "core" / "config.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for tgt in node.targets:

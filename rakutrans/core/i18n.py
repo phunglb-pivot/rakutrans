@@ -894,16 +894,16 @@ class I18nManager:
             # Fallback to English
             text = TRANSLATIONS.get("en", {}).get(key, key)
         if "{formats}" in text and "formats" not in kwargs:
-            from translator_registry import TranslatorRegistry
+            from rakutrans.parsers.translator_registry import TranslatorRegistry
             kwargs["formats"] = ", ".join(TranslatorRegistry.get_supported_extensions())
         if "{patterns}" in text and "patterns" not in kwargs:
-            from translator_registry import TranslatorRegistry
+            from rakutrans.parsers.translator_registry import TranslatorRegistry
             kwargs["patterns"] = ", ".join(f"*{ext}" for ext in TranslatorRegistry.get_supported_extensions())
         if "{config_dir}" in text and "config_dir" not in kwargs:
-            from config import CONFIG_DIR_NAME
+            from rakutrans.core.config import CONFIG_DIR_NAME
             kwargs["config_dir"] = CONFIG_DIR_NAME
         if "{min_size_mb}" in text and "min_size_mb" not in kwargs:
-            from config import LARGE_FILE_SIZE_BYTES
+            from rakutrans.core.config import LARGE_FILE_SIZE_BYTES
             kwargs["min_size_mb"] = max(1, LARGE_FILE_SIZE_BYTES // (1024 * 1024))
         if kwargs:
             try:

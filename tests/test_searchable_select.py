@@ -3,7 +3,7 @@ Unit tests for Searchable Select language component, diacritics stripping, and l
 """
 
 import unittest
-from config import (
+from rakutrans.core.config import (
     get_all_languages,
     DEFAULT_TARGET_LANGUAGE,
     normalize_language_name,
@@ -14,7 +14,7 @@ try:
     import tkinter
     import customtkinter
     HAS_TKINTER = True
-    from components.searchable_select import _strip_accents
+    from rakutrans.ui.components.searchable_select import _strip_accents
 except (ImportError, ModuleNotFoundError):
     HAS_TKINTER = False
     import unicodedata
@@ -115,7 +115,7 @@ class TestSearchableSelect(unittest.TestCase):
     def test_floating_overlay_zero_layout_shift(self):
         """Verify that opening the dropdown floats over content with zero layout shift."""
         import customtkinter as ctk
-        from components.searchable_select import SearchableLanguageSelect
+        from rakutrans.ui.components.searchable_select import SearchableLanguageSelect
 
         root = self._create_root()
         root.geometry("500x600")
@@ -202,7 +202,7 @@ class TestSearchableSelect(unittest.TestCase):
     def test_recent_languages_behavior(self):
         """Verify that recent languages list keeps max 3 items and orders by MRU."""
         import customtkinter as ctk
-        from components.searchable_select import SearchableLanguageSelect
+        from rakutrans.ui.components.searchable_select import SearchableLanguageSelect
 
         root = self._create_root()
         root.geometry("400x500")
@@ -265,7 +265,7 @@ class TestSearchableSelect(unittest.TestCase):
     def test_open_single_render_disabled_and_destroy_unbinds(self):
         """Verify open() renders once, set_enabled(False) blocks opening, and destroy() preserves siblings."""
         import customtkinter as ctk
-        from components.searchable_select import SearchableLanguageSelect
+        from rakutrans.ui.components.searchable_select import SearchableLanguageSelect
 
         root = self._create_root()
         root.geometry("400x500")

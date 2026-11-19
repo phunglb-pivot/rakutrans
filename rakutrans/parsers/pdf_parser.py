@@ -29,17 +29,17 @@ except ImportError:
 
 import pypdf
 
-from base_translator import (
+from rakutrans.parsers.base_translator import (
     BaseTranslator,
     count_words_multilingual,
     safe_save_file,
     should_translate_text,
 )
-from config import AppConfig, TranslationOptions, get_smart_output_path
-from llm_manager import LLMManager
-from translation_cache import TranslationCache
-from docx_parser import DocxTranslator, _iter_all_paragraphs
-from format_converter import pdf_to_docx, docx_to_pdf, _is_cjk_char
+from rakutrans.core.config import AppConfig, TranslationOptions, get_smart_output_path
+from rakutrans.llm.llm_manager import LLMManager
+from rakutrans.llm.translation_cache import TranslationCache
+from rakutrans.parsers.docx_parser import DocxTranslator, _iter_all_paragraphs
+from rakutrans.parsers.format_converter import pdf_to_docx, docx_to_pdf, _is_cjk_char
 
 
 def _clean_pdf2docx_soft_breaks(docx_path: Path) -> None:

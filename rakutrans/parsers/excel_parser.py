@@ -17,10 +17,10 @@ try:
 except ImportError:
     ArrayFormula = None
 
-from base_translator import BaseTranslator, safe_save_file, should_translate_text
-from config import AppConfig, TranslationOptions, get_smart_output_path
-from llm_manager import LLMManager
-from translation_cache import TranslationCache
+from rakutrans.parsers.base_translator import BaseTranslator, safe_save_file, should_translate_text
+from rakutrans.core.config import AppConfig, TranslationOptions, get_smart_output_path
+from rakutrans.llm.llm_manager import LLMManager
+from rakutrans.llm.translation_cache import TranslationCache
 
 _EXCEL_SHEET_TITLE_MAX_LEN = 31
 _ARCHIVE_SHEET_SUFFIX = "_Orig"

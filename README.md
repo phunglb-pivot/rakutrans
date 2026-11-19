@@ -45,8 +45,8 @@ The project includes zero-config self-healing scripts that automatically locate 
 ### Option 2: Standalone Environment Setup
 
 If you prefer to initialize the environment ahead of time:
-- **macOS / Linux**: `./setup_env.sh`
-- **Windows**: `setup_env.bat`
+- **macOS / Linux**: `./scripts/setup_env.sh`
+- **Windows**: `scripts\setup_env.bat`
 
 ---
 
@@ -54,8 +54,8 @@ If you prefer to initialize the environment ahead of time:
 
 Build standalone executables without requiring end-users to have Python installed:
 
-- **macOS (`.app` & `.dmg`)**: `./build_macos.sh` → outputs `dist/RakuTrans.app` and `dist/RakuTrans-Installer-macOS.dmg`
-- **Windows (`.exe` & Installer)**: `build_windows.bat` → outputs `dist\RakuTrans\RakuTrans.exe` and `dist\RakuTrans-Installer-Windows.exe` (when Inno Setup 6 is installed; see [WINDOWS_INSTALLER_GUIDE.md](WINDOWS_INSTALLER_GUIDE.md))
+- **macOS (`.app` & `.dmg`)**: `./packaging/build_macos.sh` → outputs `dist/RakuTrans.app` and `dist/RakuTrans-Installer-macOS.dmg`
+- **Windows (`.exe` & Installer)**: `packaging\build_windows.bat` → outputs `dist\RakuTrans\RakuTrans.exe` and `dist\RakuTrans-Installer-Windows.exe` (when Inno Setup 6 is installed; see [docs/WINDOWS_INSTALLER_GUIDE.md](docs/WINDOWS_INSTALLER_GUIDE.md))
 
 ### Downloading & Upgrading (End Users)
 
@@ -67,7 +67,7 @@ Download the latest release from [GitHub Releases](https://github.com/phunglb-pi
 
 ### Publishing a New Release (Maintainers)
 
-1. Bump `APP_VERSION` in `config.py` (e.g., `"1.0.1"`) and commit to `main`.
+1. Bump `APP_VERSION` in `rakutrans/core/config.py` (e.g., `"1.0.1"`) and commit to `main`.
 2. Create and push the matching tag:
    ```bash
    git tag v1.0.1 && git push origin main v1.0.1

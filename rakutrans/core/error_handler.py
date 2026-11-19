@@ -183,7 +183,7 @@ def diagnose_error(exc: Exception, i18n: Optional[Any] = None) -> DiagnosticInfo
         full_trace = raw_str
 
     if i18n is None or not hasattr(i18n, "t"):
-        from i18n import I18nManager
+        from rakutrans.core.i18n import I18nManager
         i18n = I18nManager()
 
     def t(key: str, **kwargs) -> str:

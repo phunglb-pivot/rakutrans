@@ -8,9 +8,9 @@ import webbrowser
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from components.icons import get_icon
-from components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT
-from update_checker import UpdateInfo
+from rakutrans.ui.components.icons import get_icon
+from rakutrans.ui.components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT
+from rakutrans.core.update_checker import UpdateInfo
 
 
 class UpdateModal(BaseModal):

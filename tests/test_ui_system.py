@@ -8,7 +8,7 @@ try:
     import tkinter
     import customtkinter
     HAS_TKINTER = True
-    from components.ui_system import (
+    from rakutrans.ui.components.ui_system import (
         BUTTON_SIZES,
         BUTTON_VARIANTS,
         BUTTON_DISABLED_STYLES,
@@ -18,7 +18,7 @@ try:
         CustomSegmentedButton,
         BaseModal
     )
-    from components.confirm_modal import ConfirmModal
+    from rakutrans.ui.components.confirm_modal import ConfirmModal
 except (ImportError, ModuleNotFoundError):
     HAS_TKINTER = False
 
@@ -66,7 +66,7 @@ class TestUISystem(unittest.TestCase):
 
     def test_confirm_modal_localized_defaults(self):
         """Verify ConfirmModal resolves localized default text when strings are omitted."""
-        from i18n import I18nManager
+        from rakutrans.core.i18n import I18nManager
         i18n = I18nManager("vi")
         root = self._create_root()
 
@@ -83,10 +83,10 @@ class TestUISystem(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         import customtkinter as ctk
-        import config as config_mod
-        import model_fetcher
-        from config import AppConfig
-        from components.settings_modal import SettingsView
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.core.config import AppConfig
+        from rakutrans.ui.components.settings_modal import SettingsView
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -129,7 +129,7 @@ class TestUISystem(unittest.TestCase):
 
                 # Test connection without selected model must fail early without fetching models[0]
                 sv.key_var.set("sk-test-key")
-                with patch("llm_manager.create_llm_client") as mock_client:
+                with patch("rakutrans.llm.llm_manager.create_llm_client") as mock_client:
                     sv._test_api_connection()
                     mock_client.assert_not_called()
                     self.assertEqual(sv.test_conn_status.cget("text"), "err_select_model")
@@ -141,7 +141,7 @@ class TestUISystem(unittest.TestCase):
                 cfg.selected_models["OpenAI"] = ""
                 sv._apply_model_options(["gpt-4o-mini", "gpt-4o"], "")
                 with patch(
-                    "components.settings_modal.fetch_models_async",
+                    "rakutrans.ui.components.settings_modal.fetch_models_async",
                     side_effect=lambda p, k, cb, **_kw: cb(["gpt-4o-mini", "gpt-4o"], None),
                 ):
                     sv._fetch_live_models(is_manual=True)
@@ -211,7 +211,7 @@ class TestUISystem(unittest.TestCase):
                 self.assertEqual(sv._adv_status_state, "reset")
 
                 # Per-provider base_url switches cleanly and fetch_models_async receives base_url & timeout
-                with patch("components.settings_modal.fetch_models_async") as mock_fetch_adv:
+                with patch("rakutrans.ui.components.settings_modal.fetch_models_async") as mock_fetch_adv:
                     sv._fetch_live_models(is_manual=True)
                     mock_fetch_adv.assert_called_once()
                     self.assertEqual(
@@ -224,7 +224,7 @@ class TestUISystem(unittest.TestCase):
                     )
 
                 # Switching i18n updates grouped advanced headers, provider-scoped base_url label, and hints
-                from i18n import I18nManager
+                from rakutrans.core.i18n import I18nManager
                 vi_i18n = I18nManager("vi")
                 sv.refresh_i18n(vi_i18n.t)
                 self.assertEqual(sv.adv_group_batching.cget("text"), vi_i18n.t("adv_group_batching"))
@@ -242,7 +242,7 @@ class TestUISystem(unittest.TestCase):
         from pathlib import Path
         from PIL import Image
         import customtkinter as ctk
-        from components.icons import get_icon
+        from rakutrans.ui.components.icons import get_icon
 
         root = self._create_root()
         for name in (
@@ -256,7 +256,7 @@ class TestUISystem(unittest.TestCase):
             img = get_icon(name, "secondary", 16)
             self.assertIsInstance(img, ctk.CTkImage)
 
-        from components.icons import get_provider_icon
+        from rakutrans.ui.components.icons import get_provider_icon
         for prov in ("Gemini", "OpenAI", "Claude"):
             self.assertIsInstance(get_provider_icon(prov, "muted", 14), ctk.CTkImage)
 
@@ -317,7 +317,7 @@ class TestUISystem(unittest.TestCase):
     def test_dropzone_splitlist_directory_guard_and_inspection_race(self):
         import tempfile
         from pathlib import Path
-        from components.dnd_zone import DropZone
+        from rakutrans.ui.components.dnd_zone import DropZone
 
         root = self._create_root()
         invalid_calls = []
@@ -353,9 +353,9 @@ class TestUISystem(unittest.TestCase):
         import tempfile
         from pathlib import Path
         import customtkinter as ctk
-        from config import AppConfig
-        from components.dnd_zone import DropZone
-        from components.settings_modal import SettingsView
+        from rakutrans.core.config import AppConfig
+        from rakutrans.ui.components.dnd_zone import DropZone
+        from rakutrans.ui.components.settings_modal import SettingsView
 
         root = self._create_root()
         cfg = AppConfig()
@@ -415,10 +415,10 @@ class TestUISystem(unittest.TestCase):
         from pathlib import Path
         from unittest.mock import patch
         import customtkinter as ctk
-        import config as config_mod
-        import model_fetcher
-        from config import AppConfig
-        from components.settings_modal import SettingsView
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.core.config import AppConfig
+        from rakutrans.ui.components.settings_modal import SettingsView
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -426,7 +426,7 @@ class TestUISystem(unittest.TestCase):
                  patch.object(config_mod, "CONFIG_FILE", tmp_path / "config.json"), \
                  patch.object(model_fetcher, "CACHE_DIR", tmp_path), \
                  patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"), \
-                 patch("components.settings_modal.fetch_models_async") as mock_fetch:
+                 patch("rakutrans.ui.components.settings_modal.fetch_models_async") as mock_fetch:
                 cfg = AppConfig()
                 root = self._create_root()
                 sv = SettingsView(

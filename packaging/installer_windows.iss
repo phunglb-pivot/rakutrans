@@ -38,11 +38,11 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
 ; Output installer path & filename
-OutputDir=dist
+OutputDir=..\dist
 OutputBaseFilename={#MyAppExecBase}-Installer-Windows
 
 ; Icons & UI style
-SetupIconFile=assets\icon.ico
+SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 WizardStyle=modern
 Compression=lzma2
@@ -55,8 +55,8 @@ RestartApplications=no
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
-#ifexist "assets\Vietnamese.isl"
-Name: "vietnamese"; MessagesFile: "assets\Vietnamese.isl"
+#ifexist "..\assets\Vietnamese.isl"
+Name: "vietnamese"; MessagesFile: "..\assets\Vietnamese.isl"
 #endif
 
 [Tasks]
@@ -69,7 +69,7 @@ Type: files; Name: "{app}\{#MyAppExeName}"
 
 [Files]
 ; Copy the entire PyInstaller --onedir output including _internal\
-Source: "dist\{#MyAppExecBase}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\{#MyAppExecBase}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"

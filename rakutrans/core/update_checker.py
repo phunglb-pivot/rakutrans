@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from config import (
+from rakutrans.core.config import (
     APP_EXECUTABLE_NAME,
     APP_VERSION,
     DEFAULT_UI_LANGUAGE,
@@ -26,7 +26,7 @@ DEFAULT_UPDATE_CHECK_TIMEOUT_S = 6.0
 
 
 def _t_update_err(ui_language: Optional[str], key: str, **kwargs: Any) -> str:
-    from i18n import I18nManager
+    from rakutrans.core.i18n import I18nManager
 
     return I18nManager(ui_language or DEFAULT_UI_LANGUAGE).t(key, **kwargs)
 

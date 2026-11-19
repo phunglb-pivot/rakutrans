@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 from docx import Document
 
-from config import AppConfig
-from docx_parser import DocxTranslator
-from translation_cache import TranslationCache
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.docx_parser import DocxTranslator
+from rakutrans.llm.translation_cache import TranslationCache
 
 
 class MockLLMManager:
@@ -99,7 +99,7 @@ class TestDocxTranslator(unittest.TestCase):
         self.assertEqual(mock_llm.call_count, first_calls)
 
         # 3rd run with different options: MUST NOT poison/reuse default cache
-        from config import TranslationOptions
+        from rakutrans.core.config import TranslationOptions
         translator.process_file(
             file_path=str(self.test_docx_path),
             target_lang="Vietnamese",
@@ -216,7 +216,7 @@ class TestDocxTranslator(unittest.TestCase):
     def test_tabs_soft_breaks_content_controls_and_ignores_bilingual_mode(self):
         from docx.oxml import parse_xml
         from docx.oxml.ns import nsdecls
-        from config import TranslationOptions
+        from rakutrans.core.config import TranslationOptions
 
         doc_path = Path(self.temp_dir.name) / "controls_tabs.docx"
         doc = Document()

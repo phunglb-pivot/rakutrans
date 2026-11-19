@@ -14,7 +14,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 
-from base_translator import (
+from rakutrans.parsers.base_translator import (
     BaseTranslator,
     build_inline_tagged_text,
     contains_literal_inline_tags,
@@ -24,7 +24,7 @@ from base_translator import (
     should_translate_text,
     strip_inline_tags,
 )
-from config import TranslationOptions, get_smart_output_path
+from rakutrans.core.config import TranslationOptions, get_smart_output_path
 
 _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 _TXBX_CONTENT_TAG = f"{_W_NS}txbxContent"

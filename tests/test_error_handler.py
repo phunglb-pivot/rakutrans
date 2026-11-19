@@ -4,8 +4,8 @@ Validates diagnostic classification for Quota, Auth, File Lock, Network, and Can
 """
 
 import unittest
-from error_handler import diagnose_error
-from i18n import I18nManager
+from rakutrans.core.error_handler import diagnose_error
+from rakutrans.core.i18n import I18nManager
 
 
 class TestErrorHandler(unittest.TestCase):
@@ -55,7 +55,7 @@ class TestErrorHandler(unittest.TestCase):
         self.assertIn("hủy", diag.title.lower())
 
     def test_structured_llm_error_classification_without_text_keywords(self):
-        from llm_manager import LLMError
+        from rakutrans.llm.llm_manager import LLMError
 
         auth_err = LLMError("Upstream failure", status_code=401)
         self.assertEqual(diagnose_error(auth_err, self.i18n).category, "auth")
@@ -78,7 +78,7 @@ class TestErrorHandler(unittest.TestCase):
         self.assertNotIn("429", billing_diag.title)
 
     def test_traceback_preserved_outside_except_and_cancelled_not_overmatched(self):
-        from llm_manager import LLMError
+        from rakutrans.llm.llm_manager import LLMError
 
         captured = None
         try:

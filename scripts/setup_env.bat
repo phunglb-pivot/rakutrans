@@ -9,12 +9,13 @@ REM (prioritizing Tkinter support), heals/rebuilds broken virtual environments,
 REM and installs all required dependencies.
 REM
 REM Optional flags / overrides:
-REM   setup_env.bat --with-build          (also installs PyInstaller)
+REM   scripts\setup_env.bat --with-build          (also installs PyInstaller)
 REM   set RAKUTRANS_PYTHON=C:\Path\To\python.exe
 REM ==============================================================================
 
 set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
+for %%I in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
 
 set "NO_PAUSE=0"
 if defined CI set "NO_PAUSE=1"
@@ -99,7 +100,7 @@ for /f "delims=" %%V in ('call "!PY_EXE!" !PY_ARGS! "%SCRIPT_DIR%check_env.py" -
 echo Found Python: !PY_EXE! !PY_ARGS! (!PY_VER!)
 
 REM 2. Check virtual environment integrity
-set "VENV_DIR=%SCRIPT_DIR%.venv"
+set "VENV_DIR=%ROOT_DIR%\.venv"
 set "VENV_PY=%VENV_DIR%\Scripts\python.exe"
 set "RECREATE_VENV=0"
 
@@ -155,9 +156,9 @@ REM 3. Install / update packages
 echo Upgrading pip...
 "%VENV_PY%" -m pip install -q --upgrade pip
 
-if exist "%SCRIPT_DIR%requirements.txt" (
+if exist "%ROOT_DIR%\requirements.txt" (
     echo Installing application dependencies...
-    "%VENV_PY%" -m pip install -q -r "%SCRIPT_DIR%requirements.txt"
+    "%VENV_PY%" -m pip install -q -r "%ROOT_DIR%\requirements.txt"
     if errorlevel 1 (
         echo [Error] Failed to install dependencies.
         if "%NO_PAUSE%"=="0" pause

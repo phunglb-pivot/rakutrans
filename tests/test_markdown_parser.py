@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config import AppConfig
-from markdown_parser import MarkdownTranslator
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.markdown_parser import MarkdownTranslator
 
 
 class MockLLMManager:
@@ -52,7 +52,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.temp_dir.cleanup()
 
     def test_markdown_translation_flow(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         config = AppConfig()
         mock_llm = MockLLMManager()
         translator = MarkdownTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "md_cache.db"))
@@ -80,7 +80,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertIn("https://api.example.com", content)
 
     def test_markdown_caching(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         cache_db = Path(self.temp_dir.name) / "test_cache.db"
         cache = TranslationCache(db_path=cache_db)
 
@@ -113,7 +113,7 @@ For more info, visit [Documentation](https://api.example.com).
 
     def test_chunking_preserves_code_blocks_and_large_tables(self):
         config = AppConfig()
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         translator = MarkdownTranslator(
             config,
             MockLLMManager(),
@@ -155,10 +155,10 @@ For more info, visit [Documentation](https://api.example.com).
     def test_markdown_requires_explicit_model_and_caches_per_model(self):
         from types import SimpleNamespace
         from unittest.mock import patch
-        import config as config_mod
-        import model_fetcher
-        from llm_manager import LLMError, LLMManager
-        from translation_cache import TranslationCache
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.llm_manager import LLMError, LLMManager
+        from rakutrans.llm.translation_cache import TranslationCache
 
         tmp_path = Path(self.temp_dir.name)
         with patch.object(config_mod, "CONFIG_DIR", tmp_path), \
@@ -192,7 +192,7 @@ For more info, visit [Documentation](https://api.example.com).
             self.assertEqual(calls["count"], first_calls)
 
     def test_inline_backticks_leading_blanks_and_code_only_chunk_skipped(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         md_doc = (
             "\n\n"
@@ -227,7 +227,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertIn("def only_code():", out_text)
 
     def test_large_code_fence_isolated_even_in_short_doc_and_long_prose_line_splits(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         large_code = "```python\n" + "\n".join(f"def helper_{i}(x):\n    return x + {i}" for i in range(15)) + "\n```"
         short_doc_with_big_code = f"# Intro\n\nPlease review the snippet below.\n\n{large_code}\n\nConclusion text.\n"
@@ -265,7 +265,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertEqual("".join(c + s for c, s in line_specs), long_line_md)
 
     def test_interleaved_code_blocks_coalesced_and_cached(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         blocks = []
         code_blocks = []
@@ -316,7 +316,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertEqual(len(seen_chunks), calls_before)
 
     def test_placeholder_corruption_falls_back_cleanly_without_poisoning_cache(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         code1 = "```python\n" + "\n".join(f"val_{i} = {i} * 2" for i in range(15)) + "\n```"
         doc_text = f"# First\n\nAlpha paragraph.\n\n{code1}\n\nBeta paragraph.\n"
@@ -353,7 +353,7 @@ For more info, visit [Documentation](https://api.example.com).
         self.assertEqual(len(seen_chunks), calls_before + 1)
 
     def test_placeholder_prefix_avoids_collision_with_source_text(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         code1 = "```python\n" + "\n".join(f"row_{i} = {i}" for i in range(15)) + "\n```"
         doc_text = (

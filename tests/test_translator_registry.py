@@ -4,13 +4,13 @@ Unit tests for TranslatorRegistry and Strategy Pattern architecture.
 
 import unittest
 
-from config import AppConfig
-from translator_registry import TranslatorRegistry
-from excel_parser import ExcelTranslator
-from markdown_parser import MarkdownTranslator
-from docx_parser import DocxTranslator
-from pptx_parser import PptxTranslator
-from data_parser import CsvTranslator, JsonTranslator, TextTranslator
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.translator_registry import TranslatorRegistry
+from rakutrans.parsers.excel_parser import ExcelTranslator
+from rakutrans.parsers.markdown_parser import MarkdownTranslator
+from rakutrans.parsers.docx_parser import DocxTranslator
+from rakutrans.parsers.pptx_parser import PptxTranslator
+from rakutrans.parsers.data_parser import CsvTranslator, JsonTranslator, TextTranslator
 
 
 class MockLLMManager:
@@ -109,7 +109,7 @@ class TestTranslatorRegistry(unittest.TestCase):
             self.assertFalse(TranslatorRegistry.supports_bilingual(path), f"Unexpected bilingual support for {path}")
 
     def test_register_custom_strategy_and_bilingual_flag(self):
-        from base_translator import BaseTranslator
+        from rakutrans.parsers.base_translator import BaseTranslator
 
         class _DummyTranslator(BaseTranslator):
             SUPPORTS_BILINGUAL = True

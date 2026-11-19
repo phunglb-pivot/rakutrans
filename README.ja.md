@@ -45,8 +45,8 @@
 ### 方法 2: 事前環境セットアップ
 
 事前に環境を構築・確認したい場合：
-- **macOS / Linux**: `./setup_env.sh`
-- **Windows**: `setup_env.bat`
+- **macOS / Linux**: `./scripts/setup_env.sh`
+- **Windows**: `scripts\setup_env.bat`
 
 ---
 
@@ -54,8 +54,8 @@
 
 Pythonのインストールが不要な実行ファイル・インストーラーを生成します：
 
-- **macOS (`.app` & `.dmg`)**: `./build_macos.sh` → `dist/RakuTrans.app` および `dist/RakuTrans-Installer-macOS.dmg` を出力
-- **Windows (`.exe` & インストーラー)**: `build_windows.bat` → `dist\RakuTrans\RakuTrans.exe` および `dist\RakuTrans-Installer-Windows.exe` を出力（Inno Setup 6 導入時、詳細は [WINDOWS_INSTALLER_GUIDE.md](WINDOWS_INSTALLER_GUIDE.md) を参照）
+- **macOS (`.app` & `.dmg`)**: `./packaging/build_macos.sh` → `dist/RakuTrans.app` および `dist/RakuTrans-Installer-macOS.dmg` を出力
+- **Windows (`.exe` & インストーラー)**: `packaging\build_windows.bat` → `dist\RakuTrans\RakuTrans.exe` および `dist\RakuTrans-Installer-Windows.exe` を出力（Inno Setup 6 導入時、詳細は [docs/WINDOWS_INSTALLER_GUIDE.md](docs/WINDOWS_INSTALLER_GUIDE.md) を参照）
 
 ### インストール・アップデート方法（ユーザー向け）
 
@@ -67,7 +67,7 @@ Pythonのインストールが不要な実行ファイル・インストーラ�
 
 ### 新バージョンのリリース手順（開発者向け）
 
-1. `config.py` の `APP_VERSION` を更新（例: `"1.0.1"`）し、`main` にコミットします。
+1. `rakutrans/core/config.py` の `APP_VERSION` を更新（例: `"1.0.1"`）し、`main` にコミットします。
 2. 一致するタグを作成してプッシュします：
    ```bash
    git tag v1.0.1 && git push origin main v1.0.1

@@ -13,7 +13,7 @@ import webbrowser
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from config import (
+from rakutrans.core.config import (
     AI_PROVIDERS,
     APP_VERSION,
     AppConfig,
@@ -25,11 +25,11 @@ from config import (
     UI_LANGUAGES,
     coerce_setting_value,
 )
-from model_fetcher import fetch_models_async
-from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
-from components.ui_system import COLORS, CustomButton, CustomSegmentedButton, UI_TIMING
-from components.icons import get_icon, get_provider_icon_name
-from components.update_modal import UpdateModal
+from rakutrans.llm.model_fetcher import fetch_models_async
+from rakutrans.core.update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
+from rakutrans.ui.components.ui_system import COLORS, CustomButton, CustomSegmentedButton, UI_TIMING
+from rakutrans.ui.components.icons import get_icon, get_provider_icon_name
+from rakutrans.ui.components.update_modal import UpdateModal
 
 _ADV_NUMERIC_BINDINGS = (
     ("temperature_var", "temperature"),
@@ -1549,7 +1549,7 @@ class SettingsView(ctk.CTkFrame):
             success = False
             err_msg = ""
             try:
-                from llm_manager import create_llm_client
+                from rakutrans.llm.llm_manager import create_llm_client
 
                 client = create_llm_client(
                     provider,

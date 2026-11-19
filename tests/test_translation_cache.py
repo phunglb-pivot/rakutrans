@@ -6,8 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config import TranslationOptions
-from translation_cache import TranslationCache
+from rakutrans.core.config import TranslationOptions
+from rakutrans.llm.translation_cache import TranslationCache
 
 
 class TestTranslationCache(unittest.TestCase):

@@ -14,10 +14,10 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, PageBreak
 from reportlab.lib.styles import getSampleStyleSheet
 
-from base_translator import should_translate_text
-from config import AppConfig
-from pdf_parser import PdfTranslator
-from translator_registry import TranslatorRegistry
+from rakutrans.parsers.base_translator import should_translate_text
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.pdf_parser import PdfTranslator
+from rakutrans.parsers.translator_registry import TranslatorRegistry
 
 
 class MockLLMManager:
@@ -98,7 +98,7 @@ class TestPdfParser(unittest.TestCase):
 
     def test_pipeline_pdf_to_docx_translate_to_pdf(self):
         """Verifies full pipeline: PDF -> DOCX -> Translate -> PDF."""
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         translator = PdfTranslator(self.config, self.mock_llm, cache=TranslationCache(db_path=self.tmp_path / "pdf_cache.db"))
         progress_calls = []
 
@@ -154,8 +154,8 @@ class TestPdfParser(unittest.TestCase):
 
     def test_cjk_word_count_and_soft_break_cleanup(self):
         from docx import Document
-        from base_translator import count_words_multilingual
-        from pdf_parser import _clean_pdf2docx_soft_breaks
+        from rakutrans.parsers.base_translator import count_words_multilingual
+        from rakutrans.parsers.pdf_parser import _clean_pdf2docx_soft_breaks
 
         self.assertGreaterEqual(count_words_multilingual("AIが直して人が判断"), 8)
         self.assertEqual(count_words_multilingual("Hello world test"), 3)
@@ -179,7 +179,7 @@ class TestPdfParser(unittest.TestCase):
         from docx import Document
         from PIL import Image
         from reportlab.pdfgen import canvas as rl_canvas
-        from pdf_parser import _clean_pdf2docx_soft_breaks, _is_scanned_image_pdf
+        from rakutrans.parsers.pdf_parser import _clean_pdf2docx_soft_breaks, _is_scanned_image_pdf
 
         docx_path = self.tmp_path / "hyphen_br.docx"
         doc = Document()

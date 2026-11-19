@@ -12,7 +12,7 @@ import docx
 from pptx import Presentation
 from reportlab.pdfgen import canvas
 
-from format_converter import (
+from rakutrans.parsers.format_converter import (
     excel_to_markdown,
     markdown_to_excel,
     excel_to_csv,
@@ -283,7 +283,7 @@ class TestFormatConverter(unittest.TestCase):
     def test_docx_to_pdf_reportlab_xml_escape_and_table_images(self):
         from unittest.mock import patch
         import pypdf
-        import format_converter
+        from rakutrans.parsers import format_converter
         from PIL import Image
 
         img_path = self.tmp_path / "cell.png"
@@ -309,7 +309,7 @@ class TestFormatConverter(unittest.TestCase):
 
     def test_convertible_extensions_registry_and_structured_pdf_to_markdown(self):
         import glob
-        from format_converter import get_convertible_extensions, is_convert_supported
+        from rakutrans.parsers.format_converter import get_convertible_extensions, is_convert_supported
 
         exts = get_convertible_extensions()
         self.assertIn(".pdf", exts)
@@ -331,7 +331,7 @@ class TestFormatConverter(unittest.TestCase):
         from unittest.mock import patch
         from docx.oxml import parse_xml
         from docx.oxml.ns import nsdecls
-        import format_converter
+        from rakutrans.parsers import format_converter
         import pypdf
 
         # 1. Excel with Chartsheet converts to Markdown & CSV without crashing
@@ -403,8 +403,7 @@ class TestFormatConverter(unittest.TestCase):
 
     def test_soffice_timeout_scales_with_size_and_pdf_to_docx_cancellable(self):
         from unittest.mock import patch
-        import format_converter
-
+        from rakutrans.parsers import format_converter
         small_docx = self.tmp_path / "small.docx"
         small_docx.write_bytes(b"0" * 1024)
         self.assertGreaterEqual(format_converter._compute_soffice_timeout(small_docx), 90.0)

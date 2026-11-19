@@ -9,16 +9,19 @@ echo "   Building RakuTrans AI for macOS (.app)    "
 echo "============================================="
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+cd "$ROOT_DIR"
 
-VENV_PY="$SCRIPT_DIR/.venv/bin/python"
-PYINSTALLER="$SCRIPT_DIR/.venv/bin/pyinstaller"
+VENV_PY="$ROOT_DIR/.venv/bin/python"
+PYINSTALLER="$ROOT_DIR/.venv/bin/pyinstaller"
+CHECK_ENV="$ROOT_DIR/scripts/check_env.py"
+SETUP_ENV="$ROOT_DIR/scripts/setup_env.sh"
 
 # Ensure .venv is healthy and synced with requirements.txt
-if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" "$SCRIPT_DIR/check_env.py" >/dev/null 2>&1; then
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" "$CHECK_ENV" >/dev/null 2>&1; then
     echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs sync."
     echo "[RakuTrans AI] Running automatic setup..."
-    bash "$SCRIPT_DIR/setup_env.sh" --with-build
+    bash "$SETUP_ENV" --with-build
 fi
 
 # Ensure pyinstaller is available
@@ -30,15 +33,15 @@ fi
 echo "Cleaning previous builds..."
 rm -rf build dist
 
-APP_NAME="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_NAME)"
-APP_VERSION="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_VERSION)"
-APP_EXEC_NAME="$("$VENV_PY" "$SCRIPT_DIR/check_env.py" --meta APP_EXECUTABLE_NAME)"
+APP_NAME="$("$VENV_PY" "$CHECK_ENV" --meta APP_NAME)"
+APP_VERSION="$("$VENV_PY" "$CHECK_ENV" --meta APP_VERSION)"
+APP_EXEC_NAME="$("$VENV_PY" "$CHECK_ENV" --meta APP_EXECUTABLE_NAME)"
 if [ -z "$APP_NAME" ] || [ -z "$APP_VERSION" ] || [ -z "$APP_EXEC_NAME" ]; then
-    echo "[Error] Failed to read app metadata from config.py" >&2
+    echo "[Error] Failed to read app metadata from rakutrans/core/config.py" >&2
     exit 1
 fi
 APP_BUNDLE="${APP_EXEC_NAME}.app"
-echo "Compiling standalone application bundle (v$APP_VERSION) via RakuTrans.spec..."
+echo "Compiling standalone application bundle (v$APP_VERSION) via packaging/RakuTrans.spec..."
 "$PYINSTALLER" --noconfirm --clean "$SCRIPT_DIR/RakuTrans.spec"
 
 echo ""

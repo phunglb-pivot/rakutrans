@@ -6,8 +6,8 @@ Presents a clear, focused confirmation prompt for destructive or irreversible ac
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from components.ui_system import BaseModal, CustomButton, UI_LAYOUT
-from components.icons import get_icon
+from rakutrans.ui.components.ui_system import BaseModal, CustomButton, UI_LAYOUT
+from rakutrans.ui.components.icons import get_icon
 
 _CONFIRM_ICON_MAP = {
     "trash": ("trash", "danger_accent"),

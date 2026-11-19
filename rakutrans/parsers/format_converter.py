@@ -27,11 +27,11 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-from base_translator import detect_text_encoding
-from config import get_smart_output_path, get_unique_output_path
-from data_parser import CsvTranslator
-from excel_parser import load_workbook_safe
-from markdown_parser import build_close_fence_regex, is_md_table_line, match_code_fence_open
+from rakutrans.parsers.base_translator import detect_text_encoding
+from rakutrans.core.config import get_smart_output_path, get_unique_output_path
+from rakutrans.parsers.data_parser import CsvTranslator
+from rakutrans.parsers.excel_parser import load_workbook_safe
+from rakutrans.parsers.markdown_parser import build_close_fence_regex, is_md_table_line, match_code_fence_open
 
 _MD_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _MD_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
@@ -1754,7 +1754,7 @@ def pptx_to_markdown(pptx_path: str, md_output_path: Optional[str] = None) -> st
 
     out_file = Path(md_output_path) if md_output_path else get_unique_output_path(src.with_suffix(".md"))
     from pptx import Presentation
-    from pptx_parser import iter_pptx_shapes
+    from rakutrans.parsers.pptx_parser import iter_pptx_shapes
 
     prs = Presentation(str(src))
 
@@ -1800,7 +1800,7 @@ def pptx_to_text(pptx_path: str, txt_output_path: Optional[str] = None) -> str:
 
     out_file = Path(txt_output_path) if txt_output_path else get_unique_output_path(src.with_suffix(".txt"))
     from pptx import Presentation
-    from pptx_parser import iter_pptx_shapes
+    from rakutrans.parsers.pptx_parser import iter_pptx_shapes
 
     prs = Presentation(str(src))
 

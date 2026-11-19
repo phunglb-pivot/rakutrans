@@ -10,10 +10,10 @@ cd "$SCRIPT_DIR"
 VENV_PY="$SCRIPT_DIR/.venv/bin/python"
 
 # Check if .venv exists, meets Python >= 3.10, has core dependencies, and matches requirements.txt
-if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" "$SCRIPT_DIR/check_env.py" >/dev/null 2>&1; then
+if [ ! -f "$VENV_PY" ] || ! "$VENV_PY" "$SCRIPT_DIR/scripts/check_env.py" >/dev/null 2>&1; then
     echo "[RakuTrans AI] Virtual environment (.venv) is missing or needs sync."
     echo "[RakuTrans AI] Running automatic setup..."
-    bash "$SCRIPT_DIR/setup_env.sh"
+    bash "$SCRIPT_DIR/scripts/setup_env.sh"
 fi
 
 exec "$VENV_PY" "$SCRIPT_DIR/main.py" "$@"

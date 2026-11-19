@@ -7,8 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from config import AppConfig
-from data_parser import CsvTranslator, JsonTranslator, TextTranslator
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.data_parser import CsvTranslator, JsonTranslator, TextTranslator
 
 
 class MockLLMManager:
@@ -29,7 +29,7 @@ class MockLLMManager:
 class TestDataParsers(unittest.TestCase):
 
     def setUp(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         self.temp_dir = tempfile.TemporaryDirectory()
         self.dir_path = Path(self.temp_dir.name)
         self.cache = TranslationCache(db_path=self.dir_path / "test_data_cache.db")
@@ -157,8 +157,8 @@ class TestDataParsers(unittest.TestCase):
         self.assertIn("Second paragraph with details.", content)
 
     def test_text_passes_plain_text_flag_and_isolates_cache_options(self):
-        from config import TranslationOptions
-        from translation_cache import TranslationCache
+        from rakutrans.core.config import TranslationOptions
+        from rakutrans.llm.translation_cache import TranslationCache
 
         seen_plain_flags = []
 
@@ -185,10 +185,10 @@ class TestDataParsers(unittest.TestCase):
     def test_text_requires_explicit_model_and_caches_per_model(self):
         from types import SimpleNamespace
         from unittest.mock import patch
-        import config as config_mod
-        import model_fetcher
-        from llm_manager import LLMError, LLMManager
-        from translation_cache import TranslationCache
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.llm_manager import LLMError, LLMManager
+        from rakutrans.llm.translation_cache import TranslationCache
 
         txt_file = self.dir_path / "first_run.txt"
         txt_file.write_text("Hello world.", encoding="utf-8")

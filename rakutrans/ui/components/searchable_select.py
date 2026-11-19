@@ -8,15 +8,15 @@ import unicodedata
 from typing import Callable, List, Optional
 import customtkinter as ctk
 
-from config import (
+from rakutrans.core.config import (
     DEFAULT_TARGET_LANGUAGE,
     LanguageInfo,
     MAX_RECENT_TARGET_LANGUAGES,
     get_all_languages,
     normalize_language_name,
 )
-from components.icons import get_icon
-from components.ui_system import COLORS, UI_LAYOUT, UI_TIMING
+from rakutrans.ui.components.icons import get_icon
+from rakutrans.ui.components.ui_system import COLORS, UI_LAYOUT, UI_TIMING
 
 
 def _strip_accents(text: str) -> str:

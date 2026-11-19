@@ -18,7 +18,7 @@ import customtkinter as ctk
 from tkinter import filedialog
 from PIL import Image, ImageTk
 
-from config import (
+from rakutrans.core.config import (
     AI_PROVIDERS,
     APP_NAME,
     APP_VERSION,
@@ -28,24 +28,24 @@ from config import (
     LARGE_FILE_SIZE_BYTES,
     RATE_LIMIT_PRESETS,
 )
-from i18n import I18nManager
-from update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
-from llm_manager import LLMManager
-from translator_registry import TranslatorRegistry
-from base_translator import BaseTranslator, estimate_translation_requests
-from translation_cache import TranslationCache
-from format_converter import (
+from rakutrans.core.i18n import I18nManager
+from rakutrans.core.update_checker import UpdateCheckResult, UpdateInfo, check_for_updates_async
+from rakutrans.llm.llm_manager import LLMManager
+from rakutrans.parsers.translator_registry import TranslatorRegistry
+from rakutrans.parsers.base_translator import BaseTranslator, estimate_translation_requests
+from rakutrans.llm.translation_cache import TranslationCache
+from rakutrans.parsers.format_converter import (
     convert_file_direct,
     get_convert_options,
     get_convertible_extensions,
     is_convert_supported,
 )
-from components.dnd_zone import DropZone, format_file_size
-from components.settings_modal import SettingsView
-from components.error_modal import ErrorModal
-from components.update_modal import UpdateModal
-from components.searchable_select import SearchableLanguageSelect
-from components.ui_system import (
+from rakutrans.ui.components.dnd_zone import DropZone, format_file_size
+from rakutrans.ui.components.settings_modal import SettingsView
+from rakutrans.ui.components.error_modal import ErrorModal
+from rakutrans.ui.components.update_modal import UpdateModal
+from rakutrans.ui.components.searchable_select import SearchableLanguageSelect
+from rakutrans.ui.components.ui_system import (
     COLORS,
     CustomButton,
     CustomSegmentedButton,
@@ -54,9 +54,9 @@ from components.ui_system import (
     UI_LAYOUT,
     UI_TIMING,
 )
-from components.confirm_modal import ConfirmModal
-from components.icons import get_icon, get_provider_icon, get_assets_dir, init_windows_app_id, apply_windows_window_icon
-from error_handler import diagnose_error, DiagnosticInfo
+from rakutrans.ui.components.confirm_modal import ConfirmModal
+from rakutrans.ui.components.icons import get_icon, get_provider_icon, get_assets_dir, init_windows_app_id, apply_windows_window_icon
+from rakutrans.core.error_handler import diagnose_error, DiagnosticInfo
 
 
 class RakuTransApp(ctk.CTk):

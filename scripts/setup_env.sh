@@ -7,13 +7,14 @@
 # broken virtual environments, and installs all required dependencies.
 #
 # Optional flags / overrides:
-#   ./setup_env.sh --with-build         (also installs PyInstaller)
-#   RAKUTRANS_PYTHON=/path/to/python3 ./setup_env.sh
+#   ./scripts/setup_env.sh --with-build         (also installs PyInstaller)
+#   RAKUTRANS_PYTHON=/path/to/python3 ./scripts/setup_env.sh
 # ==============================================================================
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$( cd "$SCRIPT_DIR/.." && pwd )"
+cd "$ROOT_DIR"
 
 WITH_BUILD="${RAKUTRANS_WITH_BUILD:-0}"
 for arg in "$@"; do
@@ -147,7 +148,7 @@ if [ -z "$PYTHON_BIN" ]; then
     echo "  • Other platforms: https://www.python.org/downloads/"
     echo ""
     echo "Tip: If Python 3.10+ is installed in a custom path, run:"
-    echo "      RAKUTRANS_PYTHON=/path/to/python3 ./setup_env.sh"
+    echo "      RAKUTRANS_PYTHON=/path/to/python3 ./scripts/setup_env.sh"
     echo ""
     exit 1
 fi
@@ -157,7 +158,7 @@ PY_MM="$("$PYTHON_BIN" -c "import sys; print(f'{sys.version_info.major}.{sys.ver
 echo "Found system Python: $PYTHON_BIN ($PY_VER)"
 
 # 2. Check existing virtual environment integrity
-VENV_DIR="$SCRIPT_DIR/.venv"
+VENV_DIR="$ROOT_DIR/.venv"
 RECREATE_VENV=0
 
 if [ -d "$VENV_DIR" ]; then
@@ -193,9 +194,9 @@ VENV_PY="$VENV_DIR/bin/python"
 echo "Upgrading pip..."
 "$VENV_PY" -m pip install -q --upgrade pip
 
-if [ -f "$SCRIPT_DIR/requirements.txt" ]; then
+if [ -f "$ROOT_DIR/requirements.txt" ]; then
     echo "Installing application dependencies..."
-    "$VENV_PY" -m pip install -q -r "$SCRIPT_DIR/requirements.txt"
+    "$VENV_PY" -m pip install -q -r "$ROOT_DIR/requirements.txt"
     "$VENV_PY" "$SCRIPT_DIR/check_env.py" --write-stamp
 fi
 

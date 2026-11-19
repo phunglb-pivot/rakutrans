@@ -540,7 +540,7 @@ class AppConfig:
 
     def get_available_models(self, provider: Optional[str] = None) -> list[str]:
         """Returns cached/fresh available models for the given or active provider."""
-        from model_fetcher import load_cached_models
+        from rakutrans.llm.model_fetcher import load_cached_models
         prov = provider or self.active_provider
         return load_cached_models(prov)
 

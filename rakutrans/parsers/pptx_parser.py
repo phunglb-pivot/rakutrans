@@ -12,7 +12,7 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.text.text import _Paragraph
 
-from base_translator import (
+from rakutrans.parsers.base_translator import (
     BaseTranslator,
     build_inline_tagged_text,
     contains_literal_inline_tags,
@@ -22,7 +22,7 @@ from base_translator import (
     should_translate_text,
     strip_inline_tags,
 )
-from config import TranslationOptions, get_smart_output_path
+from rakutrans.core.config import TranslationOptions, get_smart_output_path
 
 _A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 _A_RPR_TAG = f"{_A_NS}rPr"

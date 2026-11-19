@@ -9,10 +9,10 @@ from pathlib import Path
 import threading
 from typing import Dict, Type, List, Optional, Any, Tuple, Union
 
-from base_translator import BaseTranslator
-from config import AppConfig
-from llm_manager import LLMManager
-from translation_cache import TranslationCache
+from rakutrans.parsers.base_translator import BaseTranslator
+from rakutrans.core.config import AppConfig
+from rakutrans.llm.llm_manager import LLMManager
+from rakutrans.llm.translation_cache import TranslationCache
 
 
 @dataclass(frozen=True)
@@ -145,12 +145,12 @@ class TranslatorRegistry:
             if cls._initialized:
                 return
 
-            from excel_parser import ExcelTranslator
-            from markdown_parser import MarkdownTranslator
-            from docx_parser import DocxTranslator
-            from pptx_parser import PptxTranslator
-            from data_parser import CsvTranslator, JsonTranslator, TextTranslator
-            from pdf_parser import PdfTranslator
+            from rakutrans.parsers.excel_parser import ExcelTranslator
+            from rakutrans.parsers.markdown_parser import MarkdownTranslator
+            from rakutrans.parsers.docx_parser import DocxTranslator
+            from rakutrans.parsers.pptx_parser import PptxTranslator
+            from rakutrans.parsers.data_parser import CsvTranslator, JsonTranslator, TextTranslator
+            from rakutrans.parsers.pdf_parser import PdfTranslator
 
             cls._registry = {
                 ".xlsx": ExcelTranslator,

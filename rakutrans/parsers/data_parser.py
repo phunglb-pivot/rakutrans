@@ -33,14 +33,14 @@ def _ensure_large_csv_field_limit() -> None:
         except OverflowError:
             target //= 2
 
-from base_translator import (
+from rakutrans.parsers.base_translator import (
     BaseTranslator,
     count_words_multilingual,
     detect_text_encoding,
     safe_save_file,
     should_translate_text,
 )
-from config import TranslationOptions, get_smart_output_path, resolve_config_int
+from rakutrans.core.config import TranslationOptions, get_smart_output_path, resolve_config_int
 
 
 def _apply_trimmed_translation(raw: str, translation_map: Dict[str, str]) -> str:

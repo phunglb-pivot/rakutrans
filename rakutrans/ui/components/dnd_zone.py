@@ -8,11 +8,11 @@ from typing import Callable, List, Optional
 import customtkinter as ctk
 from tkinter import filedialog
 
-from base_translator import estimate_translation_requests
-from config import HIGH_REQUEST_WARNING_THRESHOLD, LARGE_FILE_SIZE_BYTES
-from translator_registry import FILE_DIALOG_FILTER_GROUPS, TranslatorRegistry
-from components.ui_system import COLORS, CustomButton, DND_FILES, HAS_TKDND
-from components.icons import get_icon
+from rakutrans.parsers.base_translator import estimate_translation_requests
+from rakutrans.core.config import HIGH_REQUEST_WARNING_THRESHOLD, LARGE_FILE_SIZE_BYTES
+from rakutrans.parsers.translator_registry import FILE_DIALOG_FILTER_GROUPS, TranslatorRegistry
+from rakutrans.ui.components.ui_system import COLORS, CustomButton, DND_FILES, HAS_TKDND
+from rakutrans.ui.components.icons import get_icon
 
 
 def get_file_type_badge(suffix: str, t_func: Optional[Callable[[str], str]] = None) -> tuple[str, str]:

@@ -6,9 +6,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from base_translator import BaseTranslator
-from config import AppConfig, TranslationOptions
-from llm_manager import (
+from rakutrans.parsers.base_translator import BaseTranslator
+from rakutrans.core.config import AppConfig, TranslationOptions
+from rakutrans.llm.llm_manager import (
     LLMError,
     LLMManager,
     build_system_prompt,
@@ -100,7 +100,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertTrue(is_non_retryable_error(auth_err))
         self.assertFalse(is_rate_limit_error(auth_err))
 
-    @patch("llm_manager.time.sleep")
+    @patch("rakutrans.llm.llm_manager.time.sleep")
     def test_translate_batch_retries_on_429_and_adapts_pacing(self, mock_sleep):
         config = _configured_config()
         manager = LLMManager(config)
@@ -117,7 +117,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertGreaterEqual(mock_sleep.call_count, 2)
         self.assertGreater(manager._min_interval, 0.35)
 
-    @patch("llm_manager.time.sleep")
+    @patch("rakutrans.llm.llm_manager.time.sleep")
     def test_non_retryable_error_fails_immediately(self, mock_sleep):
         config = _configured_config()
         manager = LLMManager(config)
@@ -133,7 +133,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertEqual(dummy_client.calls, 1)
         mock_sleep.assert_not_called()
 
-    @patch("llm_manager.time.sleep")
+    @patch("rakutrans.llm.llm_manager.time.sleep")
     def test_translate_markdown_text_retries_on_429(self, mock_sleep):
         config = _configured_config()
         manager = LLMManager(config)
@@ -180,7 +180,7 @@ class TestLLMManager(unittest.TestCase):
             )
 
     def test_base_translator_batch_and_worker_bounds(self):
-        from base_translator import estimate_batch_item_chars
+        from rakutrans.parsers.base_translator import estimate_batch_item_chars
 
         default_cfg = AppConfig()
         self.assertEqual(default_cfg.batch_size, 100)
@@ -226,7 +226,7 @@ class TestLLMManager(unittest.TestCase):
         res = manager.translate_batch(["Hello", "World"], target_lang="Vietnamese", source_lang="English")
         self.assertEqual(res, ["Xin chào", "Thế giới"])
 
-    @patch("llm_manager.time.sleep")
+    @patch("rakutrans.llm.llm_manager.time.sleep")
     def test_length_mismatch_retries_and_splits_instead_of_padding_source(self, _mock_sleep):
         import json
         config = _configured_config()
@@ -250,7 +250,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertEqual(res, ["TR:One", "TR:Two", "TR:Three"])
 
     def test_llm_error_preserves_http_status_and_retry_after(self):
-        from llm_manager import _wrap_provider_error, _get_http_status_code
+        from rakutrans.llm.llm_manager import _wrap_provider_error, _get_http_status_code
         sdk_err = Exception("Rate limited")
         sdk_err.status_code = 429
         sdk_err.response = SimpleNamespace(status_code=429, headers={"Retry-After": "17"})
@@ -260,14 +260,14 @@ class TestLLMManager(unittest.TestCase):
         self.assertEqual(extract_retry_delay(wrapped), 17.0)
 
     def test_should_translate_text_rules(self):
-        from base_translator import should_translate_text
+        from rakutrans.parsers.base_translator import should_translate_text
         self.assertTrue(should_translate_text("1,2,3"))
         self.assertFalse(should_translate_text("1,234.56"))
         self.assertFalse(should_translate_text("---"))
         self.assertFalse(should_translate_text("=SUM(A1:A5)"))
 
     def test_openai_client_direct_sdk_call_and_finish_reasons(self):
-        from llm_manager import OpenAIClient
+        from rakutrans.llm.llm_manager import OpenAIClient
 
         calls = []
 
@@ -325,7 +325,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertTrue(ctx.exception.is_format_error)
 
     def test_gemini_client_does_not_scrape_error_prose_and_checks_finish_reason(self):
-        from llm_manager import GeminiClient
+        from rakutrans.llm.llm_manager import GeminiClient
 
         cfg = AppConfig()
         cfg.selected_models["Gemini"] = "gemini-selected-by-user"
@@ -360,8 +360,8 @@ class TestLLMManager(unittest.TestCase):
         from pathlib import Path
         import anthropic
         import httpx2
-        import model_fetcher
-        from llm_manager import ClaudeClient
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.llm_manager import ClaudeClient
 
         captured_requests = []
 
@@ -424,8 +424,8 @@ class TestLLMManager(unittest.TestCase):
         import tempfile
         from pathlib import Path
         import httpx2
-        import model_fetcher
-        from llm_manager import _wrap_provider_error
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.llm_manager import _wrap_provider_error
 
         # 1. retry-after-ms header takes precedence
         req = httpx2.Request("POST", "https://api.example.com")
@@ -488,8 +488,8 @@ class TestLLMManager(unittest.TestCase):
         import openai
         import anthropic
         from google.genai import errors as genai_errors
-        from error_handler import diagnose_error
-        from llm_manager import OpenAIClient, _wrap_provider_error
+        from rakutrans.core.error_handler import diagnose_error
+        from rakutrans.llm.llm_manager import OpenAIClient, _wrap_provider_error
 
         # 1. Real OpenAI direct SDK call works cleanly and 400 propagates immediately without retry-stripping
         oai_req = httpx2.Request("POST", "https://api.openai.com/v1/chat/completions")
@@ -600,7 +600,7 @@ class TestLLMManager(unittest.TestCase):
             mgr_402 = LLMManager(cfg_402)
             dummy_402 = _DummyClient([wrapped_g_402, '["Should not reach"]'])
             mgr_402._get_client = lambda: dummy_402
-            with patch("llm_manager.time.sleep") as mock_sleep:
+            with patch("rakutrans.llm.llm_manager.time.sleep") as mock_sleep:
                 with self.assertRaises(LLMError):
                     mgr_402.translate_batch(["Hello"], target_lang="Vietnamese")
             self.assertEqual(dummy_402.calls, 1)
@@ -610,9 +610,9 @@ class TestLLMManager(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
-        import config as config_mod
-        import model_fetcher
-        from translation_cache import TranslationCache
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.translation_cache import TranslationCache
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -658,7 +658,7 @@ class TestLLMManager(unittest.TestCase):
         import threading
         import time
         from pathlib import Path
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = AppConfig(batch_size=5, max_concurrent_requests=2)
@@ -711,13 +711,13 @@ class TestLLMManager(unittest.TestCase):
 
         manager._get_client = lambda: _TruncatingClient()
         manager._min_interval = 0.0
-        with patch("llm_manager.time.sleep") as mock_sleep:
+        with patch("rakutrans.llm.llm_manager.time.sleep") as mock_sleep:
             res = manager.translate_batch(["A", "B"], target_lang="Vietnamese")
         self.assertEqual(res, ["OK:A", "OK:B"])
         self.assertEqual(calls, [2, 1, 1])
         mock_sleep.assert_not_called()
 
-    @patch("llm_manager.time.sleep")
+    @patch("rakutrans.llm.llm_manager.time.sleep")
     def test_separate_retry_budgets_and_no_cooldown_leak_on_failure(self, _mock_sleep):
         cfg = _configured_config()
         manager = LLMManager(cfg)
@@ -778,7 +778,7 @@ class TestLLMManager(unittest.TestCase):
         self.assertEqual(parsed_comma["translations"][0]["t"], "keep , } intact")
 
     def test_gemini_client_llm_error_no_cause_cycle_and_markdown_split_on_truncation(self):
-        from llm_manager import GeminiClient
+        from rakutrans.llm.llm_manager import GeminiClient
 
         gm = GeminiClient("test-key")
         gm._call_gemini = lambda *a, **kw: (_ for _ in ()).throw(
@@ -806,8 +806,8 @@ class TestLLMManager(unittest.TestCase):
     def test_claude_client_requires_api_max_tokens_and_no_streaming_fallback(self):
         import tempfile
         from pathlib import Path
-        import model_fetcher
-        from llm_manager import ClaudeClient
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.llm_manager import ClaudeClient
 
         stream_called = {"flag": False}
 
@@ -849,7 +849,7 @@ class TestLLMManager(unittest.TestCase):
                 self.assertIn("max_tokens", str(mt_ctx.exception))
 
     def test_gemini_temperature_and_strict_json_mode_configurable(self):
-        from llm_manager import GeminiClient
+        from rakutrans.llm.llm_manager import GeminiClient
 
         captured_configs = []
 
@@ -923,8 +923,8 @@ class TestLLMManager(unittest.TestCase):
             sleeps.append(sec)
             clock["now"] += sec
 
-        with patch("llm_manager.time.monotonic", side_effect=fake_monotonic), \
-             patch("llm_manager.time.sleep", side_effect=fake_sleep):
+        with patch("rakutrans.llm.llm_manager.time.monotonic", side_effect=fake_monotonic), \
+             patch("rakutrans.llm.llm_manager.time.sleep", side_effect=fake_sleep):
             mgr._acquire_request_slot(estimated_tokens=50)
             clock["now"] += 1.0
             mgr._acquire_request_slot(estimated_tokens=50)
@@ -944,8 +944,8 @@ class TestLLMManager(unittest.TestCase):
         clock["now"] = 200.0
         sleeps.clear()
 
-        with patch("llm_manager.time.monotonic", side_effect=fake_monotonic), \
-             patch("llm_manager.time.sleep", side_effect=fake_sleep):
+        with patch("rakutrans.llm.llm_manager.time.monotonic", side_effect=fake_monotonic), \
+             patch("rakutrans.llm.llm_manager.time.sleep", side_effect=fake_sleep):
             mgr_tpm._acquire_request_slot(estimated_tokens=700)
             clock["now"] += 1.0
             # Next request of 500 tokens exceeds 1000 TPM -> waits until first entry expires
@@ -990,7 +990,7 @@ class TestLLMManager(unittest.TestCase):
         import tempfile
         import threading
         from pathlib import Path
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg = _configured_config()
@@ -1029,7 +1029,7 @@ class TestLLMManager(unittest.TestCase):
 
             mgr._get_client = lambda: SimpleNamespace(generate_completion=fake_complete)
 
-            with patch("llm_manager.time.sleep"):
+            with patch("rakutrans.llm.llm_manager.time.sleep"):
                 with self.assertRaises(LLMError):
                     translator.translate_unique_texts(
                         items,
@@ -1046,7 +1046,7 @@ class TestLLMManager(unittest.TestCase):
             # Resume without failures (keep sleep patched since elevated post-429 pacing floor applies)
             state["fail_on_call"] = 0
             calls_before_resume = state["calls"]
-            with patch("llm_manager.time.sleep"):
+            with patch("rakutrans.llm.llm_manager.time.sleep"):
                 resumed = translator.translate_unique_texts(
                     items,
                     target_lang="Vietnamese",
@@ -1060,7 +1060,7 @@ class TestLLMManager(unittest.TestCase):
 
     def test_single_oversized_batch_item_splits_on_format_error_plain_and_inline_tags(self):
         import json
-        from base_translator import compute_effective_batch_char_limit, estimate_translation_requests
+        from rakutrans.parsers.base_translator import compute_effective_batch_char_limit, estimate_translation_requests
 
         cfg = _configured_config()
         mgr = LLMManager(cfg)

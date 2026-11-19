@@ -6,9 +6,9 @@ Displays actionable troubleshooting guidance, error details, log copying, and qu
 from typing import Callable, Optional
 import customtkinter as ctk
 
-from error_handler import DiagnosticInfo
-from components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT, UI_TIMING
-from components.icons import get_icon
+from rakutrans.core.error_handler import DiagnosticInfo
+from rakutrans.ui.components.ui_system import BaseModal, COLORS, CustomButton, UI_LAYOUT, UI_TIMING
+from rakutrans.ui.components.icons import get_icon
 
 
 CATEGORY_ICONS = {

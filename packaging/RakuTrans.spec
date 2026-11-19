@@ -6,10 +6,14 @@ import sys
 from PyInstaller.utils.hooks import collect_all
 
 
+SPEC_DIR = Path(globals().get('SPECPATH', '.')).resolve()
+ROOT_DIR = SPEC_DIR.parent
+
+
 def _read_app_metadata():
     required_keys = ('APP_NAME', 'APP_VERSION', 'APP_EXECUTABLE_NAME', 'APP_BUNDLE_ID')
     metadata = {}
-    cfg_path = Path(globals().get('SPECPATH', '.')) / 'config.py'
+    cfg_path = ROOT_DIR / 'rakutrans' / 'core' / 'config.py'
     if not cfg_path.is_file():
         raise RuntimeError(f"Cannot find config.py at {cfg_path}")
     tree = ast.parse(cfg_path.read_text(encoding='utf-8'))
@@ -39,7 +43,7 @@ def _read_app_metadata():
 app_name, app_version, app_exec_name, app_bundle_id = _read_app_metadata()
 codesign_identity = os.environ.get('RAKUTRANS_CODESIGN_IDENTITY') or None
 
-datas = [('assets', 'assets')]
+datas = [(str(ROOT_DIR / 'assets'), 'assets')]
 binaries = []
 hiddenimports = [
     'sqlite3',
@@ -80,11 +84,11 @@ for optional_pkg in ('certifi',):
         pass
 
 is_mac = sys.platform == 'darwin'
-icon_path = 'assets/icon.icns' if is_mac else 'assets/icon.ico'
+icon_path = str(ROOT_DIR / 'assets' / ('icon.icns' if is_mac else 'icon.ico'))
 
 a = Analysis(
-    ['main.py'],
-    pathex=[],
+    [str(ROOT_DIR / 'main.py')],
+    pathex=[str(ROOT_DIR)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -129,7 +133,7 @@ if is_mac:
     app = BUNDLE(
         coll,
         name=f'{app_exec_name}.app',
-        icon='assets/icon.icns',
+        icon=str(ROOT_DIR / 'assets' / 'icon.icns'),
         bundle_identifier=app_bundle_id,
         version=app_version,
         info_plist={

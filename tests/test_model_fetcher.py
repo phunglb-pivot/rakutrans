@@ -9,8 +9,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import model_fetcher
-from model_fetcher import (
+from rakutrans.llm import model_fetcher
+from rakutrans.llm.model_fetcher import (
     fetch_live_models,
     get_model_metadata,
     load_cached_models,

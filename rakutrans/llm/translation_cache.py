@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 
-from config import TranslationOptions, CONFIG_DIR, get_config_dir, normalize_language_name
+from rakutrans.core.config import TranslationOptions, CONFIG_DIR, get_config_dir, normalize_language_name
 
 CACHE_DB_PATH = CONFIG_DIR / "cache.db"
 _INITIAL_CACHE_DB_PATH = CACHE_DB_PATH

@@ -17,8 +17,8 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from config import AI_PROVIDERS, APP_NAME, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
-from i18n import I18nManager
+from rakutrans.core.config import AI_PROVIDERS, APP_NAME, AppConfig, TranslationOptions, DEFAULT_TARGET_LANGUAGE
+from rakutrans.core.i18n import I18nManager
 
 
 def run_cli_translation(
@@ -34,8 +34,8 @@ def run_cli_translation(
     output_path: Optional[str] = None,
 ):
     """Headless CLI translation runner."""
-    from llm_manager import LLMManager
-    from translator_registry import TranslatorRegistry
+    from rakutrans.llm.llm_manager import LLMManager
+    from rakutrans.parsers.translator_registry import TranslatorRegistry
 
     config = AppConfig.load()
     i18n = I18nManager(config.ui_language)
@@ -186,18 +186,18 @@ def launch_gui():
         print("=" * 70 + "\n")
         sys.exit(1)
 
-    from components.icons import init_windows_app_id
+    from rakutrans.ui.components.icons import init_windows_app_id
     init_windows_app_id()
 
-    from ui import RakuTransApp
+    from rakutrans.ui.app import RakuTransApp
 
     app = RakuTransApp()
     app.mainloop()
 
 
 def build_cli_parser() -> argparse.ArgumentParser:
-    from format_converter import get_supported_conversion_targets
-    from translator_registry import TranslatorRegistry
+    from rakutrans.parsers.format_converter import get_supported_conversion_targets
+    from rakutrans.parsers.translator_registry import TranslatorRegistry
 
     supported_exts = ", ".join(TranslatorRegistry.get_supported_extensions())
     convert_targets = ", ".join(get_supported_conversion_targets())
@@ -231,7 +231,7 @@ def main():
         sys.exit(1)
 
     if args.file and args.convert_fmt:
-        from format_converter import convert_file_direct
+        from rakutrans.parsers.format_converter import convert_file_direct
         i18n = I18nManager(AppConfig.load().ui_language)
         try:
             print(f"[{APP_NAME}] {args.file} -> {args.convert_fmt.upper()}...")

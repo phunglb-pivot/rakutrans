@@ -14,7 +14,7 @@ set "NEED_SETUP=0"
 if not exist "%VENV_PY%" (
     set "NEED_SETUP=1"
 ) else (
-    "%VENV_PY%" "%SCRIPT_DIR%check_env.py" >nul 2>&1
+    "%VENV_PY%" "%SCRIPT_DIR%scripts\check_env.py" >nul 2>&1
     if errorlevel 1 (
         echo [Notice] .venv is invalid, incomplete, or requirements.txt changed.
         set "NEED_SETUP=1"
@@ -23,7 +23,7 @@ if not exist "%VENV_PY%" (
 
 if "!NEED_SETUP!"=="1" (
     echo [RakuTrans AI] Initializing environment...
-    call "%SCRIPT_DIR%setup_env.bat"
+    call "%SCRIPT_DIR%scripts\setup_env.bat"
     if errorlevel 1 (
         echo [Error] Setup failed.
         pause

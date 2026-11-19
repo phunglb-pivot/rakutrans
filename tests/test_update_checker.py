@@ -11,8 +11,8 @@ import unittest
 import urllib.error
 from unittest.mock import patch
 
-from config import APP_VERSION, RELEASES_PAGE_URL
-from update_checker import (
+from rakutrans.core.config import APP_VERSION, RELEASES_PAGE_URL
+from rakutrans.core.update_checker import (
     UpdateCheckResult,
     UpdateInfo,
     check_for_updates,
@@ -147,22 +147,22 @@ class TestUpdateChecker(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
 
         # 1. Inno Setup keeps fixed AppId and cleans stale _internal on upgrade
-        iss_text = (root / "installer_windows.iss").read_text(encoding="utf-8")
+        iss_text = (root / "packaging" / "installer_windows.iss").read_text(encoding="utf-8")
         self.assertIn("AppId={{8D4F2E1A-9C3B-4B7E-A21D-6F0C5E8A1B42}", iss_text)
         self.assertIn("[InstallDelete]", iss_text)
         self.assertIn('Name: "{app}\\_internal"', iss_text)
 
         # 2. PyInstaller spec syncs config metadata, Info.plist fields, and covers requirements.txt packages
-        from config import APP_BUNDLE_ID, APP_EXECUTABLE_NAME, APP_NAME
+        from rakutrans.core.config import APP_BUNDLE_ID, APP_EXECUTABLE_NAME, APP_NAME
 
-        spec_text = (root / "RakuTrans.spec").read_text(encoding="utf-8")
+        spec_text = (root / "packaging" / "RakuTrans.spec").read_text(encoding="utf-8")
         ast.parse(spec_text)  # Must remain valid Python syntax
         self.assertIn("APP_EXECUTABLE_NAME", spec_text)
         self.assertIn("APP_BUNDLE_ID", spec_text)
         self.assertIn("CFBundleShortVersionString", spec_text)
         self.assertIn("CFBundleVersion", spec_text)
         self.assertIn("NSHighResolutionCapable", spec_text)
-        cfg_text = (root / "config.py").read_text(encoding="utf-8")
+        cfg_text = (root / "rakutrans" / "core" / "config.py").read_text(encoding="utf-8")
         self.assertIn(APP_VERSION, cfg_text)
         self.assertIn(APP_NAME, cfg_text)
         self.assertIn(APP_EXECUTABLE_NAME, cfg_text)
@@ -199,19 +199,19 @@ class TestUpdateChecker(unittest.TestCase):
         wf_text = wf_path.read_text(encoding="utf-8")
         self.assertIn("RakuTrans-Installer-macOS.dmg", wf_text)
         self.assertIn("RakuTrans-Installer-Windows.exe", wf_text)
-        self.assertIn("build_macos.sh", wf_text)
-        self.assertIn("build_windows.bat", wf_text)
+        self.assertIn("packaging/build_macos.sh", wf_text)
+        self.assertIn("packaging\\build_windows.bat", wf_text)
 
 
 @unittest.skipUnless(HAS_TKINTER, "Tkinter is not available in this Python environment")
 class TestUpdateUI(unittest.TestCase):
 
     def test_settings_update_check_and_update_modal(self):
-        import config as config_mod
-        import model_fetcher
-        from config import AppConfig
-        from components.settings_modal import SettingsView
-        from components.update_modal import UpdateModal
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.core.config import AppConfig
+        from rakutrans.ui.components.settings_modal import SettingsView
+        from rakutrans.ui.components.update_modal import UpdateModal
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
@@ -254,7 +254,7 @@ class TestUpdateUI(unittest.TestCase):
                 def fake_async(cb, **kwargs):
                     cb(UpdateCheckResult(status="update_available", info=info))
 
-                with patch("components.settings_modal.check_for_updates_async", side_effect=fake_async):
+                with patch("rakutrans.ui.components.settings_modal.check_for_updates_async", side_effect=fake_async):
                     sv._check_for_updates()
                     root.update()
 

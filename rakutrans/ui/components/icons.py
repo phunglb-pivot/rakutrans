@@ -396,7 +396,7 @@ def get_icon(name: str, color: ColorPair = "default", size: int = 16) -> ctk.CTk
     return ctk.CTkImage(light_image=light_img, dark_image=dark_img, size=(size, size))
 
 
-from config import AI_PROVIDERS, APP_USER_MODEL_ID
+from rakutrans.core.config import AI_PROVIDERS, APP_USER_MODEL_ID
 
 _PROVIDER_ICON_MAP = {
     prov: meta.get("icon_name", "globe")
@@ -438,7 +438,7 @@ def init_windows_app_id():
 
 
 def get_assets_dir() -> Path:
-    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    base_dir = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
     return base_dir / "assets"
 
 

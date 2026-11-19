@@ -3,8 +3,8 @@ Unit tests for configuration and i18n localization.
 """
 
 import unittest
-from config import AppConfig, UI_LANGUAGES, DEFAULT_TARGET_LANGUAGE, normalize_language_name
-from i18n import I18nManager, TRANSLATIONS
+from rakutrans.core.config import AppConfig, UI_LANGUAGES, DEFAULT_TARGET_LANGUAGE, normalize_language_name
+from rakutrans.core.i18n import I18nManager, TRANSLATIONS
 
 
 class TestConfigAndI18n(unittest.TestCase):
@@ -42,7 +42,7 @@ class TestConfigAndI18n(unittest.TestCase):
         self.assertEqual(len(config.recent_target_languages), 3)
 
     def test_languages_alphabetical_order(self):
-        from config import get_all_languages
+        from rakutrans.core.config import get_all_languages
         langs = get_all_languages()
         names = [l.name.lower() for l in langs]
         self.assertEqual(names, sorted(names))
@@ -95,7 +95,7 @@ class TestConfigAndI18n(unittest.TestCase):
     def test_smart_output_naming(self):
         import tempfile
         from pathlib import Path
-        from config import get_smart_output_path, get_target_lang_code
+        from rakutrans.core.config import get_smart_output_path, get_target_lang_code
 
         self.assertEqual(get_target_lang_code("Vietnamese"), "vi")
         self.assertEqual(get_target_lang_code("Tiếng Việt (Vietnamese)"), "vi")
@@ -155,8 +155,8 @@ class TestConfigAndI18n(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        from config import TranslationOptions
+        from rakutrans.core import config as config_mod
+        from rakutrans.core.config import TranslationOptions
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_dir = Path(tmpdir)
@@ -172,7 +172,7 @@ class TestConfigAndI18n(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
+        from rakutrans.core import config as config_mod
         from main import build_cli_parser
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -203,8 +203,8 @@ class TestConfigAndI18n(unittest.TestCase):
         import threading
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        from config import get_smart_output_path
+        from rakutrans.core import config as config_mod
+        from rakutrans.core.config import get_smart_output_path
 
         with tempfile.TemporaryDirectory() as tmpdir:
             cfg_dir = Path(tmpdir)
@@ -307,8 +307,8 @@ class TestConfigAndI18n(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        import model_fetcher
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
         import main as main_mod
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -347,7 +347,7 @@ class TestConfigAndI18n(unittest.TestCase):
                 self.assertIn("No model selected for provider 'Gemini'", buf_no_model.getvalue())
 
                 # 3. CLI with explicit --provider and --model runs cleanly without mutating config.json
-                from translator_registry import TranslatorRegistry
+                from rakutrans.parsers.translator_registry import TranslatorRegistry
                 captured = {}
 
                 class _FakeTr:
@@ -398,9 +398,9 @@ class TestConfigAndI18n(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        import model_fetcher
-        from translation_cache import TranslationCache
+        from rakutrans.core import config as config_mod
+        from rakutrans.llm import model_fetcher
+        from rakutrans.llm.translation_cache import TranslationCache
 
         with tempfile.TemporaryDirectory() as tmpdir:
             home_dir = Path(tmpdir) / "custom_rakutrans_home"
@@ -456,8 +456,8 @@ class TestConfigAndI18n(unittest.TestCase):
         import tempfile
         from pathlib import Path
         from unittest.mock import patch
-        import config as config_mod
-        from config import RATE_LIMIT_PRESETS
+        from rakutrans.core import config as config_mod
+        from rakutrans.core.config import RATE_LIMIT_PRESETS
 
         cfg = AppConfig()
         self.assertEqual(cfg.rate_limit_preset, "balanced")
@@ -491,7 +491,7 @@ class TestConfigAndI18n(unittest.TestCase):
 
                 # Unmodified legacy preset config auto-upgrades on load
                 import json
-                from config import _LEGACY_RATE_LIMIT_PRESETS, _PREVIOUS_RATE_LIMIT_PRESETS
+                from rakutrans.core.config import _LEGACY_RATE_LIMIT_PRESETS, _PREVIOUS_RATE_LIMIT_PRESETS
                 legacy_balanced = dict(_LEGACY_RATE_LIMIT_PRESETS["balanced"])
                 legacy_balanced["rate_limit_preset"] = "balanced"
                 cfg_file.write_text(json.dumps(legacy_balanced), encoding="utf-8")

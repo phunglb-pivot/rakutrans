@@ -8,8 +8,8 @@ from pathlib import Path
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 
-from config import AppConfig, TranslationOptions
-from excel_parser import ExcelTranslator
+from rakutrans.core.config import AppConfig, TranslationOptions
+from rakutrans.parsers.excel_parser import ExcelTranslator
 
 
 class MockLLMManager:
@@ -97,7 +97,7 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertTrue(translator.should_translate_cell("仕様書の確認"))
 
     def test_formula_and_style_preservation(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         config = AppConfig(batch_size=50)
         mock_llm = MockLLMManager()
         translator = ExcelTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "formula_cache.db"))
@@ -170,7 +170,7 @@ class TestExcelTranslator(unittest.TestCase):
                 self.translated_texts_history.extend(texts)
                 return super().translate_batch(texts, *args, **kwargs)
 
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         temp_cache = TranslationCache(db_path=Path(self.temp_dir.name) / "test_dedup_cache.db")
         mock_llm = CountingMockLLM()
         config = AppConfig(batch_size=50)
@@ -204,7 +204,7 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertGreater(info["formula_count"], 0)
 
     def test_bilingual_mode(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         mock_llm = MockLLMManager()
         config = AppConfig(batch_size=50)
         translator = ExcelTranslator(config, mock_llm, cache=TranslationCache(db_path=Path(self.temp_dir.name) / "bilingual_cache.db"))
@@ -224,7 +224,7 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertTrue(any("DetailsSheet_Orig" in name for name in res_wb.sheetnames))
 
     def test_safe_save_workbook(self):
-        from base_translator import safe_save_file
+        from rakutrans.parsers.base_translator import safe_save_file
         wb = openpyxl.Workbook()
         target = Path(self.temp_dir.name) / "locked_file.xlsx"
         # First save succeeds
@@ -244,7 +244,7 @@ class TestExcelTranslator(unittest.TestCase):
         self.assertTrue(out2.exists())
 
     def test_bilingual_long_prefix_collision_and_options_cache_sync(self):
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
         wb = openpyxl.Workbook()
         ws1 = wb.active
         ws1.title = "Project_Specification_Phase1"
@@ -283,7 +283,7 @@ class TestExcelTranslator(unittest.TestCase):
         from openpyxl.chart import LineChart
         from openpyxl.comments import Comment
         from openpyxl.worksheet.formula import ArrayFormula
-        from translation_cache import TranslationCache
+        from rakutrans.llm.translation_cache import TranslationCache
 
         wb = openpyxl.Workbook()
         ws = wb.active

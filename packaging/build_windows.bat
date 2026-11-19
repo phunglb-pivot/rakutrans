@@ -6,7 +6,8 @@ REM Script to build standalone Windows Application (.exe) & Installer for RakuTr
 REM ==============================================================================
 
 set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
+for %%I in ("%SCRIPT_DIR%..") do set "ROOT_DIR=%%~fI"
+cd /d "%ROOT_DIR%"
 
 set "NO_PAUSE=0"
 if defined CI set "NO_PAUSE=1"
@@ -18,14 +19,16 @@ echo =============================================
 echo    Building RakuTrans AI for Windows (.exe)
 echo =============================================
 
-set "VENV_PY=%SCRIPT_DIR%.venv\Scripts\python.exe"
-set "PYINSTALLER=%SCRIPT_DIR%.venv\Scripts\pyinstaller.exe"
+set "VENV_PY=%ROOT_DIR%\.venv\Scripts\python.exe"
+set "PYINSTALLER=%ROOT_DIR%\.venv\Scripts\pyinstaller.exe"
+set "CHECK_ENV=%ROOT_DIR%\scripts\check_env.py"
+set "SETUP_ENV=%ROOT_DIR%\scripts\setup_env.bat"
 
 set "NEED_SETUP=0"
 if not exist "%VENV_PY%" (
     set "NEED_SETUP=1"
 ) else (
-    "%VENV_PY%" "%SCRIPT_DIR%check_env.py" >nul 2>&1
+    "%VENV_PY%" "%CHECK_ENV%" >nul 2>&1
     if errorlevel 1 (
         echo [Notice] .venv is invalid, incomplete, or requirements.txt changed.
         set "NEED_SETUP=1"
@@ -34,7 +37,7 @@ if not exist "%VENV_PY%" (
 
 if "!NEED_SETUP!"=="1" (
     echo [RakuTrans AI] Setting up environment first...
-    call "%SCRIPT_DIR%setup_env.bat" --with-build
+    call "%SETUP_ENV%" --with-build
     if errorlevel 1 (
         echo [Error] Setup failed.
         call :maybe_pause
@@ -52,21 +55,21 @@ if not exist "%PYINSTALLER%" (
     )
 )
 
-for /f "delims=" %%V in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_VERSION') do set "APP_VERSION=%%V"
+for /f "delims=" %%V in ('call "%VENV_PY%" "%CHECK_ENV%" --meta APP_VERSION') do set "APP_VERSION=%%V"
 if not defined APP_VERSION (
-    echo [Error] Failed to read APP_VERSION from config.py.
+    echo [Error] Failed to read APP_VERSION from rakutrans/core/config.py.
     call :maybe_pause
     exit /b 1
 )
-for /f "delims=" %%N in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_NAME') do set "APP_NAME=%%N"
+for /f "delims=" %%N in ('call "%VENV_PY%" "%CHECK_ENV%" --meta APP_NAME') do set "APP_NAME=%%N"
 if not defined APP_NAME (
-    echo [Error] Failed to read APP_NAME from config.py.
+    echo [Error] Failed to read APP_NAME from rakutrans/core/config.py.
     call :maybe_pause
     exit /b 1
 )
-for /f "delims=" %%E in ('call "%VENV_PY%" "%SCRIPT_DIR%check_env.py" --meta APP_EXECUTABLE_NAME') do set "APP_EXEC_NAME=%%E"
+for /f "delims=" %%E in ('call "%VENV_PY%" "%CHECK_ENV%" --meta APP_EXECUTABLE_NAME') do set "APP_EXEC_NAME=%%E"
 if not defined APP_EXEC_NAME (
-    echo [Error] Failed to read APP_EXECUTABLE_NAME from config.py.
+    echo [Error] Failed to read APP_EXECUTABLE_NAME from rakutrans/core/config.py.
     call :maybe_pause
     exit /b 1
 )

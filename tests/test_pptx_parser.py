@@ -8,9 +8,9 @@ from pathlib import Path
 from pptx import Presentation
 from pptx.util import Inches
 
-from config import AppConfig
-from pptx_parser import PptxTranslator
-from translation_cache import TranslationCache
+from rakutrans.core.config import AppConfig
+from rakutrans.parsers.pptx_parser import PptxTranslator
+from rakutrans.llm.translation_cache import TranslationCache
 
 
 class MockLLMManager:
@@ -83,7 +83,7 @@ class TestPptxTranslator(unittest.TestCase):
         self.assertIn("[Vietnamese] Performance and Outlook", joined)
 
     def test_options_cache_isolation_and_group_shapes_notes(self):
-        from config import TranslationOptions
+        from rakutrans.core.config import TranslationOptions
 
         pptx_path = Path(self.temp_dir.name) / "grouped.pptx"
         prs = Presentation()

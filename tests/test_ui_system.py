@@ -26,6 +26,20 @@ except (ImportError, ModuleNotFoundError):
 @unittest.skipUnless(HAS_TKINTER, "Tkinter is not available in this Python environment")
 class TestUISystem(unittest.TestCase):
 
+    def _create_root(self):
+        import customtkinter as ctk
+        root = ctk.CTk()
+
+        def _cleanup():
+            try:
+                if root.winfo_exists():
+                    root.destroy()
+            except Exception:
+                pass
+
+        self.addCleanup(_cleanup)
+        return root
+
     def test_design_tokens(self):
         # Verify button sizes
         for size in ("sm", "md", "lg"):
@@ -52,10 +66,9 @@ class TestUISystem(unittest.TestCase):
 
     def test_confirm_modal_localized_defaults(self):
         """Verify ConfirmModal resolves localized default text when strings are omitted."""
-        import customtkinter as ctk
         from i18n import I18nManager
         i18n = I18nManager("vi")
-        root = ctk.CTk()
+        root = self._create_root()
 
         modal = ConfirmModal(root, get_translation=i18n.t)
         self.assertEqual(modal.title(), i18n.t("confirm_action_title"))
@@ -63,7 +76,6 @@ class TestUISystem(unittest.TestCase):
         self.assertEqual(modal.cancel_btn.cget("text"), i18n.t("cancel"))
 
         modal.destroy()
-        root.destroy()
 
     def test_settings_direct_save_and_equal_segmented_proportions(self):
         """Verify SettingsView direct changes without close/save buttons, and equal segmented ratios."""
@@ -86,7 +98,7 @@ class TestUISystem(unittest.TestCase):
                 cfg.active_provider = "Gemini"
                 save_events = []
 
-                root = ctk.CTk()
+                root = self._create_root()
                 sv = SettingsView(
                     root,
                     config=cfg,
@@ -232,7 +244,7 @@ class TestUISystem(unittest.TestCase):
         import customtkinter as ctk
         from components.icons import get_icon
 
-        root = ctk.CTk()
+        root = self._create_root()
         for name in (
             "globe", "settings", "refresh", "rotate_ccw", "folder", "folder_hero",
             "file_text", "file_excel", "file_word", "file_ppt", "file_pdf",
@@ -256,9 +268,7 @@ class TestUISystem(unittest.TestCase):
         root.destroy()
 
     def test_custom_button_text_sync_and_destroy_cancels_spinner(self):
-        import customtkinter as ctk
-
-        root = ctk.CTk()
+        root = self._create_root()
         btn = CustomButton(root, text="Initial")
         btn.pack()
         btn.configure(text="Updated")
@@ -271,30 +281,30 @@ class TestUISystem(unittest.TestCase):
         self.assertFalse(btn._is_loading)
         self.assertIsNone(btn._loading_after_id)
         root.update()
-        root.destroy()
 
     def test_confirm_modal_enter_on_cancel_closes_instead_of_confirming(self):
-        import customtkinter as ctk
-
-        root = ctk.CTk()
+        root = self._create_root()
+        root.update()
         confirmed = []
         modal = ConfirmModal(root, on_confirm=lambda: confirmed.append(True), get_translation=lambda k, **kw: k)
+        # On Windows, CTkToplevel briefly withdraws itself during __init__ for titlebar theming.
+        # Deiconify explicitly so the modal is mapped before generating synthetic key events.
+        modal.deiconify()
         modal.update()
-        modal.cancel_btn.focus_set()
+        modal.cancel_btn.focus_force()
+        modal.update()
         modal.cancel_btn.event_generate("<Return>")
         root.update()
 
         self.assertEqual(confirmed, [])
         self.assertTrue(modal._closed)
-        root.destroy()
 
     def test_dropzone_splitlist_directory_guard_and_inspection_race(self):
         import tempfile
         from pathlib import Path
-        import customtkinter as ctk
         from components.dnd_zone import DropZone
 
-        root = ctk.CTk()
+        root = self._create_root()
         invalid_calls = []
         selected = []
         dz = DropZone(
@@ -332,7 +342,7 @@ class TestUISystem(unittest.TestCase):
         from components.dnd_zone import DropZone
         from components.settings_modal import SettingsView
 
-        root = ctk.CTk()
+        root = self._create_root()
         cfg = AppConfig()
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -403,7 +413,7 @@ class TestUISystem(unittest.TestCase):
                  patch.object(model_fetcher, "MODELS_CACHE_FILE", tmp_path / "models_cache.json"), \
                  patch("components.settings_modal.fetch_models_async") as mock_fetch:
                 cfg = AppConfig()
-                root = ctk.CTk()
+                root = self._create_root()
                 sv = SettingsView(
                     root,
                     config=cfg,
@@ -437,7 +447,7 @@ class TestUISystem(unittest.TestCase):
         import customtkinter as ctk
 
         ctk.set_appearance_mode("Dark")
-        root = ctk.CTk()
+        root = self._create_root()
 
         btn = CustomButton(root, text="Translate", variant="primary", icon_name="refresh", state="disabled")
         self.assertEqual(btn.cget("fg_color"), BUTTON_DISABLED_STYLES["filled"]["fg_color"])

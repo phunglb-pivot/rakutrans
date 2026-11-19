@@ -25,6 +25,20 @@ except (ImportError, ModuleNotFoundError):
 
 class TestSearchableSelect(unittest.TestCase):
 
+    def _create_root(self):
+        import customtkinter as ctk
+        root = ctk.CTk()
+
+        def _cleanup():
+            try:
+                if root.winfo_exists():
+                    root.destroy()
+            except Exception:
+                pass
+
+        self.addCleanup(_cleanup)
+        return root
+
     def test_strip_accents(self):
         self.assertEqual(_strip_accents("Tiếng Việt"), "Tieng Viet")
         self.assertEqual(_strip_accents("Français"), "Francais")
@@ -103,7 +117,7 @@ class TestSearchableSelect(unittest.TestCase):
         import customtkinter as ctk
         from components.searchable_select import SearchableLanguageSelect
 
-        root = ctk.CTk()
+        root = self._create_root()
         root.geometry("500x600")
 
         frame = ctk.CTkFrame(root)
@@ -190,7 +204,7 @@ class TestSearchableSelect(unittest.TestCase):
         import customtkinter as ctk
         from components.searchable_select import SearchableLanguageSelect
 
-        root = ctk.CTk()
+        root = self._create_root()
         root.geometry("400x500")
 
         sel = SearchableLanguageSelect(
@@ -253,7 +267,7 @@ class TestSearchableSelect(unittest.TestCase):
         import customtkinter as ctk
         from components.searchable_select import SearchableLanguageSelect
 
-        root = ctk.CTk()
+        root = self._create_root()
         root.geometry("400x500")
 
         sel1 = SearchableLanguageSelect(root, current_language="en")

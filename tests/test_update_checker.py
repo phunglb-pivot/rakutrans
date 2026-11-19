@@ -222,6 +222,15 @@ class TestUpdateUI(unittest.TestCase):
                 cfg = AppConfig()
                 found_events = []
                 root = ctk.CTk()
+
+                def _cleanup_root():
+                    try:
+                        if root.winfo_exists():
+                            root.destroy()
+                    except Exception:
+                        pass
+
+                self.addCleanup(_cleanup_root)
                 sv = SettingsView(
                     root,
                     config=cfg,

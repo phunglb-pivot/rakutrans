@@ -41,6 +41,7 @@ class ConfirmModal(BaseModal):
         self._user_confirm_cb = on_confirm
         self._user_cancel_cb = on_cancel
         self._confirm_icon = confirm_icon
+        self._focus_after_id = None
         self.t = get_translation or (lambda k, **kw: k)
 
         resolved_title = title or self.t("confirm_action_title")
@@ -136,6 +137,41 @@ class ConfirmModal(BaseModal):
         self.cancel_btn.pack(side="right")
         self.cancel_btn.bind("<Return>", lambda e: (self.close_modal(), "break")[1])
         self.cancel_btn.focus_set()
+        try:
+            # On Windows, CTkToplevel briefly withdraws/restores for titlebar theming,
+            # so re-apply default focus to Cancel once the modal is mapped.
+            self._focus_after_id = self.after(20, self._focus_cancel_btn)
+        except Exception:
+            self._focus_after_id = None
+
+    def _focus_cancel_btn(self):
+        self._focus_after_id = None
+        try:
+            if self.winfo_exists() and self.winfo_ismapped() and hasattr(self, "cancel_btn"):
+                self.cancel_btn.focus_set()
+        except Exception:
+            pass
+
+    def _is_cancel_widget(self, widget) -> bool:
+        if widget is None or not hasattr(self, "cancel_btn"):
+            return False
+        return widget in {
+            self.cancel_btn,
+            getattr(self.cancel_btn, "_canvas", None),
+            getattr(self.cancel_btn, "_text_label", None),
+            getattr(self.cancel_btn, "_image_label", None),
+        }
+
+    def _on_return_pressed(self, event=None):
+        event_widget = getattr(event, "widget", None)
+        try:
+            focused = self.focus_get()
+        except Exception:
+            focused = None
+        if self._is_cancel_widget(event_widget) or self._is_cancel_widget(focused):
+            self.close_modal()
+            return "break"
+        return super()._on_return_pressed(event)
 
     def _handle_confirm(self):
         self._confirmed = True
@@ -146,4 +182,13 @@ class ConfirmModal(BaseModal):
     def _handle_cancel(self):
         if not self._confirmed and self._user_cancel_cb:
             self._user_cancel_cb()
+
+    def destroy(self):
+        if getattr(self, "_focus_after_id", None):
+            try:
+                self.after_cancel(self._focus_after_id)
+            except Exception:
+                pass
+            self._focus_after_id = None
+        super().destroy()
 

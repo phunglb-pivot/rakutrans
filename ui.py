@@ -1163,56 +1163,56 @@ class RakuTransApp(ctk.CTk):
     # Keyboard Shortcuts
     # -------------------------------------------------------------------------
 
+    def _on_shortcut_open(self, event=None):
+        if self.current_screen == "settings" or self.is_translating or self.is_converting:
+            return "break"
+        if self.current_mode == "convert":
+            self.convert_drop_zone._browse_file()
+        else:
+            self.drop_zone._browse_file()
+        return "break"
+
+    def _on_shortcut_action(self, event=None):
+        if self.current_screen == "settings" or self.is_translating or self.is_converting:
+            return "break"
+        if self.current_mode == "convert":
+            self._start_conversion()
+        else:
+            self._start_translation()
+        return "break"
+
+    def _on_shortcut_escape(self, event=None):
+        if self.current_screen == "settings":
+            self._close_settings()
+            return "break"
+        if hasattr(self, "tgt_select") and getattr(self.tgt_select, "is_open", False):
+            self.tgt_select.close()
+            return "break"
+        return None
+
+    def _on_shortcut_settings(self, event=None):
+        if self.is_translating or self.is_converting:
+            return "break"
+        if self.current_screen == "settings":
+            self._close_settings()
+        else:
+            self._open_settings()
+        return "break"
+
     def _setup_shortcuts(self):
         """Bind ergonomic keyboard shortcuts for power users."""
-        def on_open(event=None):
-            if self.current_screen == "settings" or self.is_translating or self.is_converting:
-                return "break"
-            if self.current_mode == "convert":
-                self.convert_drop_zone._browse_file()
-            else:
-                self.drop_zone._browse_file()
-            return "break"
-
-        def on_action(event=None):
-            if self.current_screen == "settings" or self.is_translating or self.is_converting:
-                return "break"
-            if self.current_mode == "convert":
-                self._start_conversion()
-            else:
-                self._start_translation()
-            return "break"
-
-        def on_escape(event=None):
-            if self.current_screen == "settings":
-                self._close_settings()
-                return "break"
-            if hasattr(self, "tgt_select") and getattr(self.tgt_select, "is_open", False):
-                self.tgt_select.close()
-                return "break"
-            return None
-
-        def on_settings(event=None):
-            if self.is_translating or self.is_converting:
-                return "break"
-            if self.current_screen == "settings":
-                self._close_settings()
-            else:
-                self._open_settings()
-            return "break"
-
         # macOS bindings
-        self.bind("<Command-o>", on_open)
-        self.bind("<Command-Return>", on_action)
-        self.bind("<Command-comma>", on_settings)
+        self.bind("<Command-o>", self._on_shortcut_open)
+        self.bind("<Command-Return>", self._on_shortcut_action)
+        self.bind("<Command-comma>", self._on_shortcut_settings)
 
         # Windows / Linux bindings
-        self.bind("<Control-o>", on_open)
-        self.bind("<Control-Return>", on_action)
-        self.bind("<Control-comma>", on_settings)
+        self.bind("<Control-o>", self._on_shortcut_open)
+        self.bind("<Control-Return>", self._on_shortcut_action)
+        self.bind("<Control-comma>", self._on_shortcut_settings)
 
         # Escape closes settings or overlay panels
-        self.bind("<Escape>", on_escape)
+        self.bind("<Escape>", self._on_shortcut_escape)
 
     # -------------------------------------------------------------------------
     # File Selection

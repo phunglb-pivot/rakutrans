@@ -413,17 +413,32 @@ class TestUIButtonLifecycle(unittest.TestCase):
             self.assertEqual(col_cfg["weight"], 0)
             self.assertIn(col_cfg["uniform"], (None, ""))
 
-        # Shortcuts blocked while processing or in settings
-        self.app.is_translating = True
+        # Verify real Tk shortcut bindings are registered for both macOS and Windows/Linux
+        self.assertIn("_on_shortcut_open", self.app.bind("<Command-o>"))
+        self.assertIn("_on_shortcut_open", self.app.bind("<Control-o>"))
+        self.assertIn("_on_shortcut_action", self.app.bind("<Command-Return>"))
+        self.assertIn("_on_shortcut_action", self.app.bind("<Control-Return>"))
+
+        # Shortcuts blocked while processing or in settings (avoid focus_force/event_generate which deadlock on headless macOS CI)
         with patch.object(self.app, "_start_translation") as mock_start, \
-             patch.object(self.app.drop_zone, "_browse_file") as mock_browse:
-            self.app.focus_force()
-            self.app.event_generate("<Control-o>")
-            self.app.event_generate("<Control-Return>")
-            self.app.update()
+             patch.object(self.app, "_start_conversion") as mock_convert, \
+             patch.object(self.app.drop_zone, "_browse_file") as mock_browse, \
+             patch.object(self.app.convert_drop_zone, "_browse_file") as mock_convert_browse:
+            self.app.is_translating = True
+            self.assertEqual(self.app._on_shortcut_open(), "break")
+            self.assertEqual(self.app._on_shortcut_action(), "break")
+            self.app.is_translating = False
+
+            prev_screen = self.app.current_screen
+            self.app.current_screen = "settings"
+            self.assertEqual(self.app._on_shortcut_open(), "break")
+            self.assertEqual(self.app._on_shortcut_action(), "break")
+            self.app.current_screen = prev_screen
+
             mock_start.assert_not_called()
+            mock_convert.assert_not_called()
             mock_browse.assert_not_called()
-        self.app.is_translating = False
+            mock_convert_browse.assert_not_called()
 
         # Cleanup
         self.app.selected_convert_file = None

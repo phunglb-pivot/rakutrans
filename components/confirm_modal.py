@@ -135,7 +135,7 @@ class ConfirmModal(BaseModal):
             command=self.close_modal
         )
         self.cancel_btn.pack(side="right")
-        self.cancel_btn.bind("<Return>", lambda e: (self.close_modal(), "break")[1])
+        self.cancel_btn.bind("<Return>", self._on_cancel_return)
         self.cancel_btn.focus_set()
         try:
             # On Windows, CTkToplevel briefly withdraws/restores for titlebar theming,
@@ -143,6 +143,10 @@ class ConfirmModal(BaseModal):
             self._focus_after_id = self.after(20, self._focus_cancel_btn)
         except Exception:
             self._focus_after_id = None
+
+    def _on_cancel_return(self, event=None):
+        self.close_modal()
+        return "break"
 
     def _focus_cancel_btn(self):
         self._focus_after_id = None

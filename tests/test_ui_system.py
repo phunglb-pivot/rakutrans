@@ -283,21 +283,36 @@ class TestUISystem(unittest.TestCase):
         root.update()
 
     def test_confirm_modal_enter_on_cancel_closes_instead_of_confirming(self):
+        from types import SimpleNamespace
+
         root = self._create_root()
         root.update()
         confirmed = []
         modal = ConfirmModal(root, on_confirm=lambda: confirmed.append(True), get_translation=lambda k, **kw: k)
-        # On Windows, CTkToplevel briefly withdraws itself during __init__ for titlebar theming.
-        # Deiconify explicitly so the modal is mapped before generating synthetic key events.
-        modal.deiconify()
-        modal.update()
-        modal.cancel_btn.focus_force()
-        modal.update()
-        modal.cancel_btn.event_generate("<Return>")
-        root.update()
 
+        # Verify real Tk <Return> bindings exist on Cancel widgets and modal
+        self.assertIn("_on_cancel_return", modal.cancel_btn._text_label.bind("<Return>"))
+        self.assertIn("_on_cancel_return", modal.cancel_btn._canvas.bind("<Return>"))
+        self.assertIn("_on_return_pressed", modal.bind("<Return>"))
+
+        # Invoking the Cancel <Return> handler must close the modal and return "break"
+        # (Deterministic across headless/non-interactive Windows CI where WM_SETFOCUS is unavailable)
+        self.assertEqual(modal._on_cancel_return(), "break")
         self.assertEqual(confirmed, [])
         self.assertTrue(modal._closed)
+
+        # Even if <Return> bubbles to ConfirmModal._on_return_pressed from cancel_btn, it must close instead of confirming
+        modal2 = ConfirmModal(root, on_confirm=lambda: confirmed.append(True), get_translation=lambda k, **kw: k)
+        self.assertEqual(modal2._on_return_pressed(SimpleNamespace(widget=modal2.cancel_btn)), "break")
+        self.assertEqual(confirmed, [])
+        self.assertTrue(modal2._closed)
+
+        # Pressing Enter while confirm_btn is focused must still confirm
+        modal3 = ConfirmModal(root, on_confirm=lambda: confirmed.append(True), get_translation=lambda k, **kw: k)
+        modal3.confirm_btn.focus_set()
+        self.assertEqual(modal3._on_return_pressed(SimpleNamespace(widget=modal3.confirm_btn)), "break")
+        self.assertEqual(confirmed, [True])
+        self.assertTrue(modal3._closed)
 
     def test_dropzone_splitlist_directory_guard_and_inspection_race(self):
         import tempfile
